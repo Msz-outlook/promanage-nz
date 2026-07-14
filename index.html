@@ -665,7 +665,8 @@ document.getElementById('mo-month').addEventListener('change',function(){
 
 const CONFIG = {
   SUPABASE_URL: 'https://ilxjyhnbnsufeomnkmsg.supabase.co',
-  SUPABASE_KEY: 'sb_publishable_4-vXVhXsr40g1KuLdihxhw_XH5-2Vqn'
+  SUPABASE_KEY: 'sb_publishable_4-vXVhXsr40g1KuLdihxhw_XH5-2Vqn',
+  STORAGE_BUCKET: 'inspection-photos'
 };
 
 const DB_NAME='promanageDB', DB_VERSION=1;
@@ -825,12 +826,57 @@ async function deleteInspection(id){
 // --- Sync layer ---
 // Replace the body of this function with a real fetch() to Supabase
 // (or your backend of choice) once CONFIG.SUPABASE_URL is set.
+function dataUrlToBlob(dataUrl){
+  const [meta,base64]=dataUrl.split(',');
+  const mime=meta.match(/data:(.*);base64/)[1];
+  const bytes=atob(base64);
+  const arr=new Uint8Array(bytes.length);
+  for(let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
+  return new Blob([arr],{type:mime});
+}
+
+function sanitizeForPath(str){
+  return String(str).replace(/[^a-zA-Z0-9]+/g,'_');
+}
+
+async function uploadPhotoToStorage(dataUrl,path){
+  const blob=dataUrlToBlob(dataUrl);
+  const res=await fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
+    method:'POST',
+    headers:{
+      'Content-Type':blob.type||'image/jpeg',
+      'apikey':CONFIG.SUPABASE_KEY,
+      'Authorization':`Bearer ${CONFIG.SUPABASE_KEY}`,
+      'x-upsert':'true'
+    },
+    body:blob
+  });
+  if(!res.ok) throw new Error('Photo upload failed: '+res.status);
+  return `${CONFIG.SUPABASE_URL}/storage/v1/object/public/${CONFIG.STORAGE_BUCKET}/${path}`;
+}
+
+// Uploads any not-yet-uploaded photos (still local base64) to Storage,
+// swapping them for lightweight URLs — keeps the database row small
+// and avoids re-uploading the same photo on a later sync retry.
+async function uploadRecordPhotos(record){
+  const areas=await Promise.all(record.areas.map(async (area,ai)=>{
+    const photos=await Promise.all(area.photos.map(async (photo,pi)=>{
+      if(!photo.startsWith('data:')) return photo; // already a URL from a previous sync
+      const path=`${sanitizeForPath(record.property)}/${record.id}/area${ai}-photo${pi}.jpg`;
+      return await uploadPhotoToStorage(photo,path);
+    }));
+    return {...area,photos};
+  }));
+  return {...record,areas};
+}
+
 async function pushInspectionToBackend(record){
   if(!CONFIG.SUPABASE_URL){
     console.log('No backend configured — would sync:',record.id);
-    return true;
+    return record;
   }
   try{
+    const uploadedRecord=await uploadRecordPhotos(record);
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
       method:'POST',
       headers:{
@@ -840,15 +886,15 @@ async function pushInspectionToBackend(record){
         'Prefer':'resolution=merge-duplicates' // upsert — re-syncing the same id won't duplicate
       },
       body: JSON.stringify({
-        id: record.id,
-        property: record.property,
-        date: record.date,
-        areas: record.areas,
+        id: uploadedRecord.id,
+        property: uploadedRecord.property,
+        date: uploadedRecord.date,
+        areas: uploadedRecord.areas,
         synced: true,
-        created_at: record.createdAt
+        created_at: uploadedRecord.createdAt
       })
     });
-    return res.ok;
+    return res.ok ? uploadedRecord : false;
   }catch(err){
     console.log('Sync failed, will retry later:',err);
     return false;
@@ -863,10 +909,10 @@ async function syncPendingInspections(){
   const all=await dbGetAll('inspections');
   const pending=all.filter(i=>!i.synced);
   for(const record of pending){
-    const ok=await pushInspectionToBackend(record);
-    if(ok){
-      record.synced=true;
-      await dbPut('inspections',record);
+    const result=await pushInspectionToBackend(record);
+    if(result){
+      result.synced=true;
+      await dbPut('inspections',result); // saves back with photo URLs instead of base64 — shrinks local storage too
     }
   }
   await renderInspectionList();

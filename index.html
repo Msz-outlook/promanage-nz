@@ -52,7 +52,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 
 /* Tables */
-.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;position:relative}
+.table-outer{position:relative}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.scroll-fade{display:none;position:absolute;top:0;right:0;bottom:0;width:28px;background:linear-gradient(to right,rgba(0,0,0,0),rgba(0,0,0,.09));pointer-events:none}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;font-size:11px;font-weight:600;color:var(--text2);padding:8px 12px;border-bottom:0.5px solid var(--border);text-transform:uppercase;letter-spacing:.04em;background:var(--bg2)}
 td{padding:10px 12px;border-bottom:0.5px solid var(--border);vertical-align:middle}
@@ -171,11 +173,8 @@ textarea:focus{border-color:var(--text)}
   .page{padding:1rem}
   table{font-size:12px;min-width:560px}
   th,td{padding:8px 6px;white-space:nowrap}
-  .table-wrap{margin:0 -1.25rem;padding:0 1.25rem;width:calc(100% + 2.5rem)}
-  .table-wrap::after{
-    content:'';position:absolute;top:0;right:0;bottom:0;width:24px;
-    background:linear-gradient(to right,transparent,var(--bg));pointer-events:none;
-  }
+  .table-outer{margin:0 -1.25rem;padding:0 1.25rem;width:calc(100% + 2.5rem)}
+  .scroll-fade{display:block}
 }
 </style>
 </head>
@@ -247,37 +246,32 @@ textarea:focus{border-color:var(--text)}
 
 <!-- DASHBOARD -->
 <div class="page active" id="page-dashboard">
-  <div class="alert alert-amber">⚠️ <div><strong>2 compliance actions due</strong> — Healthy Homes inspections overdue for 14 Bealey Ave & 3 Fitzgerald Ave. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>
-  <div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.</div></div>
-  <div class="metrics">
-    <div class="metric"><div class="metric-label">Properties</div><div class="metric-val">10</div><div class="metric-sub">7 long-term · 3 short-term</div></div>
-    <div class="metric"><div class="metric-label">Occupancy</div><div class="metric-val">90%</div><div class="metric-sub">9 of 10 occupied</div></div>
-    <div class="metric"><div class="metric-label">Monthly rent</div><div class="metric-val">$28,400</div><div class="metric-sub">$700 outstanding</div></div>
-    <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val">5</div><div class="metric-sub">2 urgent</div></div>
+  <div id="dash-alerts"></div>
+  <div class="metrics" id="dash-metrics">
+    <div class="metric"><div class="metric-label">Properties</div><div class="metric-val" id="dm-properties">—</div><div class="metric-sub" id="dm-properties-sub"></div></div>
+    <div class="metric"><div class="metric-label">Occupancy</div><div class="metric-val" id="dm-occupancy">—</div><div class="metric-sub" id="dm-occupancy-sub"></div></div>
+    <div class="metric"><div class="metric-label">Monthly rent</div><div class="metric-val" id="dm-rent">—</div><div class="metric-sub" id="dm-rent-sub"></div></div>
+    <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val" id="dm-maint">—</div><div class="metric-sub" id="dm-maint-sub"></div></div>
   </div>
   <div class="two-col">
     <div class="card">
       <div class="card-head">Lease renewals due</div>
-      <div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Expires</th></tr></thead><tbody>
-        <tr><td>22 Papanui Rd</td><td>Nguyen family</td><td><span class="badge ba">Jun 30</span></td></tr>
-        <tr><td>8 Riccarton Ave</td><td>T. Sharma</td><td><span class="badge ba">Jul 15</span></td></tr>
-        <tr><td>45 Ilam Rd</td><td>J. & M. Wilson</td><td><span class="badge bg">Sep 1</span></td></tr>
-      </tbody></table></div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Lease end</th></tr></thead>
+        <tbody id="dash-renewals"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr></tbody>
+      </table></div><div class="scroll-fade"></div></div>
     </div>
     <div class="card">
-      <div class="card-head">Rent arrears <button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('arrears'),50)">View notice →</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Amount</th><th>Days</th></tr></thead><tbody>
-        <tr><td>14 Bealey Ave</td><td>K. Patel</td><td>$700</td><td><span class="badge br">14d</span></td></tr>
-        <tr><td colspan="4" style="color:var(--text3);text-align:center;padding:12px">No other arrears</td></tr>
-      </tbody></table></div>
+      <div class="card-head">Rent arrears <button class="btn btn-sm" onclick="nav('tenants',document.querySelectorAll('.nav-item')[3])">View tenants →</button></div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Amount</th></tr></thead>
+        <tbody id="dash-arrears"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr></tbody>
+      </table></div><div class="scroll-fade"></div></div>
     </div>
   </div>
   <div class="card">
     <div class="card-head">Urgent maintenance</div>
-    <div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead><tbody>
-      <tr><td>3 Fitzgerald Ave</td><td>Hot water cylinder failure</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ba">In progress</span></td></tr>
-      <tr><td>7 Merivale Ln</td><td>Roof leak — bedroom</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge br">Unassigned</span></td></tr>
-    </tbody></table></div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead>
+      <tbody id="dash-maint"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
   </div>
   <div class="card">
     <div class="card-head">Quick links</div>
@@ -324,9 +318,9 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
-    <div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th><th>Actions</th></tr></thead>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th><th>Actions</th></tr></thead>
       <tbody id="prop-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
-    </table></div>
+    </table></div><div class="scroll-fade"></div></div>
   </div>
 </div>
 
@@ -366,9 +360,9 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
-    <div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
       <tbody id="tenant-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
-    </table></div>
+    </table></div><div class="scroll-fade"></div></div>
   </div>
   <div class="card">
     <div class="card-head">NZ RTA key rules</div>
@@ -381,15 +375,37 @@ textarea:focus{border-color:var(--text)}
 
 <!-- MAINTENANCE -->
 <div class="page" id="page-maintenance">
+  <div class="sync-banner sync-online" id="sync-banner-maint">
+    <span><span class="sync-dot"></span><span id="sync-status-text-maint">Online</span> · <span id="sync-pending-text-maint">0 pending sync</span></span>
+    <button class="btn btn-sm" onclick="syncPendingMaintenance()">🔄 Sync now</button>
+  </div>
+
+  <div class="card" id="maint-form-card" style="display:none">
+    <div class="card-head">New maintenance request</div>
+    <div class="card-body">
+      <div class="controls">
+        <div><label>Property</label><select id="maint-property"><option value="">— Add a property first —</option></select></div>
+        <div><label>Reported date</label><input type="text" id="maint-date" placeholder="e.g. 15 Jul"></div>
+      </div>
+      <label>Issue</label>
+      <input type="text" id="maint-issue" placeholder="e.g. Hot water cylinder failure" style="width:100%;margin-bottom:10px">
+      <div class="controls">
+        <div><label>Priority</label><select id="maint-priority"><option>Urgent</option><option>Medium</option><option>Low</option></select></div>
+        <div><label>Assigned to</label><input type="text" id="maint-assigned" placeholder="e.g. Heatpump NZ (optional)"></div>
+        <div><label>Status</label><select id="maint-status"><option>Unassigned</option><option>Scheduled</option><option>In progress</option><option>Completed</option></select></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:.5rem">
+        <button class="btn btn-primary" onclick="saveMaintenance()">💾 Save request</button>
+        <button class="btn" onclick="toggleMaintForm(false)">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
-    <div class="card-head">Maintenance requests <button class="btn btn-sm btn-primary">+ New request</button></div>
-    <div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th></tr></thead><tbody>
-      <tr><td>3 Fitzgerald Ave</td><td>Hot water cylinder</td><td>20 May</td><td><span class="dot dot-r"></span>Urgent</td><td>Heatpump NZ</td><td><span class="badge ba">In progress</span></td></tr>
-      <tr><td>7 Merivale Ln</td><td>Roof leak — bedroom</td><td>22 May</td><td><span class="dot dot-r"></span>Urgent</td><td>—</td><td><span class="badge br">Unassigned</span></td></tr>
-      <tr><td>22 Papanui Rd</td><td>Blocked drain</td><td>18 May</td><td><span class="dot dot-a"></span>Medium</td><td>Drain Busters</td><td><span class="badge bg">Scheduled</span></td></tr>
-      <tr><td>45 Ilam Rd</td><td>Heat pump service</td><td>10 May</td><td><span class="dot dot-g"></span>Low</td><td>Mitsubishi Svc</td><td><span class="badge bg">Completed</span></td></tr>
-      <tr><td>14 Bealey Ave</td><td>Window latch broken</td><td>5 May</td><td><span class="dot dot-g"></span>Low</td><td>Handy Chch</td><td><span class="badge bg">Completed</span></td></tr>
-    </tbody></table></div>
+    <div class="card-head">Maintenance requests <span id="maint-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleMaintForm(true)">+ New request</button></div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
+      <tbody id="maint-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
   </div>
   <div class="card">
     <div class="card-head">NZ landlord repair obligations</div>
@@ -414,11 +430,7 @@ textarea:focus{border-color:var(--text)}
       <div class="controls">
         <div>
           <label>Property</label>
-          <select id="insp-property">
-            <option>22 Papanui Rd</option><option>14 Bealey Ave</option><option>3 Fitzgerald Ave</option>
-            <option>8 Riccarton Ave</option><option>45 Ilam Rd</option><option>7 Merivale Ln</option>
-            <option>12 Oxford Tce</option><option>5 Cathedral Sq</option><option>33 New Brighton Rd</option><option>18 Sumner Rd</option>
-          </select>
+          <select id="insp-property"><option value="">— Add a property first —</option></select>
         </div>
         <div>
           <label>Inspection date</label>
@@ -436,9 +448,9 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
-    <div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
       <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr></tbody>
-    </table></div>
+    </table></div><div class="scroll-fade"></div></div>
   </div>
 </div>
 
@@ -453,7 +465,7 @@ textarea:focus{border-color:var(--text)}
   <div class="two-col">
     <div class="card">
       <div class="card-head">Rent by property</div>
-      <div class="table-wrap"><table><thead><tr><th>Property</th><th>Type</th><th>$/wk</th><th>Collected</th></tr></thead><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Type</th><th>$/wk</th><th>Collected</th></tr></thead><tbody>
         <tr><td>22 Papanui Rd</td><td><span class="lt">LT</span></td><td>$650</td><td><span class="badge bg">✓</span></td></tr>
         <tr><td>14 Bealey Ave</td><td><span class="lt">LT</span></td><td>$550</td><td><span class="badge br">Arrears</span></td></tr>
         <tr><td>3 Fitzgerald Ave</td><td><span class="lt">LT</span></td><td>$850</td><td><span class="badge bg">✓</span></td></tr>
@@ -462,7 +474,7 @@ textarea:focus{border-color:var(--text)}
         <tr><td>5 Cathedral Sq</td><td><span class="st">ST</span></td><td>$980</td><td><span class="badge bg">✓</span></td></tr>
         <tr><td>33 New Brighton Rd</td><td><span class="st">ST</span></td><td>$1,100</td><td><span class="badge bg">✓</span></td></tr>
         <tr><td>18 Sumner Rd</td><td><span class="st">ST</span></td><td>$1,350</td><td><span class="badge bg">✓</span></td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
     </div>
     <div class="card">
       <div class="card-head">NZ tax reminders</div>
@@ -506,21 +518,21 @@ textarea:focus{border-color:var(--text)}
         <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
       </div>
       <div class="section-label">Income</div>
-      <div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
         <tr><td>Rent received</td><td class="tr green">$2,817</td></tr>
         <tr><td>Late payment fee</td><td class="tr green">$0</td></tr>
         <tr style="font-weight:600"><td>Total income</td><td class="tr green">$2,817</td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <div class="section-label" style="margin-top:1rem">Expenses</div>
-      <div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
         <tr><td>Property management fee (8%)</td><td class="tr red">−$225</td></tr>
         <tr><td>Maintenance — drain clearing</td><td class="tr red">−$180</td></tr>
         <tr><td>Council rates (monthly share)</td><td class="tr red">−$145</td></tr>
         <tr><td>Insurance (monthly share)</td><td class="tr red">−$95</td></tr>
         <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">−$645</td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <hr class="divider">
-      <div class="table-wrap"><table><tbody><tr style="font-weight:600;font-size:14px"><td>Net to owner</td><td class="tr">$2,172</td></tr></tbody></table></div>
+      <div class="table-outer"><div class="table-wrap"><table><tbody><tr style="font-weight:600;font-size:14px"><td>Net to owner</td><td class="tr">$2,172</td></tr></tbody></table></div><div class="scroll-fade"></div></div>
       <div class="sum-grid">
         <div class="sum-box"><div class="sum-label">Gross rent</div><div class="sum-val">$2,817</div></div>
         <div class="sum-box"><div class="sum-label">Net to owner</div><div class="sum-val green">$2,172</div></div>
@@ -542,7 +554,7 @@ textarea:focus{border-color:var(--text)}
         <div><div class="stmt-title">Tenant rent ledger</div><div class="stmt-sub">K. Patel · 14 Bealey Ave · Jan – May 2026</div></div>
         <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Description</th><th class="tr">Debit</th><th class="tr">Credit</th><th class="tr">Balance</th></tr></thead><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Description</th><th class="tr">Debit</th><th class="tr">Credit</th><th class="tr">Balance</th></tr></thead><tbody>
         <tr><td>1 Jan</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
         <tr><td>3 Jan</td><td>Payment received</td><td class="tr">—</td><td class="tr green">$550</td><td class="tr green">$0</td></tr>
         <tr><td>1 Feb</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
@@ -555,13 +567,13 @@ textarea:focus{border-color:var(--text)}
         <tr><td>8 May</td><td>Partial payment</td><td class="tr">—</td><td class="tr green">$200</td><td class="tr">$350</td></tr>
         <tr><td>1 Jun</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr red">$900</td></tr>
         <tr><td>25 May</td><td>Partial payment</td><td class="tr">—</td><td class="tr green">$200</td><td class="tr red">$700</td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <hr class="divider">
-      <div class="table-wrap"><table><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><tbody>
         <tr><td style="color:var(--text2)">Total charged</td><td class="tr">$3,300</td></tr>
         <tr><td style="color:var(--text2)">Total paid</td><td class="tr green">$2,600</td></tr>
         <tr style="font-weight:600"><td>Outstanding balance</td><td class="tr red">$700</td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <div class="footer-note">Rent ledger issued under Residential Tenancies Act 1986. Bond of $2,200 lodged with Tenancy Services NZ — Ref: TS-2025-XXXX.</div>
     </div>
   </div>
@@ -591,14 +603,14 @@ textarea:focus{border-color:var(--text)}
         <tr style="font-weight:600"><td>Total</td><td class="tr">$336,940</td><td class="tr red">$89,580</td><td class="tr green">$247,360</td><td class="tr">5.6%</td></tr>
       </tbody></table>
       <div class="section-label" style="margin-top:1rem">Expense breakdown</div>
-      <div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th><th class="tr">% of total</th></tr></thead><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th><th class="tr">% of total</th></tr></thead><tbody>
         <tr><td>Management fees</td><td class="tr">$26,955</td><td class="tr muted">30.1%</td></tr>
         <tr><td>Maintenance & repairs</td><td class="tr">$31,420</td><td class="tr muted">35.1%</td></tr>
         <tr><td>Insurance</td><td class="tr">$11,200</td><td class="tr muted">12.5%</td></tr>
         <tr><td>Council rates</td><td class="tr">$14,300</td><td class="tr muted">16.0%</td></tr>
         <tr><td>Accounting / legal</td><td class="tr">$5,705</td><td class="tr muted">6.3%</td></tr>
         <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">$89,580</td><td class="tr"></td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <div class="sum-grid">
         <div class="sum-box"><div class="sum-label">Gross rent (FY)</div><div class="sum-val">$336,940</div></div>
         <div class="sum-box"><div class="sum-label">Net income (FY)</div><div class="sum-val green">$247,360</div></div>
@@ -621,12 +633,12 @@ textarea:focus{border-color:var(--text)}
         <div><div class="stmt-title">Arrears & outstanding balance notice</div><div class="stmt-sub">K. Patel · 14 Bealey Ave · Issued 25 May 2026</div></div>
         <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Detail</th><th class="tr">Amount</th></tr></thead><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Detail</th><th class="tr">Amount</th></tr></thead><tbody>
         <tr><td>Weekly rent</td><td class="tr">$550.00</td></tr>
         <tr><td>Rent paid to date</td><td class="tr green">$2,600.00</td></tr>
         <tr><td>Rent charged to date</td><td class="tr">$3,300.00</td></tr>
         <tr style="font-weight:600"><td>Outstanding balance</td><td class="tr red">$700.00</td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <div class="notice-box">
         <div class="notice-title">⚠️ Formal notice of rent arrears</div>
         <div class="notice-body">
@@ -637,12 +649,12 @@ textarea:focus{border-color:var(--text)}
         </div>
       </div>
       <hr class="divider">
-      <div class="table-wrap"><table><tbody>
+      <div class="table-outer"><div class="table-wrap"><table><tbody>
         <tr><td style="color:var(--text2)">Landlord / agent</td><td class="tr muted">ProManage NZ</td></tr>
         <tr><td style="color:var(--text2)">Bond reference</td><td class="tr muted">TS-2025-XXXX (Tenancy Services)</td></tr>
         <tr><td style="color:var(--text2)">Notice issued</td><td class="tr muted">25 May 2026</td></tr>
         <tr style="font-weight:600"><td>Payment due by</td><td class="tr red">8 June 2026</td></tr>
-      </tbody></table></div>
+      </tbody></table></div><div class="scroll-fade"></div></div>
       <div class="footer-note">Issued under Residential Tenancies Act 1986 (NZ). Tenants may seek free advice from Tenancy Services (0800 836 262) or Community Law Centre. Landlords must not take retaliatory action against tenants exercising legal rights.</div>
     </div>
   </div>
@@ -676,12 +688,12 @@ textarea:focus{border-color:var(--text)}
   </div>
   <div class="card">
     <div class="card-head">2025–2026 NZ law changes</div>
-    <div class="table-wrap"><table><thead><tr><th>Change</th><th>Impact</th><th>Action needed</th></tr></thead><tbody>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Change</th><th>Impact</th><th>Action needed</th></tr></thead><tbody>
       <tr><td>Granny flat ≤70m² — no consent (2026)</td><td>Portfolio expansion opportunity</td><td><span class="badge bb">Review suitable sites</span></td></tr>
       <tr><td>NPS-UD / Plan Change 14 — intensification (Chch)</td><td>Increased density allowed in residential zones</td><td><span class="badge bb">Check each site's zoning</span></td></tr>
       <tr><td>Healthy Homes — all private rentals must comply</td><td>Penalties up to $7,200 per breach</td><td><span class="badge br">2 properties overdue</span></td></tr>
       <tr><td>Interest deductibility phased return</td><td>Improved cash flow for rental properties</td><td><span class="badge bg">Confirm with accountant</span></td></tr>
-    </tbody></table></div>
+    </tbody></table></div><div class="scroll-fade"></div></div>
   </div>
 </div>
 
@@ -697,6 +709,9 @@ function nav(id,el){
   if(el)el.classList.add('active');
   document.getElementById('topbar-title').textContent=pages[id]||id;
   if(window.innerWidth<=768) toggleSidebar(false);
+  if(id==='inspections') populateInspectionPropertyDropdown();
+  if(id==='maintenance') populateMaintenancePropertyDropdown();
+  if(id==='dashboard') renderDashboard();
 }
 function toggleSidebar(force){
   const sidebar=document.getElementById('sidebar');
@@ -782,6 +797,9 @@ async function doLogin(){
   updatePropSyncBanner();
   renderTenantsList();
   updateTenantSyncBanner();
+  renderMaintenanceList();
+  updateMaintSyncBanner();
+  renderDashboard();
 }
 
 async function doLogout(){
@@ -794,7 +812,7 @@ sb.auth.onAuthStateChange((event)=>{
   if(event==='SIGNED_OUT') checkSession();
 });
 
-const DB_NAME='promanageDB', DB_VERSION=3;
+const DB_NAME='promanageDB', DB_VERSION=4;
 let dbInstance=null;
 
 function openDB(){
@@ -811,6 +829,9 @@ function openDB(){
       }
       if(!db.objectStoreNames.contains('tenants')){
         db.createObjectStore('tenants',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('maintenance')){
+        db.createObjectStore('maintenance',{keyPath:'id'});
       }
     };
     req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
@@ -892,11 +913,22 @@ function handlePhotoCapture(event,areaId){
   });
 }
 
+async function populateInspectionPropertyDropdown(){
+  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const select=document.getElementById('insp-property');
+  if(!props.length){
+    select.innerHTML='<option value="">— Add a property first —</option>';
+    return;
+  }
+  select.innerHTML=props.map(p=>`<option>${p.address}</option>`).join('');
+}
+
 function resetInspectionForm(){
   document.getElementById('insp-areas').innerHTML='';
   document.getElementById('insp-date').value=todayStr();
   areaCounter=0;
   DEFAULT_AREAS.forEach(a=>addInspectionArea(a));
+  populateInspectionPropertyDropdown();
 }
 
 async function saveInspection(){
@@ -1116,8 +1148,8 @@ async function updateSyncBanner(){
   pendingText.textContent=pendingCount+' pending sync';
 }
 
-window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();updatePropSyncBanner();syncPendingProperties();updateTenantSyncBanner();syncPendingTenants();});
-window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();});
+window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();updatePropSyncBanner();syncPendingProperties();updateTenantSyncBanner();syncPendingTenants();updateMaintSyncBanner();syncPendingMaintenance();});
+window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
@@ -1129,6 +1161,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   updatePropSyncBanner();
   renderTenantsList();
   updateTenantSyncBanner();
+  renderMaintenanceList();
+  updateMaintSyncBanner();
+  renderDashboard();
 });
 
 /* ============================================================
@@ -1467,6 +1502,238 @@ async function updateTenantSyncBanner(){
   banner.classList.toggle('sync-offline',!online);
   statusText.textContent=online?'Online':'Offline';
   pendingText.textContent=pendingCount+' pending sync';
+}
+
+/* ============================================================
+   MAINTENANCE MODULE — same offline-first pattern as the others.
+   ============================================================ */
+
+async function populateMaintenancePropertyDropdown(){
+  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const select=document.getElementById('maint-property');
+  if(!props.length){
+    select.innerHTML='<option value="">— Add a property first —</option>';
+    return;
+  }
+  select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+}
+
+function toggleMaintForm(show){
+  document.getElementById('maint-form-card').style.display=show?'block':'none';
+  if(show){
+    document.getElementById('maint-issue').value='';
+    document.getElementById('maint-assigned').value='';
+    document.getElementById('maint-date').value=todayStr();
+    populateMaintenancePropertyDropdown();
+  }
+}
+
+async function saveMaintenance(){
+  const issue=document.getElementById('maint-issue').value.trim();
+  const propertyId=document.getElementById('maint-property').value;
+  if(!issue){ alert('Issue description is required.'); return; }
+  if(!propertyId){ alert('Select a property — add one first if the list is empty.'); return; }
+  const propertySelect=document.getElementById('maint-property');
+  const propertyAddress=propertySelect.options[propertySelect.selectedIndex].textContent;
+  const record={
+    id:'maint_'+Date.now(),
+    propertyId,
+    propertyAddress,
+    issue,
+    reportedDate:document.getElementById('maint-date').value||todayStr(),
+    priority:document.getElementById('maint-priority').value,
+    assignedTo:document.getElementById('maint-assigned').value||'—',
+    status:document.getElementById('maint-status').value,
+    synced:false,
+    pendingDelete:false,
+    createdAt:new Date().toISOString()
+  };
+  await dbPut('maintenance',record);
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+  toggleMaintForm(false);
+  if(navigator.onLine) syncPendingMaintenance();
+}
+
+async function renderMaintenanceList(){
+  const all=(await dbGetAll('maintenance')).filter(m=>!m.pendingDelete);
+  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const tbody=document.getElementById('maint-list');
+  document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr>';
+    return;
+  }
+  const priorityDot=p=>{
+    const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+  };
+  const statusBadge=s=>{
+    const map={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
+    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+  };
+  tbody.innerHTML=all.map(m=>`
+    <tr>
+      <td>${m.propertyAddress}</td>
+      <td>${m.issue}</td>
+      <td>${m.reportedDate}</td>
+      <td>${priorityDot(m.priority)}</td>
+      <td>${m.assignedTo}</td>
+      <td>${statusBadge(m.status)}</td>
+      <td>${m.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
+      <td><button class="btn btn-sm" onclick="deleteMaintenance('${m.id}')">Delete</button></td>
+    </tr>`).join('');
+}
+
+async function deleteMaintenance(id){
+  if(!confirm('Delete this maintenance request? This cannot be undone.'))return;
+  const all=await dbGetAll('maintenance');
+  const record=all.find(m=>m.id===id);
+  if(!record)return;
+  if(record.synced && navigator.onLine){
+    const token=await authHeader();
+    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{});
+    await dbDelete('maintenance',id);
+  }else if(record.synced && !navigator.onLine){
+    record.pendingDelete=true;
+    record.synced=false;
+    await dbPut('maintenance',record);
+  }else{
+    await dbDelete('maintenance',id);
+  }
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+}
+
+async function pushMaintenanceToBackend(record){
+  if(!CONFIG.SUPABASE_URL) return true;
+  const token=await authHeader();
+  try{
+    if(record.pendingDelete){
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${record.id}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      return res.ok ? 'deleted' : false;
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify({
+        id:record.id,property_id:record.propertyId,property_address:record.propertyAddress,
+        issue:record.issue,reported_date:record.reportedDate,priority:record.priority,
+        assigned_to:record.assignedTo,status:record.status,created_at:record.createdAt
+      })
+    });
+    return res.ok;
+  }catch(err){
+    console.log('Maintenance sync failed, will retry later:',err);
+    return false;
+  }
+}
+
+async function syncPendingMaintenance(){
+  if(!navigator.onLine){
+    alert('Still offline — will sync automatically once connection returns.');
+    return;
+  }
+  const all=await dbGetAll('maintenance');
+  const pending=all.filter(m=>!m.synced);
+  for(const record of pending){
+    const result=await pushMaintenanceToBackend(record);
+    if(result==='deleted'){
+      await dbDelete('maintenance',record.id);
+    }else if(result){
+      record.synced=true;
+      await dbPut('maintenance',record);
+    }
+  }
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+}
+
+async function updateMaintSyncBanner(){
+  const banner=document.getElementById('sync-banner-maint');
+  const statusText=document.getElementById('sync-status-text-maint');
+  const pendingText=document.getElementById('sync-pending-text-maint');
+  const all=await dbGetAll('maintenance').catch(()=>[]);
+  const pendingCount=all.filter(m=>!m.synced).length;
+  const online=navigator.onLine;
+  banner.classList.toggle('sync-online',online);
+  banner.classList.toggle('sync-offline',!online);
+  statusText.textContent=online?'Online':'Offline';
+  pendingText.textContent=pendingCount+' pending sync';
+}
+
+/* ============================================================
+   DASHBOARD — computed live from real Properties/Tenants/
+   Maintenance data (no separate storage of its own).
+   ============================================================ */
+
+async function renderDashboard(){
+  const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
+  const tenants=(await dbGetAll('tenants').catch(()=>[])).filter(t=>!t.pendingDelete);
+  const maintenance=(await dbGetAll('maintenance').catch(()=>[])).filter(m=>!m.pendingDelete);
+
+  // Metrics
+  const ltCount=properties.filter(p=>p.tenancy==='Long-term').length;
+  const stCount=properties.filter(p=>p.tenancy==='Short-term').length;
+  document.getElementById('dm-properties').textContent=properties.length;
+  document.getElementById('dm-properties-sub').textContent=properties.length?`${ltCount} long-term · ${stCount} short-term`:'No properties added yet';
+
+  const occupied=properties.filter(p=>p.status==='Occupied'||p.status==='Booked').length;
+  const occPct=properties.length?Math.round((occupied/properties.length)*100):0;
+  document.getElementById('dm-occupancy').textContent=properties.length?occPct+'%':'—';
+  document.getElementById('dm-occupancy-sub').textContent=properties.length?`${occupied} of ${properties.length} occupied`:'';
+
+  const monthlyRent=properties.reduce((sum,p)=>sum+(p.rentPerWeek||0),0)*52/12;
+  const outstanding=tenants.reduce((sum,t)=>sum+(t.arrearsAmount||0),0);
+  document.getElementById('dm-rent').textContent='$'+Math.round(monthlyRent).toLocaleString();
+  document.getElementById('dm-rent-sub').textContent=outstanding?`$${outstanding.toLocaleString()} outstanding`:'No arrears';
+
+  const openMaint=maintenance.filter(m=>m.status!=='Completed');
+  const urgentMaint=openMaint.filter(m=>m.priority==='Urgent');
+  document.getElementById('dm-maint').textContent=openMaint.length;
+  document.getElementById('dm-maint-sub').textContent=urgentMaint.length?`${urgentMaint.length} urgent`:'None urgent';
+
+  // Alerts — built from real compliance status + the one static NZ law note
+  const overdueProps=properties.filter(p=>p.complianceStatus==='Overdue');
+  const alertsEl=document.getElementById('dash-alerts');
+  let alertsHtml='';
+  if(overdueProps.length){
+    const names=overdueProps.map(p=>p.address).join(', ');
+    alertsHtml+=`<div class="alert alert-amber">⚠️ <div><strong>${overdueProps.length} compliance action${overdueProps.length>1?'s':''} due</strong> — ${names}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
+  }
+  alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.</div></div>`;
+  alertsEl.innerHTML=alertsHtml;
+
+  // Lease renewals due
+  const renewals=tenants.filter(t=>t.status==='Renewal due');
+  document.getElementById('dash-renewals').innerHTML=renewals.length
+    ? renewals.map(t=>`<tr><td>${t.propertyAddress}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
+    : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
+
+  // Rent arrears
+  const arrears=tenants.filter(t=>t.status==='Arrears');
+  document.getElementById('dash-arrears').innerHTML=arrears.length
+    ? arrears.map(t=>`<tr><td>${t.propertyAddress}</td><td>${t.tenantName}</td><td>$${t.arrearsAmount}</td></tr>`).join('')
+    : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr>';
+
+  // Urgent maintenance
+  document.getElementById('dash-maint').innerHTML=urgentMaint.length
+    ? urgentMaint.map(m=>{
+        const statusMap={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
+        return `<tr><td>${m.propertyAddress}</td><td>${m.issue}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${m.status}</span></td></tr>`;
+      }).join('')
+    : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr>';
 }
 
 

@@ -287,20 +287,40 @@ textarea:focus{border-color:var(--text)}
 
 <!-- PROPERTIES -->
 <div class="page" id="page-properties">
+  <div class="sync-banner sync-online" id="sync-banner-prop">
+    <span><span class="sync-dot"></span><span id="sync-status-text-prop">Online</span> · <span id="sync-pending-text-prop">0 pending sync</span></span>
+    <button class="btn btn-sm" onclick="syncPendingProperties()">🔄 Sync now</button>
+  </div>
+
+  <div class="card" id="prop-form-card" style="display:none">
+    <div class="card-head">New property</div>
+    <div class="card-body">
+      <div class="controls">
+        <div><label>Address</label><input type="text" id="prop-address" placeholder="e.g. 22 Papanui Rd"></div>
+        <div><label>Bedrooms</label><input type="number" id="prop-bed" style="width:80px" value="3"></div>
+        <div><label>Bathrooms</label><input type="number" id="prop-bath" style="width:80px" value="1"></div>
+        <div><label>Floor area (m²)</label><input type="number" id="prop-area" style="width:100px" value="100"></div>
+      </div>
+      <div class="controls">
+        <div><label>Tenancy</label><select id="prop-tenancy"><option>Long-term</option><option>Short-term</option></select></div>
+        <div><label>Rent / wk ($)</label><input type="number" id="prop-rent" style="width:100px" value="600"></div>
+        <div><label>Status</label><select id="prop-status"><option>Occupied</option><option>Vacant</option><option>Booked</option><option>Arrears</option></select></div>
+        <div><label>Compliance</label><select id="prop-compliance"><option>Current</option><option>Overdue</option></select></div>
+      </div>
+      <label>Notes</label>
+      <textarea id="prop-notes" placeholder="Optional notes..."></textarea>
+      <div style="display:flex;gap:8px;margin-top:.75rem">
+        <button class="btn btn-primary" onclick="saveProperty()">💾 Save property</button>
+        <button class="btn" onclick="togglePropForm(false)">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
-    <div class="card-head">All properties (10) <button class="btn btn-sm btn-primary">+ Add property</button></div>
-    <table><thead><tr><th>Address</th><th>Type</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Actions</th></tr></thead><tbody>
-      <tr><td><strong>22 Papanui Rd</strong><br><span style="font-size:11px;color:var(--text2)">3 bed · 1 bath · 120m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$650</td><td><span class="badge bg">Occupied</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">Statement</button></td></tr>
-      <tr><td><strong>14 Bealey Ave</strong><br><span style="font-size:11px;color:var(--text2)">2 bed · 1 bath · 90m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$550</td><td><span class="badge ba">Arrears</span></td><td><span class="badge br">⚠ Overdue</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('arrears'),50)">Notice</button></td></tr>
-      <tr><td><strong>3 Fitzgerald Ave</strong><br><span style="font-size:11px;color:var(--text2)">4 bed · 2 bath · 160m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$850</td><td><span class="badge bg">Occupied</span></td><td><span class="badge br">⚠ Overdue</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">Statement</button></td></tr>
-      <tr><td><strong>8 Riccarton Ave</strong><br><span style="font-size:11px;color:var(--text2)">2 bed · 1 bath · 85m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$520</td><td><span class="badge bg">Occupied</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">Statement</button></td></tr>
-      <tr><td><strong>45 Ilam Rd</strong><br><span style="font-size:11px;color:var(--text2)">3 bed · 2 bath · 130m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$700</td><td><span class="badge bg">Occupied</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">Statement</button></td></tr>
-      <tr><td><strong>7 Merivale Ln</strong><br><span style="font-size:11px;color:var(--text2)">2 bed · 1 bath · 95m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$600</td><td><span class="badge bg">Occupied</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">Statement</button></td></tr>
-      <tr><td><strong>12 Oxford Tce</strong><br><span style="font-size:11px;color:var(--text2)">2 bed · 1 bath · 80m²</span></td><td>Residential</td><td><span class="lt">Long-term</span></td><td>$580</td><td><span class="badge bb">Vacant</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">Ledger</button></td></tr>
-      <tr><td><strong>5 Cathedral Sq</strong><br><span style="font-size:11px;color:var(--text2)">Studio · CBD · 45m²</span></td><td>Residential</td><td><span class="st">Short-term</span></td><td>$980</td><td><span class="badge bg">Booked</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('annual'),50)">Summary</button></td></tr>
-      <tr><td><strong>33 New Brighton Rd</strong><br><span style="font-size:11px;color:var(--text2)">3 bed · 2 bath · 140m²</span></td><td>Residential</td><td><span class="st">Short-term</span></td><td>$1,100</td><td><span class="badge bg">Booked</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('annual'),50)">Summary</button></td></tr>
-      <tr><td><strong>18 Sumner Rd</strong><br><span style="font-size:11px;color:var(--text2)">4 bed · 2 bath · 170m²</span></td><td>Residential</td><td><span class="st">Short-term</span></td><td>$1,350</td><td><span class="badge bg">Booked</span></td><td><span class="badge bg">✓ Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('annual'),50)">Summary</button></td></tr>
-    </tbody></table>
+    <div class="card-head">All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
+    <table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th><th>Actions</th></tr></thead>
+      <tbody id="prop-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
+    </table>
   </div>
 </div>
 
@@ -725,6 +745,8 @@ async function doLogin(){
   showApp();
   renderInspectionList();
   updateSyncBanner();
+  renderPropertiesList();
+  updatePropSyncBanner();
 }
 
 async function doLogout(){
@@ -737,7 +759,7 @@ sb.auth.onAuthStateChange((event)=>{
   if(event==='SIGNED_OUT') checkSession();
 });
 
-const DB_NAME='promanageDB', DB_VERSION=1;
+const DB_NAME='promanageDB', DB_VERSION=2;
 let dbInstance=null;
 
 function openDB(){
@@ -748,6 +770,9 @@ function openDB(){
       const db=e.target.result;
       if(!db.objectStoreNames.contains('inspections')){
         db.createObjectStore('inspections',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('properties')){
+        db.createObjectStore('properties',{keyPath:'id'});
       }
     };
     req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
@@ -1007,8 +1032,8 @@ async function updateSyncBanner(){
   pendingText.textContent=pendingCount+' pending sync';
 }
 
-window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();});
-window.addEventListener('offline',()=>updateSyncBanner());
+window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();updatePropSyncBanner();syncPendingProperties();});
+window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
@@ -1016,9 +1041,169 @@ document.addEventListener('DOMContentLoaded',()=>{
   resetInspectionForm();
   renderInspectionList();
   updateSyncBanner();
+  renderPropertiesList();
+  updatePropSyncBanner();
 });
 
-// --- Service worker registration (app-shell offline caching) ---
+/* ============================================================
+   PROPERTIES MODULE — same offline-first pattern as Inspections,
+   with one addition: deletes also sync (a real DELETE call),
+   unlike Inspections where deletes are currently local-only.
+   ============================================================ */
+
+function togglePropForm(show){
+  document.getElementById('prop-form-card').style.display=show?'block':'none';
+  if(show){
+    document.getElementById('prop-address').value='';
+    document.getElementById('prop-notes').value='';
+  }
+}
+
+async function saveProperty(){
+  const address=document.getElementById('prop-address').value.trim();
+  if(!address){ alert('Address is required.'); return; }
+  const record={
+    id:'prop_'+Date.now(),
+    address,
+    bedrooms:Number(document.getElementById('prop-bed').value)||0,
+    bathrooms:Number(document.getElementById('prop-bath').value)||0,
+    floorArea:Number(document.getElementById('prop-area').value)||0,
+    tenancy:document.getElementById('prop-tenancy').value,
+    rentPerWeek:Number(document.getElementById('prop-rent').value)||0,
+    status:document.getElementById('prop-status').value,
+    complianceStatus:document.getElementById('prop-compliance').value,
+    notes:document.getElementById('prop-notes').value,
+    synced:false,
+    pendingDelete:false,
+    createdAt:new Date().toISOString()
+  };
+  await dbPut('properties',record);
+  await renderPropertiesList();
+  updatePropSyncBanner();
+  togglePropForm(false);
+  if(navigator.onLine) syncPendingProperties();
+}
+
+async function renderPropertiesList(){
+  const all=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const tbody=document.getElementById('prop-list');
+  document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr>';
+    return;
+  }
+  const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
+  const statusBadge=s=>{
+    const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
+    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+  };
+  const compBadge=c=>c==='Current'?'<span class="badge bg">✓ Current</span>':'<span class="badge br">⚠ Overdue</span>';
+  tbody.innerHTML=all.map(p=>`
+    <tr>
+      <td><strong>${p.address}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m²</span></td>
+      <td>${tenancyBadge(p.tenancy)}</td>
+      <td>$${p.rentPerWeek}</td>
+      <td>${statusBadge(p.status)}</td>
+      <td>${compBadge(p.complianceStatus)}</td>
+      <td>${p.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
+      <td><button class="btn btn-sm" onclick="deleteProperty('${p.id}')">Delete</button></td>
+    </tr>`).join('');
+}
+
+async function deleteProperty(id){
+  if(!confirm('Delete this property? This cannot be undone.'))return;
+  const all=await dbGetAll('properties');
+  const record=all.find(p=>p.id===id);
+  if(!record)return;
+  if(record.synced && navigator.onLine){
+    // Already in Supabase — delete remotely now
+    const token=await authHeader();
+    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{});
+    await dbDelete('properties',id);
+  }else if(record.synced && !navigator.onLine){
+    // Synced but offline right now — mark for remote delete on next sync
+    record.pendingDelete=true;
+    record.synced=false;
+    await dbPut('properties',record);
+  }else{
+    // Never synced yet — safe to just remove locally
+    await dbDelete('properties',id);
+  }
+  await renderPropertiesList();
+  updatePropSyncBanner();
+}
+
+async function pushPropertyToBackend(record){
+  if(!CONFIG.SUPABASE_URL) return true;
+  const token=await authHeader();
+  try{
+    if(record.pendingDelete){
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${record.id}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      return res.ok ? 'deleted' : false;
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify({
+        id:record.id,address:record.address,bedrooms:record.bedrooms,bathrooms:record.bathrooms,
+        floor_area:record.floorArea,tenancy:record.tenancy,rent_per_week:record.rentPerWeek,
+        status:record.status,compliance_status:record.complianceStatus,notes:record.notes,
+        created_at:record.createdAt
+      })
+    });
+    return res.ok;
+  }catch(err){
+    console.log('Property sync failed, will retry later:',err);
+    return false;
+  }
+}
+
+async function syncPendingProperties(){
+  if(!navigator.onLine){
+    alert('Still offline — will sync automatically once connection returns.');
+    return;
+  }
+  const all=await dbGetAll('properties');
+  const pending=all.filter(p=>!p.synced);
+  for(const record of pending){
+    const result=await pushPropertyToBackend(record);
+    if(result==='deleted'){
+      await dbDelete('properties',record.id);
+    }else if(result){
+      record.synced=true;
+      await dbPut('properties',record);
+    }
+  }
+  await renderPropertiesList();
+  updatePropSyncBanner();
+}
+
+async function updatePropSyncBanner(){
+  const banner=document.getElementById('sync-banner-prop');
+  const statusText=document.getElementById('sync-status-text-prop');
+  const pendingText=document.getElementById('sync-pending-text-prop');
+  const all=await dbGetAll('properties').catch(()=>[]);
+  const pendingCount=all.filter(p=>!p.synced).length;
+  const online=navigator.onLine;
+  banner.classList.toggle('sync-online',online);
+  banner.classList.toggle('sync-offline',!online);
+  statusText.textContent=online?'Online':'Offline';
+  pendingText.textContent=pendingCount+' pending sync';
+}
+
+
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>{
     navigator.serviceWorker.register('sw.js').catch(err=>console.log('SW registration failed:',err));

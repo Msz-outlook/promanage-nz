@@ -326,16 +326,43 @@ textarea:focus{border-color:var(--text)}
 
 <!-- TENANTS -->
 <div class="page" id="page-tenants">
+  <div class="sync-banner sync-online" id="sync-banner-tenant">
+    <span><span class="sync-dot"></span><span id="sync-status-text-tenant">Online</span> · <span id="sync-pending-text-tenant">0 pending sync</span></span>
+    <button class="btn btn-sm" onclick="syncPendingTenants()">🔄 Sync now</button>
+  </div>
+
+  <div class="card" id="tenant-form-card" style="display:none">
+    <div class="card-head">New tenant</div>
+    <div class="card-body">
+      <div class="controls">
+        <div><label>Tenant name</label><input type="text" id="tenant-name" placeholder="e.g. Nguyen family"></div>
+        <div><label>Property</label><select id="tenant-property"><option value="">— No properties yet —</option></select></div>
+      </div>
+      <div class="controls">
+        <div><label>Lease start</label><input type="text" id="tenant-start" placeholder="e.g. Jun 2026"></div>
+        <div><label>Lease end</label><input type="text" id="tenant-end" placeholder="e.g. Jun 2027"></div>
+        <div><label>Rent / wk ($)</label><input type="number" id="tenant-rent" style="width:100px" value="600"></div>
+      </div>
+      <div class="controls">
+        <div><label>Status</label><select id="tenant-status" onchange="document.getElementById('tenant-arrears-wrap').style.display=this.value==='Arrears'?'block':'none'"><option>Current</option><option>Renewal due</option><option>Arrears</option><option>Vacated</option></select></div>
+        <div id="tenant-arrears-wrap" style="display:none"><label>Arrears amount ($)</label><input type="number" id="tenant-arrears" style="width:100px" value="0"></div>
+        <div><label>Bond lodged?</label><select id="tenant-bond"><option>Yes</option><option>No</option></select></div>
+        <div><label>Bond reference</label><input type="text" id="tenant-bond-ref" placeholder="TS-2026-XXXX"></div>
+      </div>
+      <label>Notes</label>
+      <textarea id="tenant-notes" placeholder="Optional notes..."></textarea>
+      <div style="display:flex;gap:8px;margin-top:.75rem">
+        <button class="btn btn-primary" onclick="saveTenant()">💾 Save tenant</button>
+        <button class="btn" onclick="toggleTenantForm(false)">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
-    <div class="card-head">Active tenancies <button class="btn btn-sm btn-primary">+ Add tenant</button></div>
-    <table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      <tr><td><strong>Nguyen family</strong></td><td>22 Papanui Rd</td><td>Jun 2024</td><td>Jun 2026</td><td><span class="badge bg">✓ TS</span></td><td>$650</td><td><span class="badge ba">Renewal due</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">Ledger</button></td></tr>
-      <tr><td><strong>K. Patel</strong></td><td>14 Bealey Ave</td><td>Jan 2025</td><td>Jan 2027</td><td><span class="badge bg">✓ TS</span></td><td>$550</td><td><span class="badge br">Arrears $700</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('arrears'),50)">Notice</button></td></tr>
-      <tr><td><strong>Chen household</strong></td><td>3 Fitzgerald Ave</td><td>Mar 2024</td><td>Mar 2026</td><td><span class="badge bg">✓ TS</span></td><td>$850</td><td><span class="badge bg">Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">Ledger</button></td></tr>
-      <tr><td><strong>T. Sharma</strong></td><td>8 Riccarton Ave</td><td>Jul 2024</td><td>Jul 2026</td><td><span class="badge bg">✓ TS</span></td><td>$520</td><td><span class="badge ba">Renewal due</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">Ledger</button></td></tr>
-      <tr><td><strong>J. & M. Wilson</strong></td><td>45 Ilam Rd</td><td>Sep 2023</td><td>Sep 2026</td><td><span class="badge bg">✓ TS</span></td><td>$700</td><td><span class="badge bg">Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">Ledger</button></td></tr>
-      <tr><td><strong>A. Kumar</strong></td><td>7 Merivale Ln</td><td>Nov 2024</td><td>Nov 2026</td><td><span class="badge bg">✓ TS</span></td><td>$600</td><td><span class="badge bg">Current</span></td><td><button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">Ledger</button></td></tr>
-    </tbody></table>
+    <div class="card-head">Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
+    <table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
+      <tbody id="tenant-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
+    </table>
   </div>
   <div class="card">
     <div class="card-head">NZ RTA key rules</div>
@@ -747,6 +774,8 @@ async function doLogin(){
   updateSyncBanner();
   renderPropertiesList();
   updatePropSyncBanner();
+  renderTenantsList();
+  updateTenantSyncBanner();
 }
 
 async function doLogout(){
@@ -759,7 +788,7 @@ sb.auth.onAuthStateChange((event)=>{
   if(event==='SIGNED_OUT') checkSession();
 });
 
-const DB_NAME='promanageDB', DB_VERSION=2;
+const DB_NAME='promanageDB', DB_VERSION=3;
 let dbInstance=null;
 
 function openDB(){
@@ -773,6 +802,9 @@ function openDB(){
       }
       if(!db.objectStoreNames.contains('properties')){
         db.createObjectStore('properties',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('tenants')){
+        db.createObjectStore('tenants',{keyPath:'id'});
       }
     };
     req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
@@ -1032,8 +1064,8 @@ async function updateSyncBanner(){
   pendingText.textContent=pendingCount+' pending sync';
 }
 
-window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();updatePropSyncBanner();syncPendingProperties();});
-window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();});
+window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();updatePropSyncBanner();syncPendingProperties();updateTenantSyncBanner();syncPendingTenants();});
+window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
@@ -1043,6 +1075,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   updateSyncBanner();
   renderPropertiesList();
   updatePropSyncBanner();
+  renderTenantsList();
+  updateTenantSyncBanner();
 });
 
 /* ============================================================
@@ -1196,6 +1230,186 @@ async function updatePropSyncBanner(){
   const pendingText=document.getElementById('sync-pending-text-prop');
   const all=await dbGetAll('properties').catch(()=>[]);
   const pendingCount=all.filter(p=>!p.synced).length;
+  const online=navigator.onLine;
+  banner.classList.toggle('sync-online',online);
+  banner.classList.toggle('sync-offline',!online);
+  statusText.textContent=online?'Online':'Offline';
+  pendingText.textContent=pendingCount+' pending sync';
+}
+
+/* ============================================================
+   TENANTS MODULE — same offline-first pattern as Properties.
+   The property dropdown is populated from the real Properties
+   store (not free text), so tenants stay linked to an actual
+   property record rather than a typed address that could drift.
+   ============================================================ */
+
+async function populateTenantPropertyDropdown(){
+  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const select=document.getElementById('tenant-property');
+  if(!props.length){
+    select.innerHTML='<option value="">— Add a property first —</option>';
+    return;
+  }
+  select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+}
+
+function toggleTenantForm(show){
+  document.getElementById('tenant-form-card').style.display=show?'block':'none';
+  if(show){
+    document.getElementById('tenant-name').value='';
+    document.getElementById('tenant-start').value='';
+    document.getElementById('tenant-end').value='';
+    document.getElementById('tenant-notes').value='';
+    document.getElementById('tenant-arrears-wrap').style.display='none';
+    populateTenantPropertyDropdown();
+  }
+}
+
+async function saveTenant(){
+  const name=document.getElementById('tenant-name').value.trim();
+  const propertyId=document.getElementById('tenant-property').value;
+  if(!name){ alert('Tenant name is required.'); return; }
+  if(!propertyId){ alert('Select a property — add one first if the list is empty.'); return; }
+  const propertySelect=document.getElementById('tenant-property');
+  const propertyAddress=propertySelect.options[propertySelect.selectedIndex].textContent;
+  const status=document.getElementById('tenant-status').value;
+  const record={
+    id:'tenant_'+Date.now(),
+    tenantName:name,
+    propertyId,
+    propertyAddress,
+    leaseStart:document.getElementById('tenant-start').value,
+    leaseEnd:document.getElementById('tenant-end').value,
+    bondLodged:document.getElementById('tenant-bond').value==='Yes',
+    bondReference:document.getElementById('tenant-bond-ref').value,
+    rentPerWeek:Number(document.getElementById('tenant-rent').value)||0,
+    status,
+    arrearsAmount:status==='Arrears'?(Number(document.getElementById('tenant-arrears').value)||0):0,
+    notes:document.getElementById('tenant-notes').value,
+    synced:false,
+    pendingDelete:false,
+    createdAt:new Date().toISOString()
+  };
+  await dbPut('tenants',record);
+  await renderTenantsList();
+  updateTenantSyncBanner();
+  toggleTenantForm(false);
+  if(navigator.onLine) syncPendingTenants();
+}
+
+async function renderTenantsList(){
+  const all=(await dbGetAll('tenants')).filter(t=>!t.pendingDelete);
+  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const tbody=document.getElementById('tenant-list');
+  document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr>';
+    return;
+  }
+  const statusBadge=(t)=>{
+    if(t.status==='Arrears') return `<span class="badge br">Arrears $${t.arrearsAmount}</span>`;
+    if(t.status==='Renewal due') return '<span class="badge ba">Renewal due</span>';
+    if(t.status==='Vacated') return '<span class="badge bgr">Vacated</span>';
+    return '<span class="badge bg">Current</span>';
+  };
+  tbody.innerHTML=all.map(t=>`
+    <tr>
+      <td><strong>${t.tenantName}</strong></td>
+      <td>${t.propertyAddress}</td>
+      <td>${t.leaseStart||'—'}</td>
+      <td>${t.leaseEnd||'—'}</td>
+      <td>${t.bondLodged?'<span class="badge bg">✓ TS</span>':'<span class="badge ba">Not lodged</span>'}</td>
+      <td>$${t.rentPerWeek}</td>
+      <td>${statusBadge(t)}</td>
+      <td>${t.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
+      <td><button class="btn btn-sm" onclick="deleteTenant('${t.id}')">Delete</button></td>
+    </tr>`).join('');
+}
+
+async function deleteTenant(id){
+  if(!confirm('Delete this tenant record? This cannot be undone.'))return;
+  const all=await dbGetAll('tenants');
+  const record=all.find(t=>t.id===id);
+  if(!record)return;
+  if(record.synced && navigator.onLine){
+    const token=await authHeader();
+    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{});
+    await dbDelete('tenants',id);
+  }else if(record.synced && !navigator.onLine){
+    record.pendingDelete=true;
+    record.synced=false;
+    await dbPut('tenants',record);
+  }else{
+    await dbDelete('tenants',id);
+  }
+  await renderTenantsList();
+  updateTenantSyncBanner();
+}
+
+async function pushTenantToBackend(record){
+  if(!CONFIG.SUPABASE_URL) return true;
+  const token=await authHeader();
+  try{
+    if(record.pendingDelete){
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${record.id}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      return res.ok ? 'deleted' : false;
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify({
+        id:record.id,tenant_name:record.tenantName,property_id:record.propertyId,
+        property_address:record.propertyAddress,lease_start:record.leaseStart,lease_end:record.leaseEnd,
+        bond_lodged:record.bondLodged,bond_reference:record.bondReference,rent_per_week:record.rentPerWeek,
+        status:record.status,arrears_amount:record.arrearsAmount,notes:record.notes,
+        created_at:record.createdAt
+      })
+    });
+    return res.ok;
+  }catch(err){
+    console.log('Tenant sync failed, will retry later:',err);
+    return false;
+  }
+}
+
+async function syncPendingTenants(){
+  if(!navigator.onLine){
+    alert('Still offline — will sync automatically once connection returns.');
+    return;
+  }
+  const all=await dbGetAll('tenants');
+  const pending=all.filter(t=>!t.synced);
+  for(const record of pending){
+    const result=await pushTenantToBackend(record);
+    if(result==='deleted'){
+      await dbDelete('tenants',record.id);
+    }else if(result){
+      record.synced=true;
+      await dbPut('tenants',record);
+    }
+  }
+  await renderTenantsList();
+  updateTenantSyncBanner();
+}
+
+async function updateTenantSyncBanner(){
+  const banner=document.getElementById('sync-banner-tenant');
+  const statusText=document.getElementById('sync-status-text-tenant');
+  const pendingText=document.getElementById('sync-pending-text-tenant');
+  const all=await dbGetAll('tenants').catch(()=>[]);
+  const pendingCount=all.filter(t=>!t.synced).length;
   const online=navigator.onLine;
   banner.classList.toggle('sync-online',online);
   banner.classList.toggle('sync-offline',!online);

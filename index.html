@@ -456,42 +456,59 @@ textarea:focus{border-color:var(--text)}
 
 <!-- FINANCIALS -->
 <div class="page" id="page-financials">
+  <div class="alert alert-blue">ℹ️ <div><strong>Live from Xero</strong> — snapshot as of 15 Jul 2026, split by property (your only 2 contacts in Xero). Ask Claude in chat to "refresh Xero numbers" for an updated pull.</div></div>
   <div class="metrics">
-    <div class="metric"><div class="metric-label">Gross monthly rent</div><div class="metric-val">$28,400</div></div>
-    <div class="metric"><div class="metric-label">Outstanding</div><div class="metric-val" style="color:var(--red-text)">$700</div></div>
-    <div class="metric"><div class="metric-label">Maintenance YTD</div><div class="metric-val">$6,840</div></div>
-    <div class="metric"><div class="metric-label">Est. net yield</div><div class="metric-val">5.2%</div></div>
+    <div class="metric"><div class="metric-label">Total income (this period)</div><div class="metric-val">$11,290</div><div class="metric-sub">1 Apr – 15 Jul 2026</div></div>
+    <div class="metric"><div class="metric-label">Net profit</div><div class="metric-val" style="color:var(--green-text)">$3,789</div><div class="metric-sub">Expenses: $7,501</div></div>
+    <div class="metric"><div class="metric-label">Total overdue</div><div class="metric-val" style="color:var(--red-text)">$29,067</div><div class="metric-sub">10 invoices, all overdue</div></div>
+    <div class="metric"><div class="metric-label">Cash balance</div><div class="metric-val">$0</div><div class="metric-sub">$7,864 owed by you</div></div>
   </div>
   <div class="two-col">
     <div class="card">
-      <div class="card-head">Rent by property</div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Type</th><th>$/wk</th><th>Collected</th></tr></thead><tbody>
-        <tr><td>22 Papanui Rd</td><td><span class="lt">LT</span></td><td>$650</td><td><span class="badge bg">✓</span></td></tr>
-        <tr><td>14 Bealey Ave</td><td><span class="lt">LT</span></td><td>$550</td><td><span class="badge br">Arrears</span></td></tr>
-        <tr><td>3 Fitzgerald Ave</td><td><span class="lt">LT</span></td><td>$850</td><td><span class="badge bg">✓</span></td></tr>
-        <tr><td>8 Riccarton Ave</td><td><span class="lt">LT</span></td><td>$520</td><td><span class="badge bg">✓</span></td></tr>
-        <tr><td>45 Ilam Rd</td><td><span class="lt">LT</span></td><td>$700</td><td><span class="badge bg">✓</span></td></tr>
-        <tr><td>5 Cathedral Sq</td><td><span class="st">ST</span></td><td>$980</td><td><span class="badge bg">✓</span></td></tr>
-        <tr><td>33 New Brighton Rd</td><td><span class="st">ST</span></td><td>$1,100</td><td><span class="badge bg">✓</span></td></tr>
-        <tr><td>18 Sumner Rd</td><td><span class="st">ST</span></td><td>$1,350</td><td><span class="badge bg">✓</span></td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
+      <div class="card-head">2/107 Deans Ave</div>
+      <div class="card-body">
+        <div class="sum-grid" style="margin-top:0">
+          <div class="sum-box"><div class="sum-label">Revenue (this period)</div><div class="sum-val">$5,970</div></div>
+          <div class="sum-box"><div class="sum-label">Share of total income</div><div class="sum-val">52.9%</div></div>
+        </div>
+        <div class="section-label" style="margin-top:1rem">Overdue invoices (top shown)</div>
+        <table><thead><tr><th>Invoice</th><th class="tr">Amount</th><th>Overdue</th></tr></thead><tbody>
+          <tr><td>INV-0042</td><td class="tr red">$3,400.00</td><td><span class="badge br">106d</span></td></tr>
+          <tr><td>INV-0049</td><td class="tr red">$3,250.00</td><td><span class="badge br">45d</span></td></tr>
+        </tbody></table>
+      </div>
     </div>
     <div class="card">
-      <div class="card-head">NZ tax reminders</div>
-      <div class="card-body" style="font-size:13px;line-height:1.9;color:var(--text2)">
-        <strong style="color:var(--text)">Bright-line test</strong><br>Properties sold within 2 years taxed as income (main home exemptions apply).<br><br>
-        <strong style="color:var(--text)">Interest deductibility</strong><br>Phased return underway for residential rentals. Confirm current % with accountant.<br><br>
-        <strong style="color:var(--text)">Short-term rental GST</strong><br>Register if ST turnover &gt; $60,000/yr. ST income is fully taxable.
+      <div class="card-head">405 Avonhead Road</div>
+      <div class="card-body">
+        <div class="sum-grid" style="margin-top:0">
+          <div class="sum-box"><div class="sum-label">Revenue (this period)</div><div class="sum-val">$5,320</div></div>
+          <div class="sum-box"><div class="sum-label">Share of total income</div><div class="sum-val">47.1%</div></div>
+        </div>
+        <div class="section-label" style="margin-top:1rem">Overdue invoices (top shown)</div>
+        <table><thead><tr><th>Invoice</th><th class="tr">Amount</th><th>Overdue</th></tr></thead><tbody>
+          <tr><td>INV-0044</td><td class="tr red">$3,250.00</td><td><span class="badge br">165d</span></td></tr>
+        </tbody></table>
       </div>
     </div>
   </div>
   <div class="card">
-    <div class="card-head">Generate statements <button class="btn btn-sm btn-primary" onclick="nav('statements',document.querySelectorAll('.nav-item')[5])">Go to statements →</button></div>
-    <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">📄 Monthly owner statement</button>
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">📋 Tenant rent ledger</button>
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('annual'),50)">📊 Annual summary (IRD)</button>
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('arrears'),50)">⚠️ Arrears notice</button>
+    <div class="card-head">Expense breakdown (portfolio-wide, this period)</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th></tr></thead><tbody>
+      <tr><td>Legal expenses</td><td class="tr red">$4,300.00</td></tr>
+      <tr><td>Consulting & Accounting</td><td class="tr red">$1,380.00</td></tr>
+      <tr><td>General Expenses</td><td class="tr red">$1,011.45</td></tr>
+      <tr><td>Repairs and Maintenance</td><td class="tr red">$810.00</td></tr>
+      <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">$7,501.45</td></tr>
+    </tbody></table></div><div class="scroll-fade"></div></div>
+    <div style="font-size:11px;color:var(--text3);padding:0 1.25rem 1rem">Xero doesn't currently tag these expenses to a specific property — shown portfolio-wide.</div>
+  </div>
+  <div class="card">
+    <div class="card-head">NZ tax reminders</div>
+    <div class="card-body" style="font-size:13px;line-height:1.9;color:var(--text2)">
+      <strong style="color:var(--text)">Bright-line test</strong><br>Properties sold within 2 years taxed as income (main home exemptions apply).<br><br>
+      <strong style="color:var(--text)">Interest deductibility</strong><br>Phased return underway for residential rentals. Confirm current % with accountant.<br><br>
+      <strong style="color:var(--text)">Short-term rental GST</strong><br>Register if ST turnover &gt; $60,000/yr. ST income is fully taxable.
     </div>
   </div>
 </div>

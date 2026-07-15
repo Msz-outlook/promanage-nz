@@ -52,6 +52,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 
 /* Tables */
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;position:relative}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;font-size:11px;font-weight:600;color:var(--text2);padding:8px 12px;border-bottom:0.5px solid var(--border);text-transform:uppercase;letter-spacing:.04em;background:var(--bg2)}
 td{padding:10px 12px;border-bottom:0.5px solid var(--border);vertical-align:middle}
@@ -168,8 +169,13 @@ textarea:focus{border-color:var(--text)}
   .metrics{grid-template-columns:repeat(2,1fr)}
   .two-col{grid-template-columns:1fr}
   .page{padding:1rem}
-  table{font-size:12px}
-  th,td{padding:8px 6px}
+  table{font-size:12px;min-width:560px}
+  th,td{padding:8px 6px;white-space:nowrap}
+  .table-wrap{margin:0 -1.25rem;padding:0 1.25rem;width:calc(100% + 2.5rem)}
+  .table-wrap::after{
+    content:'';position:absolute;top:0;right:0;bottom:0;width:24px;
+    background:linear-gradient(to right,transparent,var(--bg));pointer-events:none;
+  }
 }
 </style>
 </head>
@@ -252,26 +258,26 @@ textarea:focus{border-color:var(--text)}
   <div class="two-col">
     <div class="card">
       <div class="card-head">Lease renewals due</div>
-      <table><thead><tr><th>Property</th><th>Tenant</th><th>Expires</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Expires</th></tr></thead><tbody>
         <tr><td>22 Papanui Rd</td><td>Nguyen family</td><td><span class="badge ba">Jun 30</span></td></tr>
         <tr><td>8 Riccarton Ave</td><td>T. Sharma</td><td><span class="badge ba">Jul 15</span></td></tr>
         <tr><td>45 Ilam Rd</td><td>J. & M. Wilson</td><td><span class="badge bg">Sep 1</span></td></tr>
-      </tbody></table>
+      </tbody></table></div>
     </div>
     <div class="card">
       <div class="card-head">Rent arrears <button class="btn btn-sm" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('arrears'),50)">View notice →</button></div>
-      <table><thead><tr><th>Property</th><th>Tenant</th><th>Amount</th><th>Days</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Amount</th><th>Days</th></tr></thead><tbody>
         <tr><td>14 Bealey Ave</td><td>K. Patel</td><td>$700</td><td><span class="badge br">14d</span></td></tr>
         <tr><td colspan="4" style="color:var(--text3);text-align:center;padding:12px">No other arrears</td></tr>
-      </tbody></table>
+      </tbody></table></div>
     </div>
   </div>
   <div class="card">
     <div class="card-head">Urgent maintenance</div>
-    <table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead><tbody>
       <tr><td>3 Fitzgerald Ave</td><td>Hot water cylinder failure</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ba">In progress</span></td></tr>
       <tr><td>7 Merivale Ln</td><td>Roof leak — bedroom</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge br">Unassigned</span></td></tr>
-    </tbody></table>
+    </tbody></table></div>
   </div>
   <div class="card">
     <div class="card-head">Quick links</div>
@@ -318,9 +324,9 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
-    <table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th><th>Actions</th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th><th>Actions</th></tr></thead>
       <tbody id="prop-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
-    </table>
+    </table></div>
   </div>
 </div>
 
@@ -360,9 +366,9 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
-    <table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
       <tbody id="tenant-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
-    </table>
+    </table></div>
   </div>
   <div class="card">
     <div class="card-head">NZ RTA key rules</div>
@@ -377,13 +383,13 @@ textarea:focus{border-color:var(--text)}
 <div class="page" id="page-maintenance">
   <div class="card">
     <div class="card-head">Maintenance requests <button class="btn btn-sm btn-primary">+ New request</button></div>
-    <table><thead><tr><th>Property</th><th>Issue</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th></tr></thead><tbody>
       <tr><td>3 Fitzgerald Ave</td><td>Hot water cylinder</td><td>20 May</td><td><span class="dot dot-r"></span>Urgent</td><td>Heatpump NZ</td><td><span class="badge ba">In progress</span></td></tr>
       <tr><td>7 Merivale Ln</td><td>Roof leak — bedroom</td><td>22 May</td><td><span class="dot dot-r"></span>Urgent</td><td>—</td><td><span class="badge br">Unassigned</span></td></tr>
       <tr><td>22 Papanui Rd</td><td>Blocked drain</td><td>18 May</td><td><span class="dot dot-a"></span>Medium</td><td>Drain Busters</td><td><span class="badge bg">Scheduled</span></td></tr>
       <tr><td>45 Ilam Rd</td><td>Heat pump service</td><td>10 May</td><td><span class="dot dot-g"></span>Low</td><td>Mitsubishi Svc</td><td><span class="badge bg">Completed</span></td></tr>
       <tr><td>14 Bealey Ave</td><td>Window latch broken</td><td>5 May</td><td><span class="dot dot-g"></span>Low</td><td>Handy Chch</td><td><span class="badge bg">Completed</span></td></tr>
-    </tbody></table>
+    </tbody></table></div>
   </div>
   <div class="card">
     <div class="card-head">NZ landlord repair obligations</div>
@@ -430,9 +436,9 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
-    <table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
       <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr></tbody>
-    </table>
+    </table></div>
   </div>
 </div>
 
@@ -447,7 +453,7 @@ textarea:focus{border-color:var(--text)}
   <div class="two-col">
     <div class="card">
       <div class="card-head">Rent by property</div>
-      <table><thead><tr><th>Property</th><th>Type</th><th>$/wk</th><th>Collected</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Property</th><th>Type</th><th>$/wk</th><th>Collected</th></tr></thead><tbody>
         <tr><td>22 Papanui Rd</td><td><span class="lt">LT</span></td><td>$650</td><td><span class="badge bg">✓</span></td></tr>
         <tr><td>14 Bealey Ave</td><td><span class="lt">LT</span></td><td>$550</td><td><span class="badge br">Arrears</span></td></tr>
         <tr><td>3 Fitzgerald Ave</td><td><span class="lt">LT</span></td><td>$850</td><td><span class="badge bg">✓</span></td></tr>
@@ -456,7 +462,7 @@ textarea:focus{border-color:var(--text)}
         <tr><td>5 Cathedral Sq</td><td><span class="st">ST</span></td><td>$980</td><td><span class="badge bg">✓</span></td></tr>
         <tr><td>33 New Brighton Rd</td><td><span class="st">ST</span></td><td>$1,100</td><td><span class="badge bg">✓</span></td></tr>
         <tr><td>18 Sumner Rd</td><td><span class="st">ST</span></td><td>$1,350</td><td><span class="badge bg">✓</span></td></tr>
-      </tbody></table>
+      </tbody></table></div>
     </div>
     <div class="card">
       <div class="card-head">NZ tax reminders</div>
@@ -500,21 +506,21 @@ textarea:focus{border-color:var(--text)}
         <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
       </div>
       <div class="section-label">Income</div>
-      <table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
         <tr><td>Rent received</td><td class="tr green">$2,817</td></tr>
         <tr><td>Late payment fee</td><td class="tr green">$0</td></tr>
         <tr style="font-weight:600"><td>Total income</td><td class="tr green">$2,817</td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <div class="section-label" style="margin-top:1rem">Expenses</div>
-      <table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
         <tr><td>Property management fee (8%)</td><td class="tr red">−$225</td></tr>
         <tr><td>Maintenance — drain clearing</td><td class="tr red">−$180</td></tr>
         <tr><td>Council rates (monthly share)</td><td class="tr red">−$145</td></tr>
         <tr><td>Insurance (monthly share)</td><td class="tr red">−$95</td></tr>
         <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">−$645</td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <hr class="divider">
-      <table><tbody><tr style="font-weight:600;font-size:14px"><td>Net to owner</td><td class="tr">$2,172</td></tr></tbody></table>
+      <div class="table-wrap"><table><tbody><tr style="font-weight:600;font-size:14px"><td>Net to owner</td><td class="tr">$2,172</td></tr></tbody></table></div>
       <div class="sum-grid">
         <div class="sum-box"><div class="sum-label">Gross rent</div><div class="sum-val">$2,817</div></div>
         <div class="sum-box"><div class="sum-label">Net to owner</div><div class="sum-val green">$2,172</div></div>
@@ -536,7 +542,7 @@ textarea:focus{border-color:var(--text)}
         <div><div class="stmt-title">Tenant rent ledger</div><div class="stmt-sub">K. Patel · 14 Bealey Ave · Jan – May 2026</div></div>
         <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
       </div>
-      <table><thead><tr><th>Date</th><th>Description</th><th class="tr">Debit</th><th class="tr">Credit</th><th class="tr">Balance</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Description</th><th class="tr">Debit</th><th class="tr">Credit</th><th class="tr">Balance</th></tr></thead><tbody>
         <tr><td>1 Jan</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
         <tr><td>3 Jan</td><td>Payment received</td><td class="tr">—</td><td class="tr green">$550</td><td class="tr green">$0</td></tr>
         <tr><td>1 Feb</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
@@ -549,13 +555,13 @@ textarea:focus{border-color:var(--text)}
         <tr><td>8 May</td><td>Partial payment</td><td class="tr">—</td><td class="tr green">$200</td><td class="tr">$350</td></tr>
         <tr><td>1 Jun</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr red">$900</td></tr>
         <tr><td>25 May</td><td>Partial payment</td><td class="tr">—</td><td class="tr green">$200</td><td class="tr red">$700</td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <hr class="divider">
-      <table><tbody>
+      <div class="table-wrap"><table><tbody>
         <tr><td style="color:var(--text2)">Total charged</td><td class="tr">$3,300</td></tr>
         <tr><td style="color:var(--text2)">Total paid</td><td class="tr green">$2,600</td></tr>
         <tr style="font-weight:600"><td>Outstanding balance</td><td class="tr red">$700</td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <div class="footer-note">Rent ledger issued under Residential Tenancies Act 1986. Bond of $2,200 lodged with Tenancy Services NZ — Ref: TS-2025-XXXX.</div>
     </div>
   </div>
@@ -585,14 +591,14 @@ textarea:focus{border-color:var(--text)}
         <tr style="font-weight:600"><td>Total</td><td class="tr">$336,940</td><td class="tr red">$89,580</td><td class="tr green">$247,360</td><td class="tr">5.6%</td></tr>
       </tbody></table>
       <div class="section-label" style="margin-top:1rem">Expense breakdown</div>
-      <table><thead><tr><th>Category</th><th class="tr">Amount</th><th class="tr">% of total</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th><th class="tr">% of total</th></tr></thead><tbody>
         <tr><td>Management fees</td><td class="tr">$26,955</td><td class="tr muted">30.1%</td></tr>
         <tr><td>Maintenance & repairs</td><td class="tr">$31,420</td><td class="tr muted">35.1%</td></tr>
         <tr><td>Insurance</td><td class="tr">$11,200</td><td class="tr muted">12.5%</td></tr>
         <tr><td>Council rates</td><td class="tr">$14,300</td><td class="tr muted">16.0%</td></tr>
         <tr><td>Accounting / legal</td><td class="tr">$5,705</td><td class="tr muted">6.3%</td></tr>
         <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">$89,580</td><td class="tr"></td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <div class="sum-grid">
         <div class="sum-box"><div class="sum-label">Gross rent (FY)</div><div class="sum-val">$336,940</div></div>
         <div class="sum-box"><div class="sum-label">Net income (FY)</div><div class="sum-val green">$247,360</div></div>
@@ -615,12 +621,12 @@ textarea:focus{border-color:var(--text)}
         <div><div class="stmt-title">Arrears & outstanding balance notice</div><div class="stmt-sub">K. Patel · 14 Bealey Ave · Issued 25 May 2026</div></div>
         <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
       </div>
-      <table><thead><tr><th>Detail</th><th class="tr">Amount</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Detail</th><th class="tr">Amount</th></tr></thead><tbody>
         <tr><td>Weekly rent</td><td class="tr">$550.00</td></tr>
         <tr><td>Rent paid to date</td><td class="tr green">$2,600.00</td></tr>
         <tr><td>Rent charged to date</td><td class="tr">$3,300.00</td></tr>
         <tr style="font-weight:600"><td>Outstanding balance</td><td class="tr red">$700.00</td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <div class="notice-box">
         <div class="notice-title">⚠️ Formal notice of rent arrears</div>
         <div class="notice-body">
@@ -631,12 +637,12 @@ textarea:focus{border-color:var(--text)}
         </div>
       </div>
       <hr class="divider">
-      <table><tbody>
+      <div class="table-wrap"><table><tbody>
         <tr><td style="color:var(--text2)">Landlord / agent</td><td class="tr muted">ProManage NZ</td></tr>
         <tr><td style="color:var(--text2)">Bond reference</td><td class="tr muted">TS-2025-XXXX (Tenancy Services)</td></tr>
         <tr><td style="color:var(--text2)">Notice issued</td><td class="tr muted">25 May 2026</td></tr>
         <tr style="font-weight:600"><td>Payment due by</td><td class="tr red">8 June 2026</td></tr>
-      </tbody></table>
+      </tbody></table></div>
       <div class="footer-note">Issued under Residential Tenancies Act 1986 (NZ). Tenants may seek free advice from Tenancy Services (0800 836 262) or Community Law Centre. Landlords must not take retaliatory action against tenants exercising legal rights.</div>
     </div>
   </div>
@@ -670,12 +676,12 @@ textarea:focus{border-color:var(--text)}
   </div>
   <div class="card">
     <div class="card-head">2025–2026 NZ law changes</div>
-    <table><thead><tr><th>Change</th><th>Impact</th><th>Action needed</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>Change</th><th>Impact</th><th>Action needed</th></tr></thead><tbody>
       <tr><td>Granny flat ≤70m² — no consent (2026)</td><td>Portfolio expansion opportunity</td><td><span class="badge bb">Review suitable sites</span></td></tr>
       <tr><td>NPS-UD / Plan Change 14 — intensification (Chch)</td><td>Increased density allowed in residential zones</td><td><span class="badge bb">Check each site's zoning</span></td></tr>
       <tr><td>Healthy Homes — all private rentals must comply</td><td>Penalties up to $7,200 per breach</td><td><span class="badge br">2 properties overdue</span></td></tr>
       <tr><td>Interest deductibility phased return</td><td>Improved cash flow for rental properties</td><td><span class="badge bg">Confirm with accountant</span></td></tr>
-    </tbody></table>
+    </tbody></table></div>
   </div>
 </div>
 
@@ -909,6 +915,7 @@ async function saveInspection(){
     date: document.getElementById('insp-date').value,
     areas,
     synced: false,
+    pendingDelete: false,
     createdAt: new Date().toISOString()
   };
   await dbPut('inspections',record);
@@ -919,7 +926,7 @@ async function saveInspection(){
 }
 
 async function renderInspectionList(){
-  const all=await dbGetAll('inspections');
+  const all=(await dbGetAll('inspections')).filter(i=>!i.pendingDelete);
   all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const tbody=document.getElementById('insp-list');
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
@@ -941,9 +948,44 @@ async function renderInspectionList(){
   }).join('');
 }
 
+function extractStoragePath(url){
+  // Turns a public Storage URL back into the bucket-relative path needed for deletion
+  const marker=`/storage/v1/object/public/${CONFIG.STORAGE_BUCKET}/`;
+  const idx=url.indexOf(marker);
+  return idx===-1 ? null : url.slice(idx+marker.length);
+}
+
+async function deletePhotosFromStorage(record){
+  const token=await authHeader();
+  const paths=record.areas.flatMap(a=>a.photos).map(extractStoragePath).filter(Boolean);
+  await Promise.all(paths.map(path=>
+    fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{})
+  ));
+}
+
 async function deleteInspection(id){
-  if(!confirm('Delete this inspection from the device? This cannot be undone.'))return;
-  await dbDelete('inspections',id);
+  if(!confirm('Delete this inspection? This cannot be undone.'))return;
+  const all=await dbGetAll('inspections');
+  const record=all.find(i=>i.id===id);
+  if(!record)return;
+  if(record.synced && navigator.onLine){
+    await deletePhotosFromStorage(record);
+    const token=await authHeader();
+    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{});
+    await dbDelete('inspections',id);
+  }else if(record.synced && !navigator.onLine){
+    record.pendingDelete=true;
+    record.synced=false;
+    await dbPut('inspections',record);
+  }else{
+    await dbDelete('inspections',id);
+  }
   await renderInspectionList();
   updateSyncBanner();
 }
@@ -1006,9 +1048,17 @@ async function pushInspectionToBackend(record){
     console.log('No backend configured — would sync:',record.id);
     return record;
   }
+  const token=await authHeader();
   try{
+    if(record.pendingDelete){
+      await deletePhotosFromStorage(record);
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${record.id}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      return res.ok ? 'deleted' : false;
+    }
     const uploadedRecord=await uploadRecordPhotos(record);
-    const token=await authHeader();
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
       method:'POST',
       headers:{
@@ -1042,7 +1092,9 @@ async function syncPendingInspections(){
   const pending=all.filter(i=>!i.synced);
   for(const record of pending){
     const result=await pushInspectionToBackend(record);
-    if(result){
+    if(result==='deleted'){
+      await dbDelete('inspections',record.id);
+    }else if(result){
       result.synced=true;
       await dbPut('inspections',result); // saves back with photo URLs instead of base64 — shrinks local storage too
     }

@@ -173,8 +173,24 @@ textarea:focus{border-color:var(--text)}
 }
 </style>
 </head>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <body>
-<div class="app">
+
+<!-- LOGIN GATE -->
+<div id="login-gate" style="position:fixed;inset:0;background:var(--bg3);z-index:100;display:flex;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-lg);padding:2rem;max-width:340px;width:100%">
+    <div style="font-size:16px;font-weight:600;margin-bottom:4px">ProManage NZ</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:1.25rem">Sign in to continue</div>
+    <label>Email</label>
+    <input type="text" id="login-email" style="width:100%;margin-bottom:10px" autocomplete="username">
+    <label>Password</label>
+    <input type="password" id="login-password" style="width:100%;margin-bottom:14px" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Sign in</button>
+    <div id="login-error" style="color:var(--red-text);font-size:12px;margin-top:10px;display:none"></div>
+  </div>
+</div>
+
+<div class="app" id="main-app" style="display:none">
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
 
 <!-- SIDEBAR -->
@@ -202,6 +218,9 @@ textarea:focus{border-color:var(--text)}
   <div class="nav-section">
     <div class="nav-label">Compliance</div>
     <div class="nav-item" onclick="nav('compliance',this)"><span class="nav-icon">✅</span> NZ Compliance</div>
+  </div>
+  <div style="margin-top:auto;padding:1rem;border-top:0.5px solid var(--border)">
+    <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">Sign out</button>
   </div>
 </div>
 
@@ -669,6 +688,55 @@ const CONFIG = {
   STORAGE_BUCKET: 'inspection-photos'
 };
 
+/* ============================================================
+   AUTH — Supabase Auth gates access to the app and its data.
+   RLS policies on the `inspections` table and storage bucket only
+   allow the "authenticated" role, so a valid session is required
+   for any read/write to actually succeed against the backend.
+   ============================================================ */
+const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+
+async function checkSession(){
+  const {data:{session}} = await sb.auth.getSession();
+  if(session){
+    showApp();
+  }else{
+    document.getElementById('login-gate').style.display='flex';
+    document.getElementById('main-app').style.display='none';
+  }
+}
+
+function showApp(){
+  document.getElementById('login-gate').style.display='none';
+  document.getElementById('main-app').style.display='flex';
+}
+
+async function doLogin(){
+  const email=document.getElementById('login-email').value.trim();
+  const password=document.getElementById('login-password').value;
+  const errEl=document.getElementById('login-error');
+  errEl.style.display='none';
+  const {error}=await sb.auth.signInWithPassword({email,password});
+  if(error){
+    errEl.textContent=error.message;
+    errEl.style.display='block';
+    return;
+  }
+  showApp();
+  renderInspectionList();
+  updateSyncBanner();
+}
+
+async function doLogout(){
+  await sb.auth.signOut();
+  document.getElementById('login-gate').style.display='flex';
+  document.getElementById('main-app').style.display='none';
+}
+
+sb.auth.onAuthStateChange((event)=>{
+  if(event==='SIGNED_OUT') checkSession();
+});
+
 const DB_NAME='promanageDB', DB_VERSION=1;
 let dbInstance=null;
 
@@ -839,14 +907,20 @@ function sanitizeForPath(str){
   return String(str).replace(/[^a-zA-Z0-9]+/g,'_');
 }
 
+async function authHeader(){
+  const {data:{session}} = await sb.auth.getSession();
+  return session ? session.access_token : CONFIG.SUPABASE_KEY;
+}
+
 async function uploadPhotoToStorage(dataUrl,path){
   const blob=dataUrlToBlob(dataUrl);
+  const token=await authHeader();
   const res=await fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
     method:'POST',
     headers:{
       'Content-Type':blob.type||'image/jpeg',
       'apikey':CONFIG.SUPABASE_KEY,
-      'Authorization':`Bearer ${CONFIG.SUPABASE_KEY}`,
+      'Authorization':`Bearer ${token}`,
       'x-upsert':'true'
     },
     body:blob
@@ -877,12 +951,13 @@ async function pushInspectionToBackend(record){
   }
   try{
     const uploadedRecord=await uploadRecordPhotos(record);
+    const token=await authHeader();
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
       method:'POST',
       headers:{
         'Content-Type':'application/json',
         'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${CONFIG.SUPABASE_KEY}`,
+        'Authorization':`Bearer ${token}`,
         'Prefer':'resolution=merge-duplicates' // upsert — re-syncing the same id won't duplicate
       },
       body: JSON.stringify({
@@ -937,6 +1012,7 @@ window.addEventListener('offline',()=>updateSyncBanner());
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
+  checkSession();
   resetInspectionForm();
   renderInspectionList();
   updateSyncBanner();

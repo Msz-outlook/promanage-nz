@@ -667,7 +667,8 @@ textarea:focus{border-color:var(--text)}
     <div class="nav-item" onclick="nav('compliance',this)"><span class="nav-icon">✅</span> NZ Compliance</div>
   </div>
   <div style="margin-top:auto;padding:1rem;border-top:0.5px solid var(--border)">
-    <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">Sign out</button>
+    <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="manualHydrate()">☁️ Restore from cloud</button>
+    <button class="btn btn-sm" style="width:100%;justify-content:center;margin-top:8px" onclick="doLogout()">Sign out</button>
   </div>
 </div>
 
@@ -1047,6 +1048,16 @@ async function checkSession(){
   const {data:{session}} = await sb.auth.getSession();
   if(session){
     showApp();
+    await hydrateFromBackend();
+    renderInspectionList();
+    updateSyncBanner();
+    renderPropertiesList();
+    updatePropSyncBanner();
+    renderTenantsList();
+    updateTenantSyncBanner();
+    renderMaintenanceList();
+    updateMaintSyncBanner();
+    renderDashboard();
   }else{
     document.getElementById('login-gate').style.display='flex';
     document.getElementById('main-app').style.display='none';
@@ -1070,6 +1081,7 @@ async function doLogin(){
     return;
   }
   showApp();
+  await hydrateFromBackend();
   renderInspectionList();
   updateSyncBanner();
   renderPropertiesList();
@@ -1357,6 +1369,94 @@ function sanitizeForPath(str){
 async function authHeader(){
   const {data:{session}} = await sb.auth.getSession();
   return session ? session.access_token : CONFIG.SUPABASE_KEY;
+}
+
+/* ============================================================
+   HYDRATE — pulls existing Supabase rows into a fresh/empty
+   IndexedDB. Needed because IndexedDB is scoped per browser
+   origin: a new deploy URL (or new device, or cleared storage)
+   starts with an empty local DB even though Supabase still has
+   everything. Only fills in rows missing locally — never
+   overwrites a newer local edit that hasn't synced yet.
+   ============================================================ */
+
+function mapPropertyRow(row){
+  return {
+    id: row.id, address: row.address, bedrooms: row.bedrooms, bathrooms: row.bathrooms,
+    floorArea: row.floor_area, tenancy: row.tenancy, rentPerWeek: row.rent_per_week,
+    status: row.status, complianceStatus: row.compliance_status, notes: row.notes,
+    synced: true, pendingDelete: false, createdAt: row.created_at
+  };
+}
+function mapTenantRow(row){
+  return {
+    id: row.id, tenantName: row.tenant_name, propertyId: row.property_id,
+    propertyAddress: row.property_address, leaseStart: row.lease_start, leaseEnd: row.lease_end,
+    bondLodged: row.bond_lodged, bondReference: row.bond_reference, rentPerWeek: row.rent_per_week,
+    status: row.status, arrearsAmount: row.arrears_amount, notes: row.notes,
+    synced: true, pendingDelete: false, createdAt: row.created_at
+  };
+}
+function mapMaintenanceRow(row){
+  return {
+    id: row.id, propertyId: row.property_id, propertyAddress: row.property_address,
+    issue: row.issue, reportedDate: row.reported_date, priority: row.priority,
+    assignedTo: row.assigned_to, status: row.status,
+    synced: true, pendingDelete: false, createdAt: row.created_at
+  };
+}
+function mapInspectionRow(row){
+  return {
+    id: row.id, property: row.property, date: row.date, areas: row.areas || [],
+    synced: true, pendingDelete: false, createdAt: row.created_at
+  };
+}
+
+async function hydrateFromBackend(){
+  if(!CONFIG.SUPABASE_URL) return;
+  const token=await authHeader();
+  const tables=[
+    {name:'properties', store:'properties', mapper:mapPropertyRow},
+    {name:'tenants', store:'tenants', mapper:mapTenantRow},
+    {name:'maintenance', store:'maintenance', mapper:mapMaintenanceRow},
+    {name:'inspections', store:'inspections', mapper:mapInspectionRow}
+  ];
+  for(const t of tables){
+    try{
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${t.name}?select=*`,{
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      if(!res.ok){ console.log('Hydrate fetch failed for',t.name,res.status); continue; }
+      const rows=await res.json();
+      const local=await dbGetAll(t.store);
+      const localIds=new Set(local.map(r=>r.id));
+      for(const row of rows){
+        if(!localIds.has(row.id)){
+          await dbPut(t.store, t.mapper(row));
+        }
+      }
+    }catch(e){
+      console.log('Hydrate failed for',t.name,e);
+    }
+  }
+}
+
+async function manualHydrate(){
+  if(!navigator.onLine){
+    alert('You need to be online to restore from the cloud.');
+    return;
+  }
+  await hydrateFromBackend();
+  await renderInspectionList();
+  updateSyncBanner();
+  await renderPropertiesList();
+  updatePropSyncBanner();
+  await renderTenantsList();
+  updateTenantSyncBanner();
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+  renderDashboard();
+  alert('Restored from cloud — any records missing on this device have been pulled back in.');
 }
 
 async function uploadPhotoToStorage(dataUrl,path){

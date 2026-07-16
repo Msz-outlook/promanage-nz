@@ -638,6 +638,21 @@ textarea:focus{border-color:var(--text)}
   </div>
 </div>
 
+<!-- IN-PAGE CAMERA — lets you take several photos in a row for one area
+     without the OS handing you back to the browser after every single shot -->
+<div id="camera-modal" style="display:none;position:fixed;inset:0;background:#000;z-index:200;flex-direction:column">
+  <video id="camera-video" autoplay playsinline muted style="flex:1;width:100%;object-fit:cover;background:#000"></video>
+  <div style="background:#111;padding:12px 14px 16px">
+    <div id="camera-thumbs" style="display:flex;gap:6px;overflow-x:auto;margin-bottom:12px;min-height:56px"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <button onclick="closeCameraModal(false)" style="background:transparent;border:none;color:#fff;font-size:14px;padding:8px">Cancel</button>
+      <button onclick="captureCameraPhoto()" aria-label="Capture photo" style="width:64px;height:64px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.35);flex-shrink:0"></button>
+      <button onclick="closeCameraModal(true)" style="background:transparent;border:none;color:#fff;font-size:14px;font-weight:600;padding:8px">Done (<span id="camera-count">0</span>)</button>
+    </div>
+  </div>
+</div>
+<canvas id="camera-canvas" style="display:none"></canvas>
+
 <div class="app" id="main-app" style="display:none">
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
 
@@ -1181,9 +1196,10 @@ function addInspectionArea(name){
     </div>
     <textarea class="area-notes" placeholder="Notes for this area..."></textarea>
     <div class="photo-strip">
-      <label class="photo-add">
-        📷
-        <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
+      <div class="photo-add" onclick="openCameraModal('${id}')" title="Take multiple photos">📷</div>
+      <label class="photo-add" title="Choose from library">
+        🖼
+        <input type="file" accept="image/*" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
       </label>
     </div>`;
   document.getElementById('insp-areas').appendChild(wrap);
@@ -1202,6 +1218,71 @@ function handlePhotoCapture(event,areaId){
     };
     reader.readAsDataURL(file);
   });
+}
+
+/* ============================================================
+   IN-PAGE CAMERA — iOS Safari's native camera handoff
+   (input[capture]) only ever takes one photo before returning
+   you to the browser, with no way to loop. This opens a live
+   camera view inside the page instead, so you can tap-capture
+   as many photos as you like for one area before tapping Done.
+   ============================================================ */
+
+let cameraStream=null;
+let cameraCaptures=[];
+let cameraTargetAreaId=null;
+
+async function openCameraModal(areaId){
+  cameraTargetAreaId=areaId;
+  cameraCaptures=[];
+  document.getElementById('camera-thumbs').innerHTML='';
+  document.getElementById('camera-count').textContent='0';
+  document.getElementById('camera-modal').style.display='flex';
+  try{
+    cameraStream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:'environment'}},
+      audio:false
+    });
+    document.getElementById('camera-video').srcObject=cameraStream;
+  }catch(err){
+    alert('Could not access the camera ('+(err&&err.message)+'). You can still add photos using the library option.');
+    closeCameraModal(false);
+  }
+}
+
+function captureCameraPhoto(){
+  const video=document.getElementById('camera-video');
+  if(!video.videoWidth) return; // stream not ready yet
+  const canvas=document.getElementById('camera-canvas');
+  canvas.width=video.videoWidth;
+  canvas.height=video.videoHeight;
+  canvas.getContext('2d').drawImage(video,0,0);
+  const dataUrl=canvas.toDataURL('image/jpeg',0.85);
+  cameraCaptures.push(dataUrl);
+  document.getElementById('camera-count').textContent=cameraCaptures.length;
+  const thumb=document.createElement('img');
+  thumb.src=dataUrl;
+  thumb.style.cssText='width:56px;height:56px;object-fit:cover;border-radius:6px;flex-shrink:0';
+  document.getElementById('camera-thumbs').appendChild(thumb);
+}
+
+function closeCameraModal(save){
+  if(cameraStream){
+    cameraStream.getTracks().forEach(t=>t.stop());
+    cameraStream=null;
+  }
+  document.getElementById('camera-modal').style.display='none';
+  if(save && cameraTargetAreaId && cameraCaptures.length){
+    const strip=document.querySelector('#'+cameraTargetAreaId+' .photo-strip');
+    cameraCaptures.forEach(dataUrl=>{
+      const img=document.createElement('img');
+      img.className='photo-thumb';
+      img.src=dataUrl;
+      strip.insertBefore(img,strip.firstChild);
+    });
+  }
+  cameraCaptures=[];
+  cameraTargetAreaId=null;
 }
 
 async function populateInspectionPropertyDropdown(){

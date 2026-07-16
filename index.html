@@ -109,10 +109,6 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .green{color:var(--green-text)}.red{color:var(--red-text)}.muted{color:var(--text2)}
 
 /* Statement tabs */
-.stmt-tabs{display:flex;border-bottom:0.5px solid var(--border);margin-bottom:1.25rem;background:var(--bg);border-radius:var(--radius-lg) var(--radius-lg) 0 0;overflow:hidden}
-.stmt-tab{padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;transition:all .12s}
-.stmt-tab:hover{color:var(--text);background:var(--bg2)}
-.stmt-tab.active{color:var(--text);font-weight:500;border-bottom:2px solid var(--text)}
 .stmt-pane{display:none}.stmt-pane.active{display:block}
 
 /* Compliance */
@@ -179,6 +175,453 @@ textarea:focus{border-color:var(--text)}
 </style>
 </head>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+<script>
+/* ---- Findings Report generator (embedded, single-file) ---- */
+/*
+ * findingsReport.js — client-side findings-report PDF generator.
+ *
+ * Builds a findings table + a portrait photo grid with two-way clickable links,
+ * entirely in the browser. This is a faithful JS port of the validated Python
+ * generator (generate_report.py): same A4 layout, same 3:4 portrait crop, same
+ * EXIF-orientation handling, same bidirectional finding <-> photo links.
+ *
+ * Depends on three globals, loaded via <script> before this file:
+ *   - jsPDF            (window.jspdf.jsPDF)
+ *   - jspdf-autotable  (registers doc.autoTable)
+ *   - heic2any         (window.heic2any) — only used if a photo is HEIC/HEIF
+ *
+ * Public API:
+ *   await FindingsReport.generate(data, options)
+ *
+ *   data = {
+ *     title: "Site Findings Report",
+ *     meta:  { Site: "...", Reference: "...", Date: "...", "Prepared by": "..." }, // optional
+ *     findings: [
+ *       {
+ *         item: "Cracked concrete slab",
+ *         description: "…",
+ *         photos: [ url | { url, name } | Blob | { blob, name } ]   // 0..n
+ *       }
+ *     ]
+ *   }
+ *
+ *   options = {
+ *     fileName: "findings-report.pdf",   // download name
+ *     download: true,                    // auto-trigger a download
+ *   }
+ *
+ * Returns: Promise<Blob> (the PDF), so callers can also upload it to Supabase.
+ */
+(function (global) {
+  "use strict";
+
+  // ---- Layout constants (points; A4). Mirrors generate_report.py. ----------
+  var PAGE_W = 595.28, PAGE_H = 841.89;
+  var MARGIN = 43.2;                 // 0.6 inch
+  var USABLE_W = PAGE_W - 2 * MARGIN;
+  var GRID_COLS = 3;
+  var PHOTO_RATIO = 3 / 4;           // vertical iPhone photo: width / height
+  var MAX_IMAGE_DIM = 1600;
+  var JPEG_QUALITY = 0.85;
+
+  var COLORS = {
+    header: "#37474F",
+    grid: "#CCCCCC",
+    altRow: "#F7F7F7",
+    link: "#1155CC",
+    missingBg: "#F2F2F2",
+    missingBorder: "#CCCCCC",
+    footer: "#666666",
+    note: "#555555",
+    text: "#000000",
+  };
+
+  var FS = { body: 9.5, caption: 8.5, note: 8.5, footer: 8, title: 20, heading: 15 };
+  var CELL_PADDING = 5;              // autotable cell padding (pt)
+
+  // Findings table column widths (fractions match the Python version).
+  var COL_W = [0.06, 0.20, 0.54, 0.20].map(function (f) { return USABLE_W * f; });
+
+  // ---- Small helpers -------------------------------------------------------
+  function hexToRgb(hex) {
+    var h = hex.replace("#", "");
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+
+  function looksHeic(blob, name) {
+    var t = (blob && blob.type || "").toLowerCase();
+    if (t.indexOf("heic") !== -1 || t.indexOf("heif") !== -1) return true;
+    var n = (name || "").toLowerCase();
+    return /\.(heic|heif)$/.test(n);
+  }
+
+  // Center-crop source dimensions to a target width/height ratio (cover fit),
+  // returning the source rectangle to copy. Mirrors Python crop_to_ratio().
+  function coverCrop(w, h, ratio) {
+    var current = w / h;
+    if (current > ratio) {                 // too wide -> trim sides
+      var newW = Math.round(h * ratio);
+      return { sx: Math.floor((w - newW) / 2), sy: 0, sw: newW, sh: h };
+    }
+    if (current < ratio) {                 // too tall -> trim top/bottom
+      var newH = Math.round(w / ratio);
+      return { sx: 0, sy: Math.floor((h - newH) / 2), sw: w, sh: newH };
+    }
+    return { sx: 0, sy: 0, sw: w, sh: h };
+  }
+
+  function resolveEntry(entry) {
+    // Normalise a photo entry into { src, blob, name } where exactly one of
+    // src (URL string) / blob (Blob) is set.
+    if (entry == null) return { name: "" };
+    if (typeof entry === "string") return { src: entry, name: entry.split("/").pop() };
+    if (entry instanceof Blob) return { blob: entry, name: "" };
+    if (entry.blob instanceof Blob) return { blob: entry.blob, name: entry.name || "" };
+    if (entry.url) return { src: entry.url, name: entry.name || String(entry.url).split("/").pop() };
+    return { name: entry.name || "" };
+  }
+
+  // Fetch (if needed), decode (HEIC-aware), EXIF-correct, crop to portrait,
+  // downscale, and return a JPEG data URL. Throws on any failure so the caller
+  // can fall back to a "photo not found" placeholder.
+  async function normalizeToDataUrl(entry) {
+    var resolved = resolveEntry(entry);
+    var blob = resolved.blob;
+
+    if (!blob) {
+      if (!resolved.src) throw new Error("no source");
+      var resp = await fetch(resolved.src);
+      if (!resp.ok) throw new Error("fetch failed: " + resp.status);
+      blob = await resp.blob();
+    }
+
+    if (looksHeic(blob, resolved.name)) {
+      if (!global.heic2any) throw new Error("HEIC photo but heic2any not loaded");
+      blob = await global.heic2any({ blob: blob, toType: "image/jpeg", quality: 0.9 });
+      if (Array.isArray(blob)) blob = blob[0];
+    }
+
+    var bitmap;
+    try {
+      // { imageOrientation: 'from-image' } applies EXIF rotation on decode —
+      // this is the browser equivalent of PIL's ImageOps.exif_transpose().
+      bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    } catch (e) {
+      // Some browsers reject the options bag, or the blob was undeclared HEIC.
+      if (global.heic2any && !looksHeic(blob, resolved.name)) {
+        try {
+          var conv = await global.heic2any({ blob: blob, toType: "image/jpeg", quality: 0.9 });
+          blob = Array.isArray(conv) ? conv[0] : conv;
+        } catch (ignored) { /* fall through to a plain decode */ }
+      }
+      bitmap = await createImageBitmap(blob);
+    }
+
+    var crop = coverCrop(bitmap.width, bitmap.height, PHOTO_RATIO);
+    var scale = Math.min(1, MAX_IMAGE_DIM / Math.max(crop.sw, crop.sh));
+    var outW = Math.max(1, Math.round(crop.sw * scale));
+    var outH = Math.max(1, Math.round(crop.sh * scale));
+
+    var canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    var ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
+    if (bitmap.close) bitmap.close();
+    return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+  }
+
+  function getAutoTable(doc) {
+    if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
+    if (global.jspdf && typeof global.jspdf.autoTable === "function") {
+      return function (opts) { return global.jspdf.autoTable(doc, opts); };
+    }
+    throw new Error("jspdf-autotable is not loaded");
+  }
+
+  // ---- Main entry ----------------------------------------------------------
+  async function generate(data, options) {
+    options = options || {};
+    var fileName = options.fileName || "findings-report.pdf";
+    var doDownload = options.download !== false;
+
+    if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
+    var JsPDF = global.jspdf.jsPDF;
+
+    var title = data.title || "Findings Report";
+    var meta = data.meta || {};
+    var findings = data.findings || [];
+
+    // Flat, ordered list of photo references: one per (finding, photo) pair.
+    // record = { n, m, label, entry, item }
+    var records = [];
+    var refsByFinding = {};   // n -> [{ m, label }]
+    findings.forEach(function (f, i) {
+      var n = i + 1;
+      refsByFinding[n] = [];
+      (f.photos || []).forEach(function (entry, j) {
+        var m = j + 1;
+        var label = n + "." + m;
+        records.push({ n: n, m: m, label: label, entry: entry, item: f.item || "" });
+        refsByFinding[n].push({ m: m, label: label });
+      });
+    });
+
+    // Pre-normalise every image up front (in parallel) so the layout pass is
+    // synchronous and page/position bookkeeping is deterministic.
+    await Promise.all(records.map(async function (rec) {
+      try {
+        rec.dataUrl = await normalizeToDataUrl(rec.entry);
+        rec.ok = true;
+      } catch (err) {
+        rec.ok = false;
+        rec.missingLabel = resolveEntry(rec.entry).name || String(rec.entry) || "(no source)";
+        if (global.console) console.warn("findingsReport: photo " + rec.label + " unavailable:", err && err.message);
+      }
+    }));
+
+    var doc = new JsPDF({ unit: "pt", format: "a4" });
+    doc.setProperties({ title: title });
+    var autoTable = getAutoTable(doc);
+
+    var findingAnchors = {};   // n -> { page, y }        (target of a back-link)
+    var photosCellInfo = {};   // n -> { page, x, y, w, h } (source of forward-links)
+    var photoTargets = {};     // label -> { page, y }    (target of a forward-link)
+    var backLinks = [];        // { page, x, y, w, h, targetN }
+
+    // --- Header block -------------------------------------------------------
+    var y = MARGIN + 6;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.title);
+    setText(doc, COLORS.text);
+    doc.text(title, PAGE_W / 2, y + FS.title, { align: "center" });
+    y += FS.title + 14;
+
+    var metaKeys = Object.keys(meta);
+    if (metaKeys.length) {
+      doc.setFontSize(FS.body);
+      var labelX = MARGIN, valueX = MARGIN + 95, lineH = 14;
+      metaKeys.forEach(function (k) {
+        doc.setFont("helvetica", "bold");
+        doc.text(String(k) + ":", labelX, y + FS.body);
+        doc.setFont("helvetica", "normal");
+        doc.text(String(meta[k]), valueX, y + FS.body);
+        y += lineH;
+      });
+      y += 8;
+    }
+
+    var totalPhotos = records.length;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(FS.note);
+    setText(doc, COLORS.note);
+    doc.text("Total findings: " + findings.length + "     |     Total photos: " + totalPhotos, MARGIN, y + FS.note);
+    y += FS.note + 12;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.heading);
+    setText(doc, COLORS.text);
+    doc.text("Findings", MARGIN, y + FS.heading);
+    y += FS.heading + 6;
+
+    // --- Findings table -----------------------------------------------------
+    var body = findings.map(function (f, i) {
+      var n = i + 1;
+      var refText = refsByFinding[n].map(function (r) { return r.label; }).join(", ") || "—";
+      return [String(n), f.item || "", f.description || "", refText];
+    });
+
+    autoTable({
+      startY: y,
+      head: [["#", "Item", "Description", "Photos"]],
+      body: body,
+      theme: "grid",
+      styles: {
+        font: "helvetica", fontSize: FS.body, cellPadding: CELL_PADDING, valign: "top",
+        lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5, textColor: hexToRgb(COLORS.text),
+        overflow: "linebreak",
+      },
+      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
+      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
+      columnStyles: {
+        0: { cellWidth: COL_W[0], halign: "center", fontStyle: "bold" },
+        1: { cellWidth: COL_W[1], fontStyle: "bold" },
+        2: { cellWidth: COL_W[2] },
+        3: { cellWidth: COL_W[3], textColor: hexToRgb(COLORS.link) },
+      },
+      margin: { left: MARGIN, right: MARGIN },
+      didDrawCell: function (d) {
+        if (d.section !== "body") return;
+        var n = d.row.index + 1;
+        var page = doc.internal.getCurrentPageInfo().pageNumber;
+        if (d.column.index === 0) {
+          findingAnchors[n] = { page: page, y: d.cell.y };
+        } else if (d.column.index === 3) {
+          photosCellInfo[n] = { page: page, x: d.cell.x, y: d.cell.y, w: d.cell.width, h: d.cell.height };
+        }
+      },
+    });
+
+    // --- Attachments (portrait photo grid) ----------------------------------
+    if (records.length) {
+      doc.addPage();
+      var ay = MARGIN + 6;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.heading);
+      setText(doc, COLORS.text);
+      doc.text("Attachments", MARGIN, ay + FS.heading);
+      ay += FS.heading + 6;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.note);
+      setText(doc, COLORS.note);
+      var intro = "Each photo caption links back to its finding; each “Photos” reference in the table links to the photo here.";
+      doc.splitTextToSize(intro, USABLE_W).forEach(function (line) {
+        doc.text(line, MARGIN, ay + FS.note);
+        ay += FS.note + 3;
+      });
+      ay += 6;
+
+      var colW = USABLE_W / GRID_COLS;
+      var imgW = colW - 16;
+      var imgH = imgW / PHOTO_RATIO;
+      var padTop = 8, gapImgCap = 6, captionH = 34, padBottom = 8;
+      var rowH = padTop + imgH + gapImgCap + captionH + padBottom;
+      var bottomLimit = PAGE_H - MARGIN - 24;
+
+      var rowTopY = ay;
+      var currentPage = doc.internal.getCurrentPageInfo().pageNumber;
+
+      records.forEach(function (rec, i) {
+        var col = i % GRID_COLS;
+        if (col === 0) {
+          if (i !== 0) rowTopY += rowH;
+          if (rowTopY + rowH > bottomLimit) { doc.addPage(); currentPage += 1; rowTopY = MARGIN; }
+        }
+        var cellX = MARGIN + col * colW;
+        var imgX = cellX + (colW - imgW) / 2;
+        var imgY = rowTopY + padTop;
+
+        // uniform cell border
+        setDraw(doc, COLORS.missingBorder);
+        doc.setLineWidth(0.5);
+        doc.rect(cellX, rowTopY, colW, rowH);
+
+        if (rec.ok) {
+          doc.addImage(rec.dataUrl, "JPEG", imgX, imgY, imgW, imgH);
+        } else {
+          setFill(doc, COLORS.missingBg);
+          setDraw(doc, COLORS.missingBorder);
+          doc.rect(imgX, imgY, imgW, imgH, "FD");
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(FS.caption);
+          setText(doc, COLORS.text);
+          var msg = doc.splitTextToSize("Photo not found:\n" + rec.missingLabel, imgW - 12);
+          var startY = imgY + imgH / 2 - (msg.length - 1) * (FS.caption + 2) / 2;
+          msg.forEach(function (line, k) {
+            doc.text(line, imgX + imgW / 2, startY + k * (FS.caption + 2), { align: "center" });
+          });
+        }
+
+        photoTargets[rec.label] = { page: currentPage, y: imgY };
+
+        // caption: a clickable "Photo n.m" line + the item text below it
+        var capBaseY = imgY + imgH + gapImgCap;
+        var centerX = cellX + colW / 2;
+        var prefix = "Photo " + rec.label;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(FS.caption);
+        setText(doc, COLORS.link);
+        doc.text(prefix, centerX, capBaseY + FS.caption, { align: "center" });
+        var prefixW = doc.getTextWidth(prefix);
+        // underline + record the hotspot for the back-link
+        doc.setLineWidth(0.4);
+        setDraw(doc, COLORS.link);
+        doc.line(centerX - prefixW / 2, capBaseY + FS.caption + 1.5, centerX + prefixW / 2, capBaseY + FS.caption + 1.5);
+        backLinks.push({
+          page: currentPage, x: centerX - prefixW / 2, y: capBaseY,
+          w: prefixW, h: FS.caption + 3, targetN: rec.n,
+        });
+
+        setText(doc, COLORS.text);
+        var itemLines = doc.splitTextToSize(rec.item || "", colW - 8).slice(0, 2);
+        itemLines.forEach(function (line, k) {
+          doc.text(line, centerX, capBaseY + FS.caption + 12 + k * (FS.caption + 2), { align: "center" });
+        });
+      });
+    }
+
+    // --- Wire up the links --------------------------------------------------
+    // Back-links: photo caption -> its finding row.
+    backLinks.forEach(function (bl) {
+      var target = findingAnchors[bl.targetN];
+      if (!target) return;
+      doc.setPage(bl.page);
+      doc.link(bl.x, bl.y, bl.w, bl.h, { pageNumber: target.page, top: target.y });
+    });
+
+    // Forward-links: each "n.m" ref in a finding's Photos cell -> that photo.
+    // The ref text is laid out by autotable inside the cell; we overlay
+    // invisible clickable hotspots along the first line(s), wrapping within
+    // the cell just as the drawn text does.
+    doc.setFontSize(FS.body);
+    doc.setFont("helvetica", "normal");
+    Object.keys(photosCellInfo).forEach(function (nKey) {
+      var n = parseInt(nKey, 10);
+      var cell = photosCellInfo[n];
+      var refs = refsByFinding[n];
+      if (!refs || !refs.length) return;
+
+      var lineH = FS.body * 1.15;
+      var left = cell.x + CELL_PADDING;
+      var right = cell.x + cell.w - CELL_PADDING;
+      var x = left;
+      var lineY = cell.y + CELL_PADDING;
+      var sepW = doc.getTextWidth(", ");
+
+      doc.setPage(cell.page);
+      refs.forEach(function (r, idx) {
+        var tokenW = doc.getTextWidth(r.label);
+        if (x + tokenW > right && x > left) { x = left; lineY += lineH; }
+        var target = photoTargets[r.label];
+        if (target) doc.link(x, lineY, tokenW, FS.body + 2, { pageNumber: target.page, top: target.y });
+        x += tokenW;
+        if (idx < refs.length - 1) x += sepW;
+      });
+    });
+
+    // --- Footer: "Page X of Y" on every page --------------------------------
+    var totalPages = doc.internal.getNumberOfPages();
+    for (var p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      setDraw(doc, COLORS.missingBorder);
+      doc.setLineWidth(0.5);
+      doc.line(MARGIN, PAGE_H - 37, PAGE_W - MARGIN, PAGE_H - 37);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.footer);
+      setText(doc, COLORS.footer);
+      doc.text(title, MARGIN, PAGE_H - 26);
+      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, { align: "right" });
+    }
+
+    var blob = doc.output("blob");
+    if (doDownload) doc.save(fileName);
+    return blob;
+  }
+
+  // color setters (jsPDF wants numeric r,g,b for cross-version safety)
+  function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
+  function setFill(doc, hex) { var c = hexToRgb(hex); doc.setFillColor(c[0], c[1], c[2]); }
+  function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
+
+  global.FindingsReport = { generate: generate, normalizeToDataUrl: normalizeToDataUrl };
+})(typeof window !== "undefined" ? window : this);
+
+</script>
 <body>
 
 <!-- LOGIN GATE -->
@@ -218,7 +661,6 @@ textarea:focus{border-color:var(--text)}
   <div class="nav-section">
     <div class="nav-label">Finance</div>
     <div class="nav-item" onclick="nav('financials',this)"><span class="nav-icon">📊</span> Financials</div>
-    <div class="nav-item" onclick="nav('statements',this)"><span class="nav-icon">🧾</span> Statements</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Compliance</div>
@@ -261,7 +703,7 @@ textarea:focus{border-color:var(--text)}
       </table></div><div class="scroll-fade"></div></div>
     </div>
     <div class="card">
-      <div class="card-head">Rent arrears <button class="btn btn-sm" onclick="nav('tenants',document.querySelectorAll('.nav-item')[3])">View tenants →</button></div>
+      <div class="card-head">Rent arrears <button class="btn btn-sm" onclick="nav('tenants',document.querySelectorAll('.nav-item')[2])">View tenants →</button></div>
       <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Amount</th></tr></thead>
         <tbody id="dash-arrears"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
@@ -276,10 +718,9 @@ textarea:focus{border-color:var(--text)}
   <div class="card">
     <div class="card-head">Quick links</div>
     <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('monthly'),50)">📄 Monthly statement</button>
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('ledger'),50)">📋 Rent ledger</button>
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('annual'),50)">📊 Annual summary</button>
-      <button class="btn" onclick="nav('statements',document.querySelectorAll('.nav-item')[5]);setTimeout(()=>switchStmt('arrears'),50)">⚠️ Arrears notice</button>
+      <button class="btn" onclick="nav('properties',document.querySelectorAll('.nav-item')[1]);togglePropForm(true)">🏠 Add property</button>
+      <button class="btn" onclick="nav('tenants',document.querySelectorAll('.nav-item')[2]);toggleTenantForm(true)">👤 Add tenant</button>
+      <button class="btn" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3]);toggleMaintForm(true)">🔧 New maintenance request</button>
       <button class="btn" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6])">✅ Compliance check</button>
     </div>
   </div>
@@ -513,170 +954,6 @@ textarea:focus{border-color:var(--text)}
   </div>
 </div>
 
-<!-- STATEMENTS -->
-<div class="page" id="page-statements">
-  <div class="stmt-tabs">
-    <div class="stmt-tab active" onclick="switchStmt('monthly')">📄 Monthly owner</div>
-    <div class="stmt-tab" onclick="switchStmt('ledger')">📋 Rent ledger</div>
-    <div class="stmt-tab" onclick="switchStmt('annual')">📊 Annual summary</div>
-    <div class="stmt-tab" onclick="switchStmt('arrears')">⚠️ Arrears notice</div>
-  </div>
-
-  <!-- Monthly -->
-  <div class="stmt-pane active" id="sp-monthly">
-    <div class="controls">
-      <select id="mo-prop"><option>22 Papanui Rd</option><option>14 Bealey Ave</option><option>3 Fitzgerald Ave</option><option>8 Riccarton Ave</option><option>45 Ilam Rd</option><option>7 Merivale Ln</option><option>5 Cathedral Sq</option><option>33 New Brighton Rd</option><option>18 Sumner Rd</option></select>
-      <select id="mo-month"><option>May 2026</option><option>April 2026</option><option>March 2026</option></select>
-      <button class="btn btn-primary" onclick="window.print()">🖨 Print statement</button>
-    </div>
-    <div class="stmt">
-      <div class="stmt-header">
-        <div><div class="stmt-title">Monthly owner statement</div><div class="stmt-sub" id="mo-sub">22 Papanui Rd · May 2026</div></div>
-        <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
-      </div>
-      <div class="section-label">Income</div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
-        <tr><td>Rent received</td><td class="tr green">$2,817</td></tr>
-        <tr><td>Late payment fee</td><td class="tr green">$0</td></tr>
-        <tr style="font-weight:600"><td>Total income</td><td class="tr green">$2,817</td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <div class="section-label" style="margin-top:1rem">Expenses</div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Description</th><th class="tr">Amount (NZD)</th></tr></thead><tbody>
-        <tr><td>Property management fee (8%)</td><td class="tr red">−$225</td></tr>
-        <tr><td>Maintenance — drain clearing</td><td class="tr red">−$180</td></tr>
-        <tr><td>Council rates (monthly share)</td><td class="tr red">−$145</td></tr>
-        <tr><td>Insurance (monthly share)</td><td class="tr red">−$95</td></tr>
-        <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">−$645</td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <hr class="divider">
-      <div class="table-outer"><div class="table-wrap"><table><tbody><tr style="font-weight:600;font-size:14px"><td>Net to owner</td><td class="tr">$2,172</td></tr></tbody></table></div><div class="scroll-fade"></div></div>
-      <div class="sum-grid">
-        <div class="sum-box"><div class="sum-label">Gross rent</div><div class="sum-val">$2,817</div></div>
-        <div class="sum-box"><div class="sum-label">Net to owner</div><div class="sum-val green">$2,172</div></div>
-        <div class="sum-box"><div class="sum-label">Total expenses</div><div class="sum-val red">$645</div></div>
-        <div class="sum-box"><div class="sum-label">Expense ratio</div><div class="sum-val">22.9%</div></div>
-      </div>
-      <div class="footer-note">Statement generated by ProManage NZ. Rent collected under Residential Tenancies Act 1986. All amounts NZD incl. GST where applicable. Retain for IRD records.</div>
-    </div>
-  </div>
-
-  <!-- Ledger -->
-  <div class="stmt-pane" id="sp-ledger">
-    <div class="controls">
-      <select><option>K. Patel — 14 Bealey Ave</option><option>Nguyen family — 22 Papanui Rd</option><option>T. Sharma — 8 Riccarton Ave</option><option>Chen household — 3 Fitzgerald Ave</option><option>J. & M. Wilson — 45 Ilam Rd</option></select>
-      <button class="btn btn-primary" onclick="window.print()">🖨 Print ledger</button>
-    </div>
-    <div class="stmt">
-      <div class="stmt-header">
-        <div><div class="stmt-title">Tenant rent ledger</div><div class="stmt-sub">K. Patel · 14 Bealey Ave · Jan – May 2026</div></div>
-        <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
-      </div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Description</th><th class="tr">Debit</th><th class="tr">Credit</th><th class="tr">Balance</th></tr></thead><tbody>
-        <tr><td>1 Jan</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
-        <tr><td>3 Jan</td><td>Payment received</td><td class="tr">—</td><td class="tr green">$550</td><td class="tr green">$0</td></tr>
-        <tr><td>1 Feb</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
-        <tr><td>2 Feb</td><td>Payment received</td><td class="tr">—</td><td class="tr green">$550</td><td class="tr green">$0</td></tr>
-        <tr><td>1 Mar</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
-        <tr><td>4 Mar</td><td>Payment received</td><td class="tr">—</td><td class="tr green">$550</td><td class="tr green">$0</td></tr>
-        <tr><td>1 Apr</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
-        <tr><td>5 Apr</td><td>Payment received</td><td class="tr">—</td><td class="tr green">$550</td><td class="tr green">$0</td></tr>
-        <tr><td>1 May</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr">$550</td></tr>
-        <tr><td>8 May</td><td>Partial payment</td><td class="tr">—</td><td class="tr green">$200</td><td class="tr">$350</td></tr>
-        <tr><td>1 Jun</td><td>Rent due</td><td class="tr muted">$550</td><td class="tr">—</td><td class="tr red">$900</td></tr>
-        <tr><td>25 May</td><td>Partial payment</td><td class="tr">—</td><td class="tr green">$200</td><td class="tr red">$700</td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <hr class="divider">
-      <div class="table-outer"><div class="table-wrap"><table><tbody>
-        <tr><td style="color:var(--text2)">Total charged</td><td class="tr">$3,300</td></tr>
-        <tr><td style="color:var(--text2)">Total paid</td><td class="tr green">$2,600</td></tr>
-        <tr style="font-weight:600"><td>Outstanding balance</td><td class="tr red">$700</td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <div class="footer-note">Rent ledger issued under Residential Tenancies Act 1986. Bond of $2,200 lodged with Tenancy Services NZ — Ref: TS-2025-XXXX.</div>
-    </div>
-  </div>
-
-  <!-- Annual -->
-  <div class="stmt-pane" id="sp-annual">
-    <div class="controls">
-      <select><option>2025–2026 tax year</option><option>2024–2025 tax year</option></select>
-      <button class="btn btn-primary" onclick="window.print()">🖨 Print for accountant</button>
-    </div>
-    <div class="stmt">
-      <div class="stmt-header">
-        <div><div class="stmt-title">Annual financial summary</div><div class="stmt-sub">Full portfolio · 1 Apr 2025 – 31 Mar 2026</div></div>
-        <div class="stmt-logo">ProManage NZ<div>For IRD / accountant use</div></div>
-      </div>
-      <div class="section-label">Income by property</div>
-      <table style="table-layout:fixed"><thead><tr><th style="width:36%">Property</th><th style="width:16%" class="tr">Gross rent</th><th style="width:16%" class="tr">Expenses</th><th style="width:16%" class="tr">Net income</th><th style="width:16%" class="tr">Yield</th></tr></thead><tbody>
-        <tr><td>22 Papanui Rd</td><td class="tr">$33,800</td><td class="tr red">$7,560</td><td class="tr green">$26,240</td><td class="tr">5.4%</td></tr>
-        <tr><td>14 Bealey Ave</td><td class="tr">$27,100</td><td class="tr red">$6,820</td><td class="tr green">$20,280</td><td class="tr">4.9%</td></tr>
-        <tr><td>3 Fitzgerald Ave</td><td class="tr">$44,200</td><td class="tr red">$11,300</td><td class="tr green">$32,900</td><td class="tr">5.7%</td></tr>
-        <tr><td>8 Riccarton Ave</td><td class="tr">$27,040</td><td class="tr red">$5,900</td><td class="tr green">$21,140</td><td class="tr">5.1%</td></tr>
-        <tr><td>45 Ilam Rd</td><td class="tr">$36,400</td><td class="tr red">$8,100</td><td class="tr green">$28,300</td><td class="tr">5.5%</td></tr>
-        <tr><td>7 Merivale Ln</td><td class="tr">$31,200</td><td class="tr red">$7,200</td><td class="tr green">$24,000</td><td class="tr">5.2%</td></tr>
-        <tr><td>5 Cathedral Sq (ST)</td><td class="tr">$38,600</td><td class="tr red">$12,400</td><td class="tr green">$26,200</td><td class="tr">6.1%</td></tr>
-        <tr><td>33 New Brighton (ST)</td><td class="tr">$46,200</td><td class="tr red">$14,100</td><td class="tr green">$32,100</td><td class="tr">5.8%</td></tr>
-        <tr><td>18 Sumner Rd (ST)</td><td class="tr">$52,400</td><td class="tr red">$16,200</td><td class="tr green">$36,200</td><td class="tr">6.3%</td></tr>
-        <tr style="font-weight:600"><td>Total</td><td class="tr">$336,940</td><td class="tr red">$89,580</td><td class="tr green">$247,360</td><td class="tr">5.6%</td></tr>
-      </tbody></table>
-      <div class="section-label" style="margin-top:1rem">Expense breakdown</div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th><th class="tr">% of total</th></tr></thead><tbody>
-        <tr><td>Management fees</td><td class="tr">$26,955</td><td class="tr muted">30.1%</td></tr>
-        <tr><td>Maintenance & repairs</td><td class="tr">$31,420</td><td class="tr muted">35.1%</td></tr>
-        <tr><td>Insurance</td><td class="tr">$11,200</td><td class="tr muted">12.5%</td></tr>
-        <tr><td>Council rates</td><td class="tr">$14,300</td><td class="tr muted">16.0%</td></tr>
-        <tr><td>Accounting / legal</td><td class="tr">$5,705</td><td class="tr muted">6.3%</td></tr>
-        <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">$89,580</td><td class="tr"></td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <div class="sum-grid">
-        <div class="sum-box"><div class="sum-label">Gross rent (FY)</div><div class="sum-val">$336,940</div></div>
-        <div class="sum-box"><div class="sum-label">Net income (FY)</div><div class="sum-val green">$247,360</div></div>
-        <div class="sum-box"><div class="sum-label">Total expenses</div><div class="sum-val red">$89,580</div></div>
-        <div class="sum-box"><div class="sum-label">Avg yield</div><div class="sum-val">5.6%</div></div>
-      </div>
-      <div class="footer-note">Prepared for IRD tax filing. Interest deductibility — confirm current % with accountant. ST rental income (3 properties) fully taxable. GST registration required if ST revenue &gt; $60k. Confirm bright-line purchase dates for all properties.</div>
-    </div>
-  </div>
-
-  <!-- Arrears -->
-  <div class="stmt-pane" id="sp-arrears">
-    <div class="controls">
-      <select><option>K. Patel — 14 Bealey Ave</option><option>Nguyen family — 22 Papanui Rd</option></select>
-      <select id="ar-type"><option>Reminder (friendly)</option><option>Formal notice (14-day)</option><option>Tribunal warning</option></select>
-      <button class="btn btn-primary" onclick="window.print()">🖨 Print notice</button>
-    </div>
-    <div class="stmt">
-      <div class="stmt-header">
-        <div><div class="stmt-title">Arrears & outstanding balance notice</div><div class="stmt-sub">K. Patel · 14 Bealey Ave · Issued 25 May 2026</div></div>
-        <div class="stmt-logo">ProManage NZ<div>Christchurch · NZ</div></div>
-      </div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Detail</th><th class="tr">Amount</th></tr></thead><tbody>
-        <tr><td>Weekly rent</td><td class="tr">$550.00</td></tr>
-        <tr><td>Rent paid to date</td><td class="tr green">$2,600.00</td></tr>
-        <tr><td>Rent charged to date</td><td class="tr">$3,300.00</td></tr>
-        <tr style="font-weight:600"><td>Outstanding balance</td><td class="tr red">$700.00</td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <div class="notice-box">
-        <div class="notice-title">⚠️ Formal notice of rent arrears</div>
-        <div class="notice-body">
-          This notice is issued under <strong>Section 55 of the Residential Tenancies Act 1986</strong>.<br><br>
-          Your rent account is <strong>$700.00 in arrears</strong> as at 25 May 2026. You are required to pay the outstanding amount within <strong>14 days</strong> of this notice.<br><br>
-          Failure to pay may result in an application to the <strong>Tenancy Tribunal</strong> for a possession or monetary order. You may also be liable for tribunal filing costs.<br><br>
-          If you are experiencing financial hardship, please contact us immediately to discuss a repayment arrangement.
-        </div>
-      </div>
-      <hr class="divider">
-      <div class="table-outer"><div class="table-wrap"><table><tbody>
-        <tr><td style="color:var(--text2)">Landlord / agent</td><td class="tr muted">ProManage NZ</td></tr>
-        <tr><td style="color:var(--text2)">Bond reference</td><td class="tr muted">TS-2025-XXXX (Tenancy Services)</td></tr>
-        <tr><td style="color:var(--text2)">Notice issued</td><td class="tr muted">25 May 2026</td></tr>
-        <tr style="font-weight:600"><td>Payment due by</td><td class="tr red">8 June 2026</td></tr>
-      </tbody></table></div><div class="scroll-fade"></div></div>
-      <div class="footer-note">Issued under Residential Tenancies Act 1986 (NZ). Tenants may seek free advice from Tenancy Services (0800 836 262) or Community Law Centre. Landlords must not take retaliatory action against tenants exercising legal rights.</div>
-    </div>
-  </div>
-</div>
-
 <!-- COMPLIANCE -->
 <div class="page" id="page-compliance">
   <div class="alert alert-amber">⚠️ 2 properties have overdue Healthy Homes inspections. Penalties up to $7,200 per breach apply.</div>
@@ -718,7 +995,7 @@ textarea:focus{border-color:var(--text)}
 </div>
 
 <script>
-const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',statements:'Statements',compliance:'NZ Compliance'};
+const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',compliance:'NZ Compliance'};
 function nav(id,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
@@ -737,21 +1014,6 @@ function toggleSidebar(force){
   sidebar.classList.toggle('open',shouldOpen);
   overlay.classList.toggle('open',shouldOpen);
 }
-function switchStmt(name){
-  document.querySelectorAll('.stmt-tab').forEach((t,i)=>{
-    const n=['monthly','ledger','annual','arrears'];
-    t.classList.toggle('active',n[i]===name);
-  });
-  document.querySelectorAll('.stmt-pane').forEach(p=>p.classList.remove('active'));
-  document.getElementById('sp-'+name).classList.add('active');
-}
-document.getElementById('mo-prop').addEventListener('change',function(){
-  document.getElementById('mo-sub').textContent=this.value+' · '+document.getElementById('mo-month').value;
-});
-document.getElementById('mo-month').addEventListener('change',function(){
-  document.getElementById('mo-sub').textContent=document.getElementById('mo-prop').value+' · '+this.value;
-});
-
 /* ============================================================
    INSPECTIONS MODULE — offline-first via IndexedDB
    ============================================================
@@ -992,9 +1254,46 @@ async function renderInspectionList(){
       <td style="font-size:12px;color:var(--text2)">${areaSummary}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}')">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
     </tr>`;
   }).join('');
+}
+
+async function generateInspectionPDF(id){
+  const all=await dbGetAll('inspections');
+  const insp=all.find(i=>i.id===id);
+  if(!insp) return;
+
+  const findings=(insp.areas||[]).map(a=>({
+    item: a.name,
+    description: 'Status: '+a.status+(a.notes?' — '+a.notes:''),
+    // Photos are already either local base64 data URLs or (post-sync) public
+    // Supabase Storage URLs — FindingsReport.generate() fetches either directly.
+    photos: a.photos||[]
+  }));
+
+  if(!findings.length){ alert('This inspection has no areas to report.'); return; }
+
+  const btn=event && event.target;
+  const original=btn?btn.textContent:null;
+  if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
+
+  try{
+    await FindingsReport.generate({
+      title:'Property Inspection Report',
+      meta:{
+        Site: insp.property||'—',
+        Reference: insp.id,
+        Date: insp.date||'—',
+        'Prepared by':'ProManage NZ'
+      },
+      findings
+    },{ fileName:`inspection-${sanitizeForPath(insp.property||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`, download:true });
+  }catch(err){
+    alert('Could not generate report: '+(err && err.message));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=original;}
+  }
 }
 
 function extractStoragePath(url){

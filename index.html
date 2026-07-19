@@ -638,21 +638,6 @@ textarea:focus{border-color:var(--text)}
   </div>
 </div>
 
-<!-- IN-PAGE CAMERA — lets you take several photos in a row for one area
-     without the OS handing you back to the browser after every single shot -->
-<div id="camera-modal" style="display:none;position:fixed;inset:0;background:#000;z-index:200;flex-direction:column">
-  <video id="camera-video" autoplay playsinline muted style="flex:1;width:100%;object-fit:cover;background:#000"></video>
-  <div style="background:#111;padding:12px 14px 16px">
-    <div id="camera-thumbs" style="display:flex;gap:6px;overflow-x:auto;margin-bottom:12px;min-height:56px"></div>
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <button onclick="closeCameraModal(false)" style="background:transparent;border:none;color:#fff;font-size:14px;padding:8px">Cancel</button>
-      <button onclick="captureCameraPhoto()" aria-label="Capture photo" style="width:64px;height:64px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.35);flex-shrink:0"></button>
-      <button onclick="closeCameraModal(true)" style="background:transparent;border:none;color:#fff;font-size:14px;font-weight:600;padding:8px">Done (<span id="camera-count">0</span>)</button>
-    </div>
-  </div>
-</div>
-<canvas id="camera-canvas" style="display:none"></canvas>
-
 <div class="app" id="main-app" style="display:none">
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
 
@@ -681,9 +666,12 @@ textarea:focus{border-color:var(--text)}
     <div class="nav-label">Compliance</div>
     <div class="nav-item" onclick="nav('compliance',this)"><span class="nav-icon">✅</span> NZ Compliance</div>
   </div>
+  <div class="nav-section">
+    <div class="nav-label">Activity</div>
+    <div class="nav-item" onclick="nav('activity',this)"><span class="nav-icon">🕒</span> Activity Log</div>
+  </div>
   <div style="margin-top:auto;padding:1rem;border-top:0.5px solid var(--border)">
-    <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="manualHydrate()">☁️ Restore from cloud</button>
-    <button class="btn btn-sm" style="width:100%;justify-content:center;margin-top:8px" onclick="doLogout()">Sign out</button>
+    <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">Sign out</button>
   </div>
 </div>
 
@@ -750,7 +738,7 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card" id="prop-form-card" style="display:none">
-    <div class="card-head">New property</div>
+    <div class="card-head" id="prop-form-title">New property</div>
     <div class="card-body">
       <div class="controls">
         <div><label>Address</label><input type="text" id="prop-address" placeholder="e.g. 22 Papanui Rd"></div>
@@ -789,7 +777,7 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card" id="tenant-form-card" style="display:none">
-    <div class="card-head">New tenant</div>
+    <div class="card-head" id="tenant-form-title">New tenant</div>
     <div class="card-body">
       <div class="controls">
         <div><label>Tenant name</label><input type="text" id="tenant-name" placeholder="e.g. Nguyen family"></div>
@@ -838,7 +826,7 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card" id="maint-form-card" style="display:none">
-    <div class="card-head">New maintenance request</div>
+    <div class="card-head" id="maint-form-title">New maintenance request</div>
     <div class="card-body">
       <div class="controls">
         <div><label>Property</label><select id="maint-property"><option value="">— Add a property first —</option></select></div>
@@ -882,7 +870,7 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card">
-    <div class="card-head">New inspection</div>
+    <div class="card-head" id="insp-form-title">New inspection</div>
     <div class="card-body">
       <div class="controls">
         <div>
@@ -897,7 +885,8 @@ textarea:focus{border-color:var(--text)}
       <div id="insp-areas"></div>
       <div style="display:flex;gap:8px;margin-top:.5rem">
         <button class="btn" onclick="addInspectionArea()">+ Add area</button>
-        <button class="btn btn-primary" onclick="saveInspection()">💾 Save inspection</button>
+        <button class="btn btn-primary" id="insp-save-btn" onclick="saveInspection()">💾 Save inspection</button>
+        <button class="btn" id="insp-cancel-btn" style="display:none" onclick="cancelInspectionEdit()">Cancel edit</button>
       </div>
       <div style="font-size:11px;color:var(--text3);margin-top:8px">Saves to this device immediately (works offline). Syncs to the cloud automatically when back online.</div>
     </div>
@@ -1007,11 +996,22 @@ textarea:focus{border-color:var(--text)}
   </div>
 </div>
 
+<!-- ACTIVITY LOG -->
+<div class="page" id="page-activity">
+  <div class="card">
+    <div class="card-head">Activity log <span id="activity-log-count" style="font-weight:400;color:var(--text3)"></span></div>
+    <div style="font-size:12px;color:var(--text2);padding:.75rem 1.25rem 0">Every property, tenant, maintenance and inspection record created, edited or deleted on this device, newest first.</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>When</th><th>Type</th><th>Action</th><th>Details</th></tr></thead>
+      <tbody id="activity-log-list"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
+  </div>
+</div>
+
 </div>
 </div>
 
 <script>
-const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',compliance:'NZ Compliance'};
+const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',compliance:'NZ Compliance',activity:'Activity Log'};
 function nav(id,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
@@ -1022,6 +1022,7 @@ function nav(id,el){
   if(id==='inspections') populateInspectionPropertyDropdown();
   if(id==='maintenance') populateMaintenancePropertyDropdown();
   if(id==='dashboard') renderDashboard();
+  if(id==='activity') renderActivityLog();
 }
 function toggleSidebar(force){
   const sidebar=document.getElementById('sidebar');
@@ -1063,16 +1064,6 @@ async function checkSession(){
   const {data:{session}} = await sb.auth.getSession();
   if(session){
     showApp();
-    await hydrateFromBackend();
-    renderInspectionList();
-    updateSyncBanner();
-    renderPropertiesList();
-    updatePropSyncBanner();
-    renderTenantsList();
-    updateTenantSyncBanner();
-    renderMaintenanceList();
-    updateMaintSyncBanner();
-    renderDashboard();
   }else{
     document.getElementById('login-gate').style.display='flex';
     document.getElementById('main-app').style.display='none';
@@ -1096,7 +1087,6 @@ async function doLogin(){
     return;
   }
   showApp();
-  await hydrateFromBackend();
   renderInspectionList();
   updateSyncBanner();
   renderPropertiesList();
@@ -1106,6 +1096,7 @@ async function doLogin(){
   renderMaintenanceList();
   updateMaintSyncBanner();
   renderDashboard();
+  renderActivityLog();
 }
 
 async function doLogout(){
@@ -1118,7 +1109,7 @@ sb.auth.onAuthStateChange((event)=>{
   if(event==='SIGNED_OUT') checkSession();
 });
 
-const DB_NAME='promanageDB', DB_VERSION=4;
+const DB_NAME='promanageDB', DB_VERSION=5;
 let dbInstance=null;
 
 function openDB(){
@@ -1138,6 +1129,9 @@ function openDB(){
       }
       if(!db.objectStoreNames.contains('maintenance')){
         db.createObjectStore('maintenance',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('activityLog')){
+        db.createObjectStore('activityLog',{keyPath:'id'});
       }
     };
     req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
@@ -1172,6 +1166,50 @@ function dbDelete(storeName,id){
   }));
 }
 
+/* ============================================================
+   ACTIVITY LOG — every create/update/delete across all modules
+   is written here with a timestamp, purely local (IndexedDB).
+   ============================================================ */
+function formatLogTime(iso){
+  const d=new Date(iso);
+  if(isNaN(d)) return iso;
+  return d.toLocaleDateString('en-NZ',{day:'2-digit',month:'short',year:'numeric'})+' '+d.toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'});
+}
+async function logActivity(entity,action,detail){
+  const record={
+    id:'log_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    timestamp:new Date().toISOString(),
+    entity,
+    action,
+    detail:detail||''
+  };
+  await dbPut('activityLog',record);
+  renderActivityLog();
+}
+async function renderActivityLog(){
+  const tbody=document.getElementById('activity-log-list');
+  if(!tbody) return;
+  const all=await dbGetAll('activityLog').catch(()=>[]);
+  all.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+  const countEl=document.getElementById('activity-log-count');
+  if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr>';
+    return;
+  }
+  const actionBadge=a=>{
+    const map={Created:'bg',Updated:'bb',Deleted:'br'};
+    return `<span class="badge ${map[a]||'bgr'}">${a}</span>`;
+  };
+  tbody.innerHTML=all.slice(0,300).map(l=>`
+    <tr>
+      <td style="white-space:nowrap">${formatLogTime(l.timestamp)}</td>
+      <td>${l.entity}</td>
+      <td>${actionBadge(l.action)}</td>
+      <td>${l.detail}</td>
+    </tr>`).join('');
+}
+
 // --- Default room list for a new inspection, matches Healthy Homes areas ---
 const DEFAULT_AREAS=['Living area','Kitchen','Bathroom','Bedroom 1','Bedroom 2','Exterior / grounds','Smoke alarms','Insulation / subfloor'];
 let areaCounter=0;
@@ -1181,25 +1219,28 @@ function todayStr(){
   return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
 }
 
-function addInspectionArea(name){
+function addInspectionArea(name,opts){
+  opts=opts||{};
   areaCounter++;
   const id='area'+areaCounter;
   const wrap=document.createElement('div');
   wrap.className='insp-area';
   wrap.id=id;
+  const statusOptions=['Good','Fair','Poor','N/A'];
+  const statusSelectHtml=statusOptions.map(s=>`<option${opts.status===s?' selected':''}>${s}</option>`).join('');
+  const escapedNotes=(opts.notes||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const photosHtml=(opts.photos||[]).map(src=>`<img class="photo-thumb" src="${src}">`).join('');
   wrap.innerHTML=`
     <div class="insp-area-head">
       <span class="insp-area-name">${name||'New area'}</span>
-      <select class="area-status" style="width:110px">
-        <option>Good</option><option>Fair</option><option>Poor</option><option>N/A</option>
-      </select>
+      <select class="area-status" style="width:110px">${statusSelectHtml}</select>
     </div>
-    <textarea class="area-notes" placeholder="Notes for this area..."></textarea>
+    <textarea class="area-notes" placeholder="Notes for this area...">${escapedNotes}</textarea>
     <div class="photo-strip">
-      <div class="photo-add" onclick="openCameraModal('${id}')" title="Take multiple photos">📷</div>
-      <label class="photo-add" title="Choose from library">
-        🖼
-        <input type="file" accept="image/*" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
+      ${photosHtml}
+      <label class="photo-add">
+        📷
+        <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
       </label>
     </div>`;
   document.getElementById('insp-areas').appendChild(wrap);
@@ -1220,71 +1261,6 @@ function handlePhotoCapture(event,areaId){
   });
 }
 
-/* ============================================================
-   IN-PAGE CAMERA — iOS Safari's native camera handoff
-   (input[capture]) only ever takes one photo before returning
-   you to the browser, with no way to loop. This opens a live
-   camera view inside the page instead, so you can tap-capture
-   as many photos as you like for one area before tapping Done.
-   ============================================================ */
-
-let cameraStream=null;
-let cameraCaptures=[];
-let cameraTargetAreaId=null;
-
-async function openCameraModal(areaId){
-  cameraTargetAreaId=areaId;
-  cameraCaptures=[];
-  document.getElementById('camera-thumbs').innerHTML='';
-  document.getElementById('camera-count').textContent='0';
-  document.getElementById('camera-modal').style.display='flex';
-  try{
-    cameraStream=await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:{ideal:'environment'}},
-      audio:false
-    });
-    document.getElementById('camera-video').srcObject=cameraStream;
-  }catch(err){
-    alert('Could not access the camera ('+(err&&err.message)+'). You can still add photos using the library option.');
-    closeCameraModal(false);
-  }
-}
-
-function captureCameraPhoto(){
-  const video=document.getElementById('camera-video');
-  if(!video.videoWidth) return; // stream not ready yet
-  const canvas=document.getElementById('camera-canvas');
-  canvas.width=video.videoWidth;
-  canvas.height=video.videoHeight;
-  canvas.getContext('2d').drawImage(video,0,0);
-  const dataUrl=canvas.toDataURL('image/jpeg',0.85);
-  cameraCaptures.push(dataUrl);
-  document.getElementById('camera-count').textContent=cameraCaptures.length;
-  const thumb=document.createElement('img');
-  thumb.src=dataUrl;
-  thumb.style.cssText='width:56px;height:56px;object-fit:cover;border-radius:6px;flex-shrink:0';
-  document.getElementById('camera-thumbs').appendChild(thumb);
-}
-
-function closeCameraModal(save){
-  if(cameraStream){
-    cameraStream.getTracks().forEach(t=>t.stop());
-    cameraStream=null;
-  }
-  document.getElementById('camera-modal').style.display='none';
-  if(save && cameraTargetAreaId && cameraCaptures.length){
-    const strip=document.querySelector('#'+cameraTargetAreaId+' .photo-strip');
-    cameraCaptures.forEach(dataUrl=>{
-      const img=document.createElement('img');
-      img.className='photo-thumb';
-      img.src=dataUrl;
-      strip.insertBefore(img,strip.firstChild);
-    });
-  }
-  cameraCaptures=[];
-  cameraTargetAreaId=null;
-}
-
 async function populateInspectionPropertyDropdown(){
   const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
   const select=document.getElementById('insp-property');
@@ -1295,12 +1271,44 @@ async function populateInspectionPropertyDropdown(){
   select.innerHTML=props.map(p=>`<option>${p.address}</option>`).join('');
 }
 
+let editingInspectionId=null;
 function resetInspectionForm(){
   document.getElementById('insp-areas').innerHTML='';
   document.getElementById('insp-date').value=todayStr();
   areaCounter=0;
   DEFAULT_AREAS.forEach(a=>addInspectionArea(a));
   populateInspectionPropertyDropdown();
+  editingInspectionId=null;
+  const titleEl=document.getElementById('insp-form-title');
+  if(titleEl) titleEl.textContent='New inspection';
+  const btnEl=document.getElementById('insp-save-btn');
+  if(btnEl) btnEl.textContent='💾 Save inspection';
+  const cancelBtn=document.getElementById('insp-cancel-btn');
+  if(cancelBtn) cancelBtn.style.display='none';
+}
+
+async function editInspection(id){
+  const all=await dbGetAll('inspections');
+  const record=all.find(i=>i.id===id);
+  if(!record) return;
+  editingInspectionId=id;
+  await populateInspectionPropertyDropdown();
+  document.getElementById('insp-property').value=record.property;
+  document.getElementById('insp-date').value=record.date;
+  document.getElementById('insp-areas').innerHTML='';
+  areaCounter=0;
+  (record.areas||[]).forEach(a=>addInspectionArea(a.name,{status:a.status,notes:a.notes,photos:a.photos}));
+  const titleEl=document.getElementById('insp-form-title');
+  if(titleEl) titleEl.textContent='Edit inspection';
+  const btnEl=document.getElementById('insp-save-btn');
+  if(btnEl) btnEl.textContent='💾 Update inspection';
+  const cancelBtn=document.getElementById('insp-cancel-btn');
+  if(cancelBtn) cancelBtn.style.display='inline-flex';
+  document.getElementById('page-inspections').scrollIntoView({behavior:'smooth'});
+}
+
+function cancelInspectionEdit(){
+  resetInspectionForm();
 }
 
 async function saveInspection(){
@@ -1313,20 +1321,26 @@ async function saveInspection(){
       photos: Array.from(el.querySelectorAll('.photo-thumb')).map(img=>img.src)
     });
   });
+  const isEdit=!!editingInspectionId;
+  const existing=isEdit?(await dbGetAll('inspections')).find(i=>i.id===editingInspectionId):null;
   const record={
-    id: 'insp_'+Date.now(),
+    id: isEdit?editingInspectionId:'insp_'+Date.now(),
     property: document.getElementById('insp-property').value,
     date: document.getElementById('insp-date').value,
     areas,
     synced: false,
     pendingDelete: false,
-    createdAt: new Date().toISOString()
+    createdAt: (isEdit&&existing)?existing.createdAt:new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
   await dbPut('inspections',record);
+  await logActivity('Inspection', isEdit?'Updated':'Created', record.property+' — '+record.date);
   await renderInspectionList();
   updateSyncBanner();
+  const wasEdit=isEdit;
   resetInspectionForm();
-  alert('Inspection saved to this device'+(navigator.onLine?' — will sync shortly.':'. It will sync once you\'re back online.'));
+  alert((wasEdit?'Inspection updated':'Inspection saved')+' on this device'+(navigator.onLine?' — will sync shortly.':'. It will sync once you\'re back online.'));
+  if(navigator.onLine) syncPendingInspections();
 }
 
 async function renderInspectionList(){
@@ -1347,7 +1361,7 @@ async function renderInspectionList(){
       <td style="font-size:12px;color:var(--text2)">${areaSummary}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}')">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}')">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
@@ -1412,6 +1426,7 @@ async function deleteInspection(id){
   const all=await dbGetAll('inspections');
   const record=all.find(i=>i.id===id);
   if(!record)return;
+  await logActivity('Inspection','Deleted',record.property+' — '+record.date);
   if(record.synced && navigator.onLine){
     await deletePhotosFromStorage(record);
     const token=await authHeader();
@@ -1450,94 +1465,6 @@ function sanitizeForPath(str){
 async function authHeader(){
   const {data:{session}} = await sb.auth.getSession();
   return session ? session.access_token : CONFIG.SUPABASE_KEY;
-}
-
-/* ============================================================
-   HYDRATE — pulls existing Supabase rows into a fresh/empty
-   IndexedDB. Needed because IndexedDB is scoped per browser
-   origin: a new deploy URL (or new device, or cleared storage)
-   starts with an empty local DB even though Supabase still has
-   everything. Only fills in rows missing locally — never
-   overwrites a newer local edit that hasn't synced yet.
-   ============================================================ */
-
-function mapPropertyRow(row){
-  return {
-    id: row.id, address: row.address, bedrooms: row.bedrooms, bathrooms: row.bathrooms,
-    floorArea: row.floor_area, tenancy: row.tenancy, rentPerWeek: row.rent_per_week,
-    status: row.status, complianceStatus: row.compliance_status, notes: row.notes,
-    synced: true, pendingDelete: false, createdAt: row.created_at
-  };
-}
-function mapTenantRow(row){
-  return {
-    id: row.id, tenantName: row.tenant_name, propertyId: row.property_id,
-    propertyAddress: row.property_address, leaseStart: row.lease_start, leaseEnd: row.lease_end,
-    bondLodged: row.bond_lodged, bondReference: row.bond_reference, rentPerWeek: row.rent_per_week,
-    status: row.status, arrearsAmount: row.arrears_amount, notes: row.notes,
-    synced: true, pendingDelete: false, createdAt: row.created_at
-  };
-}
-function mapMaintenanceRow(row){
-  return {
-    id: row.id, propertyId: row.property_id, propertyAddress: row.property_address,
-    issue: row.issue, reportedDate: row.reported_date, priority: row.priority,
-    assignedTo: row.assigned_to, status: row.status,
-    synced: true, pendingDelete: false, createdAt: row.created_at
-  };
-}
-function mapInspectionRow(row){
-  return {
-    id: row.id, property: row.property, date: row.date, areas: row.areas || [],
-    synced: true, pendingDelete: false, createdAt: row.created_at
-  };
-}
-
-async function hydrateFromBackend(){
-  if(!CONFIG.SUPABASE_URL) return;
-  const token=await authHeader();
-  const tables=[
-    {name:'properties', store:'properties', mapper:mapPropertyRow},
-    {name:'tenants', store:'tenants', mapper:mapTenantRow},
-    {name:'maintenance', store:'maintenance', mapper:mapMaintenanceRow},
-    {name:'inspections', store:'inspections', mapper:mapInspectionRow}
-  ];
-  for(const t of tables){
-    try{
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${t.name}?select=*`,{
-        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-      });
-      if(!res.ok){ console.log('Hydrate fetch failed for',t.name,res.status); continue; }
-      const rows=await res.json();
-      const local=await dbGetAll(t.store);
-      const localIds=new Set(local.map(r=>r.id));
-      for(const row of rows){
-        if(!localIds.has(row.id)){
-          await dbPut(t.store, t.mapper(row));
-        }
-      }
-    }catch(e){
-      console.log('Hydrate failed for',t.name,e);
-    }
-  }
-}
-
-async function manualHydrate(){
-  if(!navigator.onLine){
-    alert('You need to be online to restore from the cloud.');
-    return;
-  }
-  await hydrateFromBackend();
-  await renderInspectionList();
-  updateSyncBanner();
-  await renderPropertiesList();
-  updatePropSyncBanner();
-  await renderTenantsList();
-  updateTenantSyncBanner();
-  await renderMaintenanceList();
-  updateMaintSyncBanner();
-  renderDashboard();
-  alert('Restored from cloud — any records missing on this device have been pulled back in.');
 }
 
 async function uploadPhotoToStorage(dataUrl,path){
@@ -1602,7 +1529,8 @@ async function pushInspectionToBackend(record){
         date: uploadedRecord.date,
         areas: uploadedRecord.areas,
         synced: true,
-        created_at: uploadedRecord.createdAt
+        created_at: uploadedRecord.createdAt,
+        updated_at: uploadedRecord.updatedAt||uploadedRecord.createdAt
       })
     });
     return res.ok ? uploadedRecord : false;
@@ -1661,6 +1589,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   renderMaintenanceList();
   updateMaintSyncBanner();
   renderDashboard();
+  renderActivityLog();
 });
 
 /* ============================================================
@@ -1669,19 +1598,42 @@ document.addEventListener('DOMContentLoaded',()=>{
    unlike Inspections where deletes are currently local-only.
    ============================================================ */
 
-function togglePropForm(show){
+let editingPropertyId=null;
+function togglePropForm(show,record){
   document.getElementById('prop-form-card').style.display=show?'block':'none';
+  const titleEl=document.getElementById('prop-form-title');
   if(show){
-    document.getElementById('prop-address').value='';
-    document.getElementById('prop-notes').value='';
+    editingPropertyId=record?record.id:null;
+    if(titleEl) titleEl.textContent=record?'Edit property':'New property';
+    document.getElementById('prop-address').value=record?record.address:'';
+    document.getElementById('prop-bed').value=record?record.bedrooms:3;
+    document.getElementById('prop-bath').value=record?record.bathrooms:1;
+    document.getElementById('prop-area').value=record?record.floorArea:100;
+    document.getElementById('prop-tenancy').value=record?record.tenancy:'Long-term';
+    document.getElementById('prop-rent').value=record?record.rentPerWeek:600;
+    document.getElementById('prop-status').value=record?record.status:'Occupied';
+    document.getElementById('prop-compliance').value=record?record.complianceStatus:'Current';
+    document.getElementById('prop-notes').value=record?(record.notes||''):'';
+  }else{
+    editingPropertyId=null;
   }
+}
+
+async function editProperty(id){
+  const all=await dbGetAll('properties');
+  const record=all.find(p=>p.id===id);
+  if(!record) return;
+  togglePropForm(true,record);
+  document.getElementById('page-properties').scrollIntoView({behavior:'smooth'});
 }
 
 async function saveProperty(){
   const address=document.getElementById('prop-address').value.trim();
   if(!address){ alert('Address is required.'); return; }
+  const isEdit=!!editingPropertyId;
+  const existing=isEdit?(await dbGetAll('properties')).find(p=>p.id===editingPropertyId):null;
   const record={
-    id:'prop_'+Date.now(),
+    id:isEdit?editingPropertyId:'prop_'+Date.now(),
     address,
     bedrooms:Number(document.getElementById('prop-bed').value)||0,
     bathrooms:Number(document.getElementById('prop-bath').value)||0,
@@ -1693,9 +1645,11 @@ async function saveProperty(){
     notes:document.getElementById('prop-notes').value,
     synced:false,
     pendingDelete:false,
-    createdAt:new Date().toISOString()
+    createdAt:(isEdit&&existing)?existing.createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
   };
   await dbPut('properties',record);
+  await logActivity('Property',isEdit?'Updated':'Created',record.address);
   await renderPropertiesList();
   updatePropSyncBanner();
   togglePropForm(false);
@@ -1725,7 +1679,7 @@ async function renderPropertiesList(){
       <td>${statusBadge(p.status)}</td>
       <td>${compBadge(p.complianceStatus)}</td>
       <td>${p.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="deleteProperty('${p.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editProperty('${p.id}')">Edit</button> <button class="btn btn-sm" onclick="deleteProperty('${p.id}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -1734,6 +1688,7 @@ async function deleteProperty(id){
   const all=await dbGetAll('properties');
   const record=all.find(p=>p.id===id);
   if(!record)return;
+  await logActivity('Property','Deleted',record.address);
   if(record.synced && navigator.onLine){
     // Already in Supabase — delete remotely now
     const token=await authHeader();
@@ -1778,7 +1733,7 @@ async function pushPropertyToBackend(record){
         id:record.id,address:record.address,bedrooms:record.bedrooms,bathrooms:record.bathrooms,
         floor_area:record.floorArea,tenancy:record.tenancy,rent_per_week:record.rentPerWeek,
         status:record.status,compliance_status:record.complianceStatus,notes:record.notes,
-        created_at:record.createdAt
+        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
     return res.ok;
@@ -1838,16 +1793,36 @@ async function populateTenantPropertyDropdown(){
   select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
 }
 
-function toggleTenantForm(show){
+let editingTenantId=null;
+async function toggleTenantForm(show,record){
   document.getElementById('tenant-form-card').style.display=show?'block':'none';
+  const titleEl=document.getElementById('tenant-form-title');
   if(show){
-    document.getElementById('tenant-name').value='';
-    document.getElementById('tenant-start').value='';
-    document.getElementById('tenant-end').value='';
-    document.getElementById('tenant-notes').value='';
-    document.getElementById('tenant-arrears-wrap').style.display='none';
-    populateTenantPropertyDropdown();
+    editingTenantId=record?record.id:null;
+    if(titleEl) titleEl.textContent=record?'Edit tenant':'New tenant';
+    document.getElementById('tenant-name').value=record?record.tenantName:'';
+    document.getElementById('tenant-start').value=record?(record.leaseStart||''):'';
+    document.getElementById('tenant-end').value=record?(record.leaseEnd||''):'';
+    document.getElementById('tenant-rent').value=record?record.rentPerWeek:600;
+    document.getElementById('tenant-status').value=record?record.status:'Current';
+    document.getElementById('tenant-arrears-wrap').style.display=(record&&record.status==='Arrears')?'block':'none';
+    document.getElementById('tenant-arrears').value=record?(record.arrearsAmount||0):0;
+    document.getElementById('tenant-bond').value=record?(record.bondLodged?'Yes':'No'):'Yes';
+    document.getElementById('tenant-bond-ref').value=record?(record.bondReference||''):'';
+    document.getElementById('tenant-notes').value=record?(record.notes||''):'';
+    await populateTenantPropertyDropdown();
+    if(record) document.getElementById('tenant-property').value=record.propertyId;
+  }else{
+    editingTenantId=null;
   }
+}
+
+async function editTenant(id){
+  const all=await dbGetAll('tenants');
+  const record=all.find(t=>t.id===id);
+  if(!record) return;
+  await toggleTenantForm(true,record);
+  document.getElementById('page-tenants').scrollIntoView({behavior:'smooth'});
 }
 
 async function saveTenant(){
@@ -1858,8 +1833,10 @@ async function saveTenant(){
   const propertySelect=document.getElementById('tenant-property');
   const propertyAddress=propertySelect.options[propertySelect.selectedIndex].textContent;
   const status=document.getElementById('tenant-status').value;
+  const isEdit=!!editingTenantId;
+  const existing=isEdit?(await dbGetAll('tenants')).find(t=>t.id===editingTenantId):null;
   const record={
-    id:'tenant_'+Date.now(),
+    id:isEdit?editingTenantId:'tenant_'+Date.now(),
     tenantName:name,
     propertyId,
     propertyAddress,
@@ -1873,9 +1850,11 @@ async function saveTenant(){
     notes:document.getElementById('tenant-notes').value,
     synced:false,
     pendingDelete:false,
-    createdAt:new Date().toISOString()
+    createdAt:(isEdit&&existing)?existing.createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
   };
   await dbPut('tenants',record);
+  await logActivity('Tenant',isEdit?'Updated':'Created',record.tenantName+' — '+record.propertyAddress);
   await renderTenantsList();
   updateTenantSyncBanner();
   toggleTenantForm(false);
@@ -1907,7 +1886,7 @@ async function renderTenantsList(){
       <td>$${t.rentPerWeek}</td>
       <td>${statusBadge(t)}</td>
       <td>${t.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="deleteTenant('${t.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editTenant('${t.id}')">Edit</button> <button class="btn btn-sm" onclick="deleteTenant('${t.id}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -1916,6 +1895,7 @@ async function deleteTenant(id){
   const all=await dbGetAll('tenants');
   const record=all.find(t=>t.id===id);
   if(!record)return;
+  await logActivity('Tenant','Deleted',record.tenantName+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
     await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
@@ -1958,7 +1938,7 @@ async function pushTenantToBackend(record){
         property_address:record.propertyAddress,lease_start:record.leaseStart,lease_end:record.leaseEnd,
         bond_lodged:record.bondLodged,bond_reference:record.bondReference,rent_per_week:record.rentPerWeek,
         status:record.status,arrears_amount:record.arrearsAmount,notes:record.notes,
-        created_at:record.createdAt
+        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
     return res.ok;
@@ -2015,14 +1995,31 @@ async function populateMaintenancePropertyDropdown(){
   select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
 }
 
-function toggleMaintForm(show){
+let editingMaintenanceId=null;
+async function toggleMaintForm(show,record){
   document.getElementById('maint-form-card').style.display=show?'block':'none';
+  const titleEl=document.getElementById('maint-form-title');
   if(show){
-    document.getElementById('maint-issue').value='';
-    document.getElementById('maint-assigned').value='';
-    document.getElementById('maint-date').value=todayStr();
-    populateMaintenancePropertyDropdown();
+    editingMaintenanceId=record?record.id:null;
+    if(titleEl) titleEl.textContent=record?'Edit maintenance request':'New maintenance request';
+    document.getElementById('maint-issue').value=record?record.issue:'';
+    document.getElementById('maint-assigned').value=record?(record.assignedTo==='—'?'':record.assignedTo):'';
+    document.getElementById('maint-date').value=record?record.reportedDate:todayStr();
+    document.getElementById('maint-priority').value=record?record.priority:'Urgent';
+    document.getElementById('maint-status').value=record?record.status:'Unassigned';
+    await populateMaintenancePropertyDropdown();
+    if(record) document.getElementById('maint-property').value=record.propertyId;
+  }else{
+    editingMaintenanceId=null;
   }
+}
+
+async function editMaintenance(id){
+  const all=await dbGetAll('maintenance');
+  const record=all.find(m=>m.id===id);
+  if(!record) return;
+  await toggleMaintForm(true,record);
+  document.getElementById('page-maintenance').scrollIntoView({behavior:'smooth'});
 }
 
 async function saveMaintenance(){
@@ -2032,8 +2029,10 @@ async function saveMaintenance(){
   if(!propertyId){ alert('Select a property — add one first if the list is empty.'); return; }
   const propertySelect=document.getElementById('maint-property');
   const propertyAddress=propertySelect.options[propertySelect.selectedIndex].textContent;
+  const isEdit=!!editingMaintenanceId;
+  const existing=isEdit?(await dbGetAll('maintenance')).find(m=>m.id===editingMaintenanceId):null;
   const record={
-    id:'maint_'+Date.now(),
+    id:isEdit?editingMaintenanceId:'maint_'+Date.now(),
     propertyId,
     propertyAddress,
     issue,
@@ -2043,9 +2042,11 @@ async function saveMaintenance(){
     status:document.getElementById('maint-status').value,
     synced:false,
     pendingDelete:false,
-    createdAt:new Date().toISOString()
+    createdAt:(isEdit&&existing)?existing.createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
   };
   await dbPut('maintenance',record);
+  await logActivity('Maintenance',isEdit?'Updated':'Created',record.issue+' — '+record.propertyAddress);
   await renderMaintenanceList();
   updateMaintSyncBanner();
   toggleMaintForm(false);
@@ -2078,7 +2079,7 @@ async function renderMaintenanceList(){
       <td>${m.assignedTo}</td>
       <td>${statusBadge(m.status)}</td>
       <td>${m.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="deleteMaintenance('${m.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editMaintenance('${m.id}')">Edit</button> <button class="btn btn-sm" onclick="deleteMaintenance('${m.id}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -2087,6 +2088,7 @@ async function deleteMaintenance(id){
   const all=await dbGetAll('maintenance');
   const record=all.find(m=>m.id===id);
   if(!record)return;
+  await logActivity('Maintenance','Deleted',record.issue+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
     await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
@@ -2127,7 +2129,8 @@ async function pushMaintenanceToBackend(record){
       body:JSON.stringify({
         id:record.id,property_id:record.propertyId,property_address:record.propertyAddress,
         issue:record.issue,reported_date:record.reportedDate,priority:record.priority,
-        assigned_to:record.assignedTo,status:record.status,created_at:record.createdAt
+        assigned_to:record.assignedTo,status:record.status,created_at:record.createdAt,
+        updated_at:record.updatedAt||record.createdAt
       })
     });
     return res.ok;

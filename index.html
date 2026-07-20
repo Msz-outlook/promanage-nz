@@ -1167,6 +1167,21 @@ function dbDelete(storeName,id){
 }
 
 /* ============================================================
+   PROPERTY ADDRESS RESOLUTION — Tenants, Maintenance and
+   Inspections each store a propertyId (source of truth) plus a
+   propertyAddress/property snapshot taken at save time (kept for
+   backend compatibility and as a fallback if the property was
+   since deleted). This resolver always prefers the LIVE address
+   from the properties store, so editing a property's address
+   immediately updates every screen that references it, with no
+   need to touch the tenant/maintenance/inspection records.
+   ============================================================ */
+function resolvePropertyAddress(properties){
+  const map=new Map(properties.map(p=>[p.id,p.address]));
+  return (record)=>(record.propertyId && map.get(record.propertyId)) || record.propertyAddress || record.property || '—';
+}
+
+/* ============================================================
    ACTIVITY LOG — every create/update/delete across all modules
    is written here with a timestamp, purely local (IndexedDB).
    ============================================================ */
@@ -1268,7 +1283,7 @@ async function populateInspectionPropertyDropdown(){
     select.innerHTML='<option value="">— Add a property first —</option>';
     return;
   }
-  select.innerHTML=props.map(p=>`<option>${p.address}</option>`).join('');
+  select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
 }
 
 let editingInspectionId=null;
@@ -1293,7 +1308,25 @@ async function editInspection(id){
   if(!record) return;
   editingInspectionId=id;
   await populateInspectionPropertyDropdown();
-  document.getElementById('insp-property').value=record.property;
+  const propSelect=document.getElementById('insp-property');
+  let targetId=record.propertyId||'';
+  if(!targetId&&record.property){
+    // Legacy inspection saved before propertyId tracking — try to match by
+    // the address text it was saved with, so old records still pre-select.
+    const properties=await dbGetAll('properties').catch(()=>[]);
+    const match=properties.find(p=>p.address===record.property);
+    targetId=match?match.id:'';
+  }
+  propSelect.value=targetId;
+  if(!propSelect.value&&record.property){
+    // Couldn't match the old address to a current property — surface it
+    // instead of silently selecting nothing, so it doesn't save unlinked.
+    const opt=document.createElement('option');
+    opt.value='';
+    opt.textContent=`⚠ ${record.property} (re-select the property)`;
+    opt.selected=true;
+    propSelect.insertBefore(opt,propSelect.firstChild);
+  }
   document.getElementById('insp-date').value=record.date;
   document.getElementById('insp-areas').innerHTML='';
   areaCounter=0;
@@ -1312,6 +1345,10 @@ function cancelInspectionEdit(){
 }
 
 async function saveInspection(){
+  const propSelect=document.getElementById('insp-property');
+  const propertyId=propSelect.value;
+  if(!propertyId){ alert('Select a property — add one first if the list is empty.'); return; }
+  const propertyAddress=propSelect.options[propSelect.selectedIndex].textContent;
   const areas=[];
   document.querySelectorAll('#insp-areas .insp-area').forEach(el=>{
     areas.push({
@@ -1325,7 +1362,8 @@ async function saveInspection(){
   const existing=isEdit?(await dbGetAll('inspections')).find(i=>i.id===editingInspectionId):null;
   const record={
     id: isEdit?editingInspectionId:'insp_'+Date.now(),
-    property: document.getElementById('insp-property').value,
+    propertyId,
+    property: propertyAddress, // display/PDF/backend snapshot — resolvePropertyAddress() prefers the live address wherever it's shown
     date: document.getElementById('insp-date').value,
     areas,
     synced: false,
@@ -1345,6 +1383,8 @@ async function saveInspection(){
 
 async function renderInspectionList(){
   const all=(await dbGetAll('inspections')).filter(i=>!i.pendingDelete);
+  const properties=await dbGetAll('properties').catch(()=>[]);
+  const addressOf=resolvePropertyAddress(properties);
   all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const tbody=document.getElementById('insp-list');
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
@@ -1356,7 +1396,7 @@ async function renderInspectionList(){
     const photoCount=insp.areas.reduce((n,a)=>n+a.photos.length,0);
     const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
     return `<tr>
-      <td>${insp.property}</td>
+      <td>${addressOf(insp)}</td>
       <td>${insp.date}</td>
       <td style="font-size:12px;color:var(--text2)">${areaSummary}</td>
       <td>${photoCount}</td>
@@ -1370,6 +1410,8 @@ async function generateInspectionPDF(id){
   const all=await dbGetAll('inspections');
   const insp=all.find(i=>i.id===id);
   if(!insp) return;
+  const properties=await dbGetAll('properties').catch(()=>[]);
+  const siteAddress=resolvePropertyAddress(properties)(insp);
 
   const findings=(insp.areas||[]).map(a=>({
     item: a.name,
@@ -1389,13 +1431,13 @@ async function generateInspectionPDF(id){
     await FindingsReport.generate({
       title:'Property Inspection Report',
       meta:{
-        Site: insp.property||'—',
+        Site: siteAddress||'—',
         Reference: insp.id,
         Date: insp.date||'—',
         'Prepared by':'ProManage NZ'
       },
       findings
-    },{ fileName:`inspection-${sanitizeForPath(insp.property||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`, download:true });
+    },{ fileName:`inspection-${sanitizeForPath(siteAddress||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`, download:true });
   }catch(err){
     alert('Could not generate report: '+(err && err.message));
   }finally{
@@ -1515,6 +1557,11 @@ async function pushInspectionToBackend(record){
       return res.ok ? 'deleted' : false;
     }
     const uploadedRecord=await uploadRecordPhotos(record);
+    // NOTE: uploadedRecord.propertyId is not sent here on purpose — the
+    // Supabase `inspections` table doesn't have a property_id column yet.
+    // Add one (uuid/text, matching properties.id) and add `property_id:
+    // uploadedRecord.propertyId` below if you want the link to sync too;
+    // until then, `property` (the address snapshot) is what's stored remotely.
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
       method:'POST',
       headers:{
@@ -1594,8 +1641,8 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 /* ============================================================
    PROPERTIES MODULE — same offline-first pattern as Inspections,
-   with one addition: deletes also sync (a real DELETE call),
-   unlike Inspections where deletes are currently local-only.
+   including remote-synced deletes (a real DELETE call, queued via
+   pendingDelete when offline).
    ============================================================ */
 
 let editingPropertyId=null;
@@ -1863,6 +1910,8 @@ async function saveTenant(){
 
 async function renderTenantsList(){
   const all=(await dbGetAll('tenants')).filter(t=>!t.pendingDelete);
+  const properties=await dbGetAll('properties').catch(()=>[]);
+  const addressOf=resolvePropertyAddress(properties);
   all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const tbody=document.getElementById('tenant-list');
   document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
@@ -1879,7 +1928,7 @@ async function renderTenantsList(){
   tbody.innerHTML=all.map(t=>`
     <tr>
       <td><strong>${t.tenantName}</strong></td>
-      <td>${t.propertyAddress}</td>
+      <td>${addressOf(t)}</td>
       <td>${t.leaseStart||'—'}</td>
       <td>${t.leaseEnd||'—'}</td>
       <td>${t.bondLodged?'<span class="badge bg">✓ TS</span>':'<span class="badge ba">Not lodged</span>'}</td>
@@ -2055,6 +2104,8 @@ async function saveMaintenance(){
 
 async function renderMaintenanceList(){
   const all=(await dbGetAll('maintenance')).filter(m=>!m.pendingDelete);
+  const properties=await dbGetAll('properties').catch(()=>[]);
+  const addressOf=resolvePropertyAddress(properties);
   all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   const tbody=document.getElementById('maint-list');
   document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
@@ -2072,7 +2123,7 @@ async function renderMaintenanceList(){
   };
   tbody.innerHTML=all.map(m=>`
     <tr>
-      <td>${m.propertyAddress}</td>
+      <td>${addressOf(m)}</td>
       <td>${m.issue}</td>
       <td>${m.reportedDate}</td>
       <td>${priorityDot(m.priority)}</td>
@@ -2182,6 +2233,7 @@ async function renderDashboard(){
   const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
   const tenants=(await dbGetAll('tenants').catch(()=>[])).filter(t=>!t.pendingDelete);
   const maintenance=(await dbGetAll('maintenance').catch(()=>[])).filter(m=>!m.pendingDelete);
+  const addressOf=resolvePropertyAddress(properties);
 
   // Metrics
   const ltCount=properties.filter(p=>p.tenancy==='Long-term').length;
@@ -2218,20 +2270,20 @@ async function renderDashboard(){
   // Lease renewals due
   const renewals=tenants.filter(t=>t.status==='Renewal due');
   document.getElementById('dash-renewals').innerHTML=renewals.length
-    ? renewals.map(t=>`<tr><td>${t.propertyAddress}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
+    ? renewals.map(t=>`<tr><td>${addressOf(t)}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
 
   // Rent arrears
   const arrears=tenants.filter(t=>t.status==='Arrears');
   document.getElementById('dash-arrears').innerHTML=arrears.length
-    ? arrears.map(t=>`<tr><td>${t.propertyAddress}</td><td>${t.tenantName}</td><td>$${t.arrearsAmount}</td></tr>`).join('')
+    ? arrears.map(t=>`<tr><td>${addressOf(t)}</td><td>${t.tenantName}</td><td>$${t.arrearsAmount}</td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr>';
 
   // Urgent maintenance
   document.getElementById('dash-maint').innerHTML=urgentMaint.length
     ? urgentMaint.map(m=>{
         const statusMap={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-        return `<tr><td>${m.propertyAddress}</td><td>${m.issue}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${m.status}</span></td></tr>`;
+        return `<tr><td>${addressOf(m)}</td><td>${m.issue}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${m.status}</span></td></tr>`;
       }).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr>';
 }

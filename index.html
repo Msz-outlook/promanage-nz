@@ -734,7 +734,7 @@ textarea:focus{border-color:var(--text)}
 <div class="page" id="page-properties">
   <div class="sync-banner sync-online" id="sync-banner-prop">
     <span><span class="sync-dot"></span><span id="sync-status-text-prop">Online</span> · <span id="sync-pending-text-prop">0 pending sync</span></span>
-    <button class="btn btn-sm" onclick="syncPendingProperties()">🔄 Sync now</button>
+    <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
   </div>
 
   <div class="card" id="prop-form-card" style="display:none">
@@ -773,7 +773,7 @@ textarea:focus{border-color:var(--text)}
 <div class="page" id="page-tenants">
   <div class="sync-banner sync-online" id="sync-banner-tenant">
     <span><span class="sync-dot"></span><span id="sync-status-text-tenant">Online</span> · <span id="sync-pending-text-tenant">0 pending sync</span></span>
-    <button class="btn btn-sm" onclick="syncPendingTenants()">🔄 Sync now</button>
+    <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
   </div>
 
   <div class="card" id="tenant-form-card" style="display:none">
@@ -822,7 +822,7 @@ textarea:focus{border-color:var(--text)}
 <div class="page" id="page-maintenance">
   <div class="sync-banner sync-online" id="sync-banner-maint">
     <span><span class="sync-dot"></span><span id="sync-status-text-maint">Online</span> · <span id="sync-pending-text-maint">0 pending sync</span></span>
-    <button class="btn btn-sm" onclick="syncPendingMaintenance()">🔄 Sync now</button>
+    <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
   </div>
 
   <div class="card" id="maint-form-card" style="display:none">
@@ -866,7 +866,7 @@ textarea:focus{border-color:var(--text)}
 <div class="page" id="page-inspections">
   <div class="sync-banner sync-online" id="sync-banner">
     <span><span class="sync-dot"></span><span id="sync-status-text">Online</span> · <span id="sync-pending-text">0 pending sync</span></span>
-    <button class="btn btn-sm" onclick="syncPendingInspections()">🔄 Sync now</button>
+    <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
   </div>
 
   <div class="card">
@@ -1037,13 +1037,15 @@ function toggleSidebar(force){
    Data flow:
      1. Inspection form data + photos are saved straight to IndexedDB
         (works with zero signal — no network call happens on save).
-     2. When the device is online, "Sync now" (or auto-sync on
-        reconnect) pushes any unsynced inspections to your backend.
-     3. CONFIG below is where you plug in Supabase (or another
-        backend) once it exists. Until then, sync just marks
-        records as synced locally so you can see the flow working —
-        replace pushInspectionToBackend() with a real fetch() call
-        when your Supabase project is ready.
+     2. When the device is online, "Sync now" (or auto-sync on login/
+        reconnect) pushes any unsynced records to Supabase, THEN pulls
+        the current state of each table back down and merges it into
+        IndexedDB — see fullSyncNow()/pullAndMerge() below. This is
+        what lets the app notice changes made elsewhere (another
+        device, a direct edit in Supabase, etc), not just push its
+        own changes outward.
+     3. CONFIG below is already pointed at a live Supabase project —
+        pushXToBackend()/pullAndMerge() talk to it directly.
    ============================================================ */
 
 const CONFIG = {
@@ -1064,6 +1066,7 @@ async function checkSession(){
   const {data:{session}} = await sb.auth.getSession();
   if(session){
     showApp();
+    fullSyncNow(); // background — reconciles with Supabase now we know we're authenticated
   }else{
     document.getElementById('login-gate').style.display='flex';
     document.getElementById('main-app').style.display='none';
@@ -1087,16 +1090,17 @@ async function doLogin(){
     return;
   }
   showApp();
-  renderInspectionList();
+  await renderInspectionList();
   updateSyncBanner();
-  renderPropertiesList();
+  await renderPropertiesList();
   updatePropSyncBanner();
-  renderTenantsList();
+  await renderTenantsList();
   updateTenantSyncBanner();
-  renderMaintenanceList();
+  await renderMaintenanceList();
   updateMaintSyncBanner();
-  renderDashboard();
-  renderActivityLog();
+  await renderDashboard();
+  await renderActivityLog();
+  fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere, re-renders when done
 }
 
 async function doLogout(){
@@ -1179,6 +1183,123 @@ function dbDelete(storeName,id){
 function resolvePropertyAddress(properties){
   const map=new Map(properties.map(p=>[p.id,p.address]));
   return (record)=>(record.propertyId && map.get(record.propertyId)) || record.propertyAddress || record.property || '—';
+}
+
+/* ============================================================
+   PULL-AND-MERGE — makes the app aware of server-side changes
+   (another device syncing, a row edited/deleted directly in
+   Supabase, a fresh table, etc). Previously the app only ever
+   pushed local → remote and never read back, so it was blind to
+   anything that happened outside itself.
+
+   Rule used to decide which copy wins, per record:
+     - Not present locally at all           → pull it in
+     - Present locally but NOT yet synced   → LOCAL wins (don't
+       clobber an edit that hasn't been pushed yet)
+     - Present locally and synced           → whichever has the
+       newer updated_at wins
+     - Synced locally but missing remotely  → it was deleted
+       elsewhere, remove it locally too
+
+   Known limitation: if a record is deleted remotely while another
+   device still has unsynced local edits to that same id, the next
+   push will resurrect it (upsert has no way to know it was deleted
+   elsewhere). Rare in a single-manager setup; would need a proper
+   tombstone/conflict system to close completely.
+   ============================================================ */
+async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
+  if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
+  try{
+    const token=await authHeader();
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${remoteTable}?select=*`,{
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    });
+    if(!res.ok) return;
+    const remoteRows=await res.json();
+    const localAll=await dbGetAll(storeName);
+    const localById=new Map(localAll.map(r=>[r.id,r]));
+    const remoteIds=new Set();
+
+    for(const row of remoteRows){
+      remoteIds.add(row.id);
+      const mapped=mapRemoteToLocal(row);
+      const local=localById.get(row.id);
+      if(!local){
+        await dbPut(storeName,{...mapped,synced:true,pendingDelete:false});
+        continue;
+      }
+      if(!local.synced) continue; // unpushed local edit — local wins for now
+      const localTime=local.updatedAt||local.createdAt||'';
+      const remoteTime=mapped.updatedAt||mapped.createdAt||'';
+      if(remoteTime>localTime){
+        await dbPut(storeName,{...local,...mapped,synced:true,pendingDelete:false});
+      }
+    }
+
+    for(const local of localAll){
+      if(local.synced && !local.pendingDelete && !remoteIds.has(local.id)){
+        await dbDelete(storeName,local.id);
+      }
+    }
+  }catch(err){
+    console.log('Pull sync failed for '+storeName+':',err);
+  }
+}
+
+function mapRemoteProperty(row){
+  return{
+    id:row.id,address:row.address,bedrooms:row.bedrooms,bathrooms:row.bathrooms,
+    floorArea:row.floor_area,tenancy:row.tenancy,rentPerWeek:row.rent_per_week,
+    status:row.status,complianceStatus:row.compliance_status,notes:row.notes,
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
+function mapRemoteTenant(row){
+  return{
+    id:row.id,tenantName:row.tenant_name,propertyId:row.property_id,propertyAddress:row.property_address,
+    leaseStart:row.lease_start,leaseEnd:row.lease_end,bondLodged:row.bond_lodged,bondReference:row.bond_reference,
+    rentPerWeek:row.rent_per_week,status:row.status,arrearsAmount:row.arrears_amount,notes:row.notes,
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
+function mapRemoteMaintenance(row){
+  return{
+    id:row.id,propertyId:row.property_id,propertyAddress:row.property_address,issue:row.issue,
+    reportedDate:row.reported_date,priority:row.priority,assignedTo:row.assigned_to,status:row.status,
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
+function mapRemoteInspection(row){
+  return{
+    id:row.id,propertyId:row.property_id,property:row.property,date:row.date,areas:row.areas||[],
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
+
+async function pullAllAndMerge(){
+  await pullAndMerge('properties','properties',mapRemoteProperty);
+  await pullAndMerge('tenants','tenants',mapRemoteTenant);
+  await pullAndMerge('maintenance','maintenance',mapRemoteMaintenance);
+  await pullAndMerge('inspections','inspections',mapRemoteInspection);
+  await renderPropertiesList();  updatePropSyncBanner();
+  await renderTenantsList();     updateTenantSyncBanner();
+  await renderMaintenanceList(); updateMaintSyncBanner();
+  await renderInspectionList();  updateSyncBanner();
+  await renderDashboard();
+}
+
+// Push anything pending, then pull whatever changed elsewhere. Pushing first
+// means local edits win any race against a stale remote copy.
+async function fullSyncNow(){
+  if(!navigator.onLine){
+    alert('Still offline — will sync automatically once connection returns.');
+    return;
+  }
+  await syncPendingProperties();
+  await syncPendingTenants();
+  await syncPendingMaintenance();
+  await syncPendingInspections();
+  await pullAllAndMerge();
 }
 
 /* ============================================================
@@ -1557,11 +1678,6 @@ async function pushInspectionToBackend(record){
       return res.ok ? 'deleted' : false;
     }
     const uploadedRecord=await uploadRecordPhotos(record);
-    // NOTE: uploadedRecord.propertyId is not sent here on purpose — the
-    // Supabase `inspections` table doesn't have a property_id column yet.
-    // Add one (uuid/text, matching properties.id) and add `property_id:
-    // uploadedRecord.propertyId` below if you want the link to sync too;
-    // until then, `property` (the address snapshot) is what's stored remotely.
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
       method:'POST',
       headers:{
@@ -1572,6 +1688,7 @@ async function pushInspectionToBackend(record){
       },
       body: JSON.stringify({
         id: uploadedRecord.id,
+        property_id: uploadedRecord.propertyId,
         property: uploadedRecord.property,
         date: uploadedRecord.date,
         areas: uploadedRecord.areas,
@@ -1620,7 +1737,7 @@ async function updateSyncBanner(){
   pendingText.textContent=pendingCount+' pending sync';
 }
 
-window.addEventListener('online',()=>{updateSyncBanner();syncPendingInspections();updatePropSyncBanner();syncPendingProperties();updateTenantSyncBanner();syncPendingTenants();updateMaintSyncBanner();syncPendingMaintenance();});
+window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();fullSyncNow();});
 window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready

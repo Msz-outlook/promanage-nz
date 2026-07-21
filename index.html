@@ -75,6 +75,8 @@ tbody tr:hover td{background:var(--bg2)}
 .btn:hover{background:var(--bg2)}
 .btn-primary{background:var(--text);color:var(--bg);border-color:var(--text)}
 .btn-primary:hover{opacity:.85}
+.btn-danger{background:var(--red-bg);color:var(--red-text);border-color:#E9A6A6}
+.btn-danger:hover{background:#F8D9D9}
 .btn-sm{padding:4px 10px;font-size:12px}
 
 /* Alerts */
@@ -84,7 +86,7 @@ tbody tr:hover td{background:var(--bg2)}
 .alert-red{background:var(--red-bg);color:var(--red-text);border:0.5px solid #E24B4A}
 
 /* Forms */
-select,input[type=text],input[type=number]{padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none}
+select,input[type=text],input[type=number],input[type=date]{padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none}
 select:focus,input:focus{border-color:var(--text);box-shadow:0 0 0 2px rgba(0,0,0,.08)}
 .controls{display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;align-items:center}
 label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
@@ -750,23 +752,28 @@ textarea:focus{border-color:var(--text)}
         <div><label>Tenancy</label><select id="prop-tenancy"><option>Long-term</option><option>Short-term</option></select></div>
         <div><label>Rent / wk ($)</label><input type="number" id="prop-rent" style="width:100px" value="600"></div>
         <div><label>Status</label><select id="prop-status"><option>Occupied</option><option>Vacant</option><option>Booked</option><option>Arrears</option></select></div>
-        <div><label>Compliance</label><select id="prop-compliance"><option>Current</option><option>Overdue</option></select></div>
       </div>
+      <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px">Compliance checklist (Healthy Homes + regulatory items) is managed on the NZ Compliance page.</div>
       <label>Notes</label>
       <textarea id="prop-notes" placeholder="Optional notes..."></textarea>
-      <div style="display:flex;gap:8px;margin-top:.75rem">
-        <button class="btn btn-primary" onclick="saveProperty()">💾 Save property</button>
-        <button class="btn" onclick="togglePropForm(false)">Cancel</button>
+      <div style="display:flex;gap:8px;margin-top:.75rem;justify-content:space-between">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="saveProperty()">💾 Save property</button>
+          <button class="btn" onclick="togglePropForm(false)">Cancel</button>
+        </div>
+        <button class="btn btn-danger" id="prop-delete-btn" style="display:none" onclick="deletePropertyFromForm()">🗑 Delete property</button>
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-head">All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th><th>Actions</th></tr></thead>
-      <tbody id="prop-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
-    </table></div><div class="scroll-fade"></div></div>
+    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click an address to edit.</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th></tr></thead>
+      <tbody id="prop-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
+      </table></div><div class="scroll-fade"></div></div>
   </div>
+
 </div>
 
 <!-- TENANTS -->
@@ -796,17 +803,21 @@ textarea:focus{border-color:var(--text)}
       </div>
       <label>Notes</label>
       <textarea id="tenant-notes" placeholder="Optional notes..."></textarea>
-      <div style="display:flex;gap:8px;margin-top:.75rem">
-        <button class="btn btn-primary" onclick="saveTenant()">💾 Save tenant</button>
-        <button class="btn" onclick="toggleTenantForm(false)">Cancel</button>
+      <div style="display:flex;gap:8px;margin-top:.75rem;justify-content:space-between">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="saveTenant()">💾 Save tenant</button>
+          <button class="btn" onclick="toggleTenantForm(false)">Cancel</button>
+        </div>
+        <button class="btn btn-danger" id="tenant-delete-btn" style="display:none" onclick="deleteTenantFromForm()">🗑 Delete tenant</button>
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-head">Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
-      <tbody id="tenant-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
+    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click a tenant to edit.</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th></tr></thead>
+      <tbody id="tenant-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
   </div>
   <div class="card">
@@ -839,17 +850,21 @@ textarea:focus{border-color:var(--text)}
         <div><label>Assigned to</label><input type="text" id="maint-assigned" placeholder="e.g. Heatpump NZ (optional)"></div>
         <div><label>Status</label><select id="maint-status"><option>Unassigned</option><option>Scheduled</option><option>In progress</option><option>Completed</option></select></div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:.5rem">
-        <button class="btn btn-primary" onclick="saveMaintenance()">💾 Save request</button>
-        <button class="btn" onclick="toggleMaintForm(false)">Cancel</button>
+      <div style="display:flex;gap:8px;margin-top:.5rem;justify-content:space-between">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="saveMaintenance()">💾 Save request</button>
+          <button class="btn" onclick="toggleMaintForm(false)">Cancel</button>
+        </div>
+        <button class="btn btn-danger" id="maint-delete-btn" style="display:none" onclick="deleteMaintenanceFromForm()">🗑 Delete request</button>
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-head">Maintenance requests <span id="maint-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleMaintForm(true)">+ New request</button></div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th><th>Actions</th></tr></thead>
-      <tbody id="maint-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr></tbody>
+    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click an issue to edit.</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Issue</th><th>Property</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th></tr></thead>
+      <tbody id="maint-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
   </div>
   <div class="card">
@@ -902,7 +917,7 @@ textarea:focus{border-color:var(--text)}
 
 <!-- FINANCIALS -->
 <div class="page" id="page-financials">
-  <div class="alert alert-blue">ℹ️ <div><strong>Live from Xero</strong> — snapshot as of 15 Jul 2026, split by property (your only 2 contacts in Xero). Ask Claude in chat to "refresh Xero numbers" for an updated pull.</div></div>
+  <div class="alert alert-blue">ℹ️ <div><strong>Manually updated snapshot</strong> — as of 15 Jul 2026, split by property (your only 2 contacts in Xero). This isn't a live feed; ask Claude in chat to "pull fresh Xero numbers" whenever you want it refreshed.</div></div>
   <div class="metrics">
     <div class="metric"><div class="metric-label">Total income (this period)</div><div class="metric-val">$11,290</div><div class="metric-sub">1 Apr – 15 Jul 2026</div></div>
     <div class="metric"><div class="metric-label">Net profit</div><div class="metric-val" style="color:var(--green-text)">$3,789</div><div class="metric-sub">Expenses: $7,501</div></div>
@@ -961,32 +976,26 @@ textarea:focus{border-color:var(--text)}
 
 <!-- COMPLIANCE -->
 <div class="page" id="page-compliance">
-  <div class="alert alert-amber">⚠️ 2 properties have overdue Healthy Homes inspections. Penalties up to $7,200 per breach apply.</div>
+  <div class="alert alert-blue" id="compliance-alert-banner">ℹ️ <div>Loading…</div></div>
   <div class="two-col">
     <div class="card">
       <div class="card-head">Healthy Homes Standards</div>
-      <div style="padding:0 1.25rem">
-        <div class="comp-item"><div class="comp-icon ci-g">🌡</div><div><div class="comp-name">Heating standard</div><div class="comp-desc">Fixed heater ≥18°C in main living area. 8 of 10 certified.</div><div class="prog"><div class="prog-fill" style="width:80%"></div></div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-a">💧</div><div><div class="comp-name">Draught stopping</div><div class="comp-desc">Gaps & cracks sealed. 2 properties pending inspection.</div><div class="prog"><div class="prog-fill" style="width:80%"></div></div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-g">💨</div><div><div class="comp-name">Ventilation standard</div><div class="comp-desc">Extractor fans in kitchens & bathrooms. All compliant.</div><div class="prog"><div class="prog-fill" style="width:100%"></div></div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-g">☀️</div><div><div class="comp-name">Moisture & drainage</div><div class="comp-desc">Subfloor vapour barriers where required. All compliant.</div><div class="prog"><div class="prog-fill" style="width:100%"></div></div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-a">🏠</div><div><div class="comp-name">Insulation standard</div><div class="comp-desc">14 Bealey Ave & 3 Fitzgerald Ave overdue.</div><div class="prog"><div class="prog-fill" style="width:80%"></div></div></div></div>
-      </div>
+      <div style="padding:0 1.25rem" id="hh-standards-list"></div>
     </div>
     <div class="card">
       <div class="card-head">Regulatory checklist</div>
-      <div style="padding:0 1.25rem">
-        <div class="comp-item"><div class="comp-icon ci-g">📄</div><div><div class="comp-name">Tenancy agreements (RTA 1986)</div><div class="comp-desc">Written agreements for all long-term tenants. ✓</div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-g">🔒</div><div><div class="comp-name">Bond lodged — Tenancy Services</div><div class="comp-desc">All bonds lodged within 23 working days. ✓</div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-g">🔥</div><div><div class="comp-name">Smoke alarms</div><div class="comp-desc">Photoelectric alarms per Building Act. All compliant. ✓</div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-a">🏘</div><div><div class="comp-name">Short-term rental (Chch District Plan)</div><div class="comp-desc">Check if resource consent needed for 3 ST properties.</div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-g">🛡</div><div><div class="comp-name">Privacy Act 2020</div><div class="comp-desc">Tenant data stored securely. Disclosure policy in place. ✓</div></div></div>
-        <div class="comp-item"><div class="comp-icon ci-a">💰</div><div><div class="comp-name">GST — short-term rental</div><div class="comp-desc">Monitor turnover vs $60k threshold. Register if exceeded.</div></div></div>
-      </div>
+      <div style="padding:0 1.25rem" id="regulatory-checklist-list"></div>
     </div>
   </div>
   <div class="card">
-    <div class="card-head">2025–2026 NZ law changes</div>
+    <div class="card-head">Manage compliance by property</div>
+    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click an address to update its checklist.</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Summary</th></tr></thead>
+      <tbody id="compliance-properties-list"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:14px">No properties yet</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-head">2025–2026 NZ law changes <span id="law-last-verified" style="font-weight:400;color:var(--text3);font-size:11px"></span></div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Change</th><th>Impact</th><th>Action needed</th></tr></thead><tbody>
       <tr><td>Granny flat ≤70m² — no consent (2026)</td><td>Portfolio expansion opportunity</td><td><span class="badge bb">Review suitable sites</span></td></tr>
       <tr><td>NPS-UD / Plan Change 14 — intensification (Chch)</td><td>Increased density allowed in residential zones</td><td><span class="badge bb">Check each site's zoning</span></td></tr>
@@ -1010,6 +1019,39 @@ textarea:focus{border-color:var(--text)}
 </div>
 </div>
 
+<!-- COMPLIANCE MODAL (per-property checklist) — page-independent overlay -->
+<div id="compliance-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:50;display:none;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--bg);border-radius:var(--radius-lg);max-width:640px;width:100%;max-height:85vh;overflow-y:auto;padding:1.5rem">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;gap:10px">
+      <div>
+        <div style="font-size:15px;font-weight:600" id="compliance-modal-title">Compliance</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">Healthy Homes compliance is continuous under the RTA — there's no fixed government deadline anymore, so "Next due" here is your own re-check reminder, not a legal date.</div>
+      </div>
+      <button class="btn btn-sm" onclick="closeComplianceModal()">✕</button>
+    </div>
+    <div id="compliance-modal-body"></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveComplianceModal()">💾 Save compliance</button>
+      <button class="btn" onclick="closeComplianceModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- CAMERA MODAL (multi-shot inspection photos) — page-independent overlay -->
+<div id="camera-modal" style="position:fixed;inset:0;background:#000;z-index:60;display:none;flex-direction:column">
+  <video id="camera-video" autoplay playsinline muted style="flex:1;width:100%;min-height:0;object-fit:cover;background:#000"></video>
+  <canvas id="camera-canvas" style="display:none"></canvas>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#000">
+    <button class="btn btn-sm" style="color:#fff;border-color:rgba(255,255,255,.4)" onclick="closeCameraModal()">✕ Close</button>
+    <div id="camera-shot-count" style="color:#fff;font-size:13px">0 photos</div>
+    <button class="btn btn-sm" style="color:#111;background:#fff;border-color:#fff" onclick="finishCameraCapture()">✓ Done</button>
+  </div>
+  <div id="camera-thumbs" style="display:flex;gap:6px;overflow-x:auto;padding:0 14px 10px;min-height:52px"></div>
+  <div style="display:flex;justify-content:center;padding:0 0 26px">
+    <button onclick="captureCameraShot()" aria-label="Take photo" style="width:66px;height:66px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.5);cursor:pointer"></button>
+  </div>
+</div>
+
 <script>
 const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',compliance:'NZ Compliance',activity:'Activity Log'};
 function nav(id,el){
@@ -1023,6 +1065,7 @@ function nav(id,el){
   if(id==='maintenance') populateMaintenancePropertyDropdown();
   if(id==='dashboard') renderDashboard();
   if(id==='activity') renderActivityLog();
+  if(id==='compliance') renderComplianceLive();
 }
 function toggleSidebar(force){
   const sidebar=document.getElementById('sidebar');
@@ -1053,6 +1096,12 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_4-vXVhXsr40g1KuLdihxhw_XH5-2Vqn',
   STORAGE_BUCKET: 'inspection-photos'
 };
+
+// The NZ law/compliance content in this app (dashboard alert + Compliance
+// page "law changes" card) is static text, not a live feed. This date is
+// the single source of truth for when it was last checked against current
+// legislation — update it (and the content) whenever you re-verify.
+const LAW_UPDATES_LAST_VERIFIED = '21 Jul 2026';
 
 /* ============================================================
    AUTH — Supabase Auth gates access to the app and its data.
@@ -1100,6 +1149,7 @@ async function doLogin(){
   updateMaintSyncBanner();
   await renderDashboard();
   await renderActivityLog();
+  await renderComplianceLive();
   fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere, re-renders when done
 }
 
@@ -1250,7 +1300,7 @@ function mapRemoteProperty(row){
   return{
     id:row.id,address:row.address,bedrooms:row.bedrooms,bathrooms:row.bathrooms,
     floorArea:row.floor_area,tenancy:row.tenancy,rentPerWeek:row.rent_per_week,
-    status:row.status,complianceStatus:row.compliance_status,notes:row.notes,
+    status:row.status,complianceItems:row.compliance_items||{},notes:row.notes,
     createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
   };
 }
@@ -1286,6 +1336,7 @@ async function pullAllAndMerge(){
   await renderMaintenanceList(); updateMaintSyncBanner();
   await renderInspectionList();  updateSyncBanner();
   await renderDashboard();
+  await renderComplianceLive();
 }
 
 // Push anything pending, then pull whatever changed elsewhere. Pushing first
@@ -1374,10 +1425,10 @@ function addInspectionArea(name,opts){
     <textarea class="area-notes" placeholder="Notes for this area...">${escapedNotes}</textarea>
     <div class="photo-strip">
       ${photosHtml}
-      <label class="photo-add">
+      <div class="photo-add" onclick="openCameraModal('${id}')" title="Take multiple photos">
         📷
-        <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
-      </label>
+        <input type="file" id="fallback-input-${id}" accept="image/*" capture="environment" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
+      </div>
     </div>`;
   document.getElementById('insp-areas').appendChild(wrap);
 }
@@ -1395,6 +1446,82 @@ function handlePhotoCapture(event,areaId){
     };
     reader.readAsDataURL(file);
   });
+  event.target.value=''; // allow re-selecting the same file(s) next time
+}
+
+/* ============================================================
+   CAMERA MODAL — lets a user take several photos in one session
+   (tap shutter repeatedly) instead of the OS camera closing after
+   every single shot. Falls back to the native file picker (with
+   capture="environment") if getUserMedia is unavailable or denied
+   — e.g. desktop without a webcam, or a permission refusal.
+   ============================================================ */
+let cameraStream=null, cameraTargetAreaId=null, cameraShots=[];
+
+async function openCameraModal(areaId){
+  cameraTargetAreaId=areaId;
+  cameraShots=[];
+  updateCameraShotCount();
+  document.getElementById('camera-thumbs').innerHTML='';
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    const fallback=document.getElementById('fallback-input-'+areaId);
+    if(fallback) fallback.click();
+    return;
+  }
+  document.getElementById('camera-modal').style.display='flex';
+  try{
+    cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+    document.getElementById('camera-video').srcObject=cameraStream;
+  }catch(err){
+    closeCameraModal();
+    const fallback=document.getElementById('fallback-input-'+areaId);
+    if(fallback) fallback.click();
+  }
+}
+
+function captureCameraShot(){
+  if(!cameraStream) return;
+  const video=document.getElementById('camera-video');
+  const canvas=document.getElementById('camera-canvas');
+  canvas.width=video.videoWidth||1280;
+  canvas.height=video.videoHeight||960;
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  const dataUrl=canvas.toDataURL('image/jpeg',0.85);
+  cameraShots.push(dataUrl);
+  updateCameraShotCount();
+  const thumb=document.createElement('img');
+  thumb.src=dataUrl;
+  thumb.style.cssText='width:52px;height:52px;object-fit:cover;border-radius:6px;flex-shrink:0;border:1px solid rgba(255,255,255,.3)';
+  document.getElementById('camera-thumbs').appendChild(thumb);
+}
+
+function updateCameraShotCount(){
+  const el=document.getElementById('camera-shot-count');
+  if(el) el.textContent=cameraShots.length+' photo'+(cameraShots.length===1?'':'s');
+}
+
+function stopCameraStream(){
+  if(cameraStream){ cameraStream.getTracks().forEach(t=>t.stop()); cameraStream=null; }
+}
+
+function closeCameraModal(){
+  stopCameraStream();
+  document.getElementById('camera-modal').style.display='none';
+}
+
+function finishCameraCapture(){
+  if(cameraTargetAreaId && cameraShots.length){
+    const strip=document.querySelector('#'+cameraTargetAreaId+' .photo-strip');
+    if(strip){
+      cameraShots.forEach(dataUrl=>{
+        const img=document.createElement('img');
+        img.className='photo-thumb';
+        img.src=dataUrl;
+        strip.insertBefore(img,strip.firstChild);
+      });
+    }
+  }
+  closeCameraModal();
 }
 
 async function populateInspectionPropertyDropdown(){
@@ -1742,6 +1869,8 @@ window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner()
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
+  const lawVerifiedEl=document.getElementById('law-last-verified');
+  if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
   checkSession();
   resetInspectionForm();
   renderInspectionList();
@@ -1754,7 +1883,204 @@ document.addEventListener('DOMContentLoaded',()=>{
   updateMaintSyncBanner();
   renderDashboard();
   renderActivityLog();
+  renderComplianceLive();
 });
+
+/* ============================================================
+   COMPLIANCE MODULE — per-property, per-item tracking.
+   Each property carries a `complianceItems` object keyed by item
+   key: { status: 'Compliant'|'Overdue'|'Not assessed'|'N/A',
+          lastChecked: 'YYYY-MM-DD', nextDue: 'YYYY-MM-DD' }.
+   Old properties synced before this feature won't have the field —
+   getPropertyCompliance() fills in sensible defaults, so nothing
+   needs a one-off data migration to keep working.
+
+   Healthy Homes compliance is continuous under the RTA (no phased
+   deadline since 1 Jul 2025), so "Next due" is a self-set re-check
+   reminder, not a legal date — that's stated in the modal itself.
+   ============================================================ */
+
+const HEALTHY_HOMES_ITEMS=[
+  {key:'heating',label:'Heating standard',icon:'🌡',desc:'Fixed heater capable of 18°C in main living area.'},
+  {key:'insulation',label:'Insulation standard',icon:'🏠',desc:'Ceiling & underfloor insulation meets required R-values.'},
+  {key:'ventilation',label:'Ventilation standard',icon:'💨',desc:'Extractor fans in kitchen & bathroom; openable windows.'},
+  {key:'moisture',label:'Moisture & drainage',icon:'☀️',desc:'Drainage clear; subfloor vapour barrier where required.'},
+  {key:'draught',label:'Draught stopping',icon:'💧',desc:'Unreasonable gaps & openings sealed.'}
+];
+const REGULATORY_ITEMS_ALL=[
+  {key:'tenancy_agreement',label:'Tenancy agreement (RTA 1986)',icon:'📄',desc:'Written agreement in place.'},
+  {key:'bond_lodged',label:'Bond lodged — Tenancy Services',icon:'🔒',desc:'Lodged within 23 working days via Bond Hub.'},
+  {key:'smoke_alarms',label:'Smoke alarms',icon:'🔥',desc:'Photoelectric alarms per Building Act.'},
+  {key:'privacy_act',label:'Privacy Act 2020',icon:'🛡',desc:'Tenant data stored securely; disclosure policy in place.'}
+];
+const REGULATORY_ITEMS_ST=[
+  {key:'st_consent',label:'Short-term rental consent (Chch District Plan)',icon:'🏘',desc:'Resource consent if required for short-term letting.'},
+  {key:'gst_threshold',label:'GST — short-term rental',icon:'💰',desc:'Monitor turnover vs $60k/yr threshold; register if exceeded.'}
+];
+function complianceItemDefsForProperty(p){
+  const list=[...HEALTHY_HOMES_ITEMS,...REGULATORY_ITEMS_ALL];
+  if(p.tenancy==='Short-term') list.push(...REGULATORY_ITEMS_ST);
+  return list;
+}
+function getPropertyCompliance(p){
+  const stored=p.complianceItems||{};
+  return complianceItemDefsForProperty(p).map(def=>{
+    const s=stored[def.key]||{};
+    return {...def,status:s.status||'Not assessed',lastChecked:s.lastChecked||'',nextDue:s.nextDue||''};
+  });
+}
+function isItemOverdue(it,today){
+  const due=it.nextDue?new Date(it.nextDue):null;
+  return it.status==='Overdue' || (due && due<today);
+}
+function isItemDueSoon(it,today,in30){
+  if(isItemOverdue(it,today)) return false;
+  const due=it.nextDue?new Date(it.nextDue):null;
+  return !!(due && due>=today && due<=in30);
+}
+function overallComplianceStatus(p){
+  const today=new Date(); today.setHours(0,0,0,0);
+  return getPropertyCompliance(p).some(it=>isItemOverdue(it,today))?'Overdue':'Current';
+}
+function complianceSummaryBadge(p){
+  const items=getPropertyCompliance(p);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const overdue=items.filter(it=>isItemOverdue(it,today)).length;
+  const notAssessed=items.filter(it=>it.status==='Not assessed').length;
+  if(overdue>0) return `<span class="badge br">⚠ ${overdue} overdue</span>`;
+  if(notAssessed>0) return `<span class="badge ba">${notAssessed} not assessed</span>`;
+  return '<span class="badge bg">✓ Compliant</span>';
+}
+
+let complianceModalPropertyId=null;
+async function openComplianceModal(id){
+  const all=await dbGetAll('properties');
+  const p=all.find(x=>x.id===id);
+  if(!p) return;
+  complianceModalPropertyId=id;
+  document.getElementById('compliance-modal-title').textContent='Compliance — '+p.address;
+  const items=getPropertyCompliance(p);
+  document.getElementById('compliance-modal-body').innerHTML=items.map(it=>`
+    <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+      <div style="font-weight:500;font-size:13.5px">${it.icon} ${it.label}</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:6px">${it.desc}</div>
+      <div class="controls" style="margin-bottom:0">
+        <div><label>Status</label><select class="ci-status" data-key="${it.key}">
+          ${['Compliant','Overdue','Not assessed','N/A'].map(s=>`<option${s===it.status?' selected':''}>${s}</option>`).join('')}
+        </select></div>
+        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${it.lastChecked}"></div>
+        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${it.nextDue}"></div>
+      </div>
+    </div>`).join('');
+  document.getElementById('compliance-modal').style.display='flex';
+}
+function closeComplianceModal(){
+  document.getElementById('compliance-modal').style.display='none';
+  complianceModalPropertyId=null;
+}
+async function saveComplianceModal(){
+  if(!complianceModalPropertyId) return;
+  const all=await dbGetAll('properties');
+  const p=all.find(x=>x.id===complianceModalPropertyId);
+  if(!p) return;
+  const items={};
+  document.querySelectorAll('#compliance-modal-body .ci-status').forEach(sel=>{
+    const key=sel.dataset.key;
+    const last=document.querySelector(`.ci-last[data-key="${key}"]`).value;
+    const next=document.querySelector(`.ci-next[data-key="${key}"]`).value;
+    items[key]={status:sel.value,lastChecked:last,nextDue:next};
+  });
+  p.complianceItems=items;
+  p.synced=false;
+  p.updatedAt=new Date().toISOString();
+  await dbPut('properties',p);
+  await logActivity('Property','Updated','Compliance updated — '+p.address);
+  await renderPropertiesList();
+  updatePropSyncBanner();
+  renderComplianceLive();
+  renderDashboard();
+  if(navigator.onLine) syncPendingProperties();
+  closeComplianceModal();
+}
+
+async function renderComplianceLive(){
+  const banner=document.getElementById('compliance-alert-banner');
+  const hhList=document.getElementById('hh-standards-list');
+  const regList=document.getElementById('regulatory-checklist-list');
+  const propList=document.getElementById('compliance-properties-list');
+  if(!banner||!hhList||!regList) return;
+  const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const in30=new Date(today.getTime()+30*86400000);
+
+  function statsFor(key){
+    let compliant=0,overdue=0,notAssessed=0,na=0,total=0,dueSoon=0;
+    const overdueAddrs=[];
+    properties.forEach(p=>{
+      const it=getPropertyCompliance(p).find(i=>i.key===key);
+      if(!it) return;
+      total++;
+      if(it.status==='N/A'){ na++; return; }
+      if(isItemOverdue(it,today)){ overdue++; overdueAddrs.push(p.address); return; }
+      if(it.status==='Compliant'){ compliant++; if(isItemDueSoon(it,today,in30)) dueSoon++; return; }
+      notAssessed++;
+    });
+    return {compliant,overdue,notAssessed,na,total,dueSoon,overdueAddrs};
+  }
+
+  function renderCard(defs){
+    return defs.map(def=>{
+      const s=statsFor(def.key);
+      const pct=s.total?Math.round((s.compliant/(s.total-s.na||1))*100):0;
+      const iconClass=s.overdue>0?'ci-r':(s.notAssessed>0?'ci-a':'ci-g');
+      let desc;
+      if(!s.total) desc='No properties track this item yet.';
+      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${s.overdueAddrs.slice(0,2).join(', ')}${s.overdueAddrs.length>2?'…':''}`;
+      else if(s.notAssessed>0) desc=`${s.notAssessed} of ${s.total} not yet assessed.`;
+      else desc=`All ${s.total-s.na} compliant.`+(s.dueSoon?` ${s.dueSoon} due for re-check within 30 days.`:'');
+      return `<div class="comp-item"><div class="comp-icon ${iconClass}">${def.icon}</div><div><div class="comp-name">${def.label}</div><div class="comp-desc">${desc}</div><div class="prog"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>`;
+    }).join('');
+  }
+
+  hhList.innerHTML=renderCard(HEALTHY_HOMES_ITEMS);
+  regList.innerHTML=renderCard([...REGULATORY_ITEMS_ALL,...REGULATORY_ITEMS_ST]);
+
+  let overdueTotal=0,dueSoonTotal=0;
+  const overdueProps=new Set();
+  properties.forEach(p=>{
+    getPropertyCompliance(p).forEach(it=>{
+      if(isItemOverdue(it,today)){ overdueTotal++; overdueProps.add(p.address); }
+      else if(isItemDueSoon(it,today,in30)) dueSoonTotal++;
+    });
+  });
+  if(!properties.length){
+    banner.className='alert alert-blue';
+    banner.innerHTML='ℹ️ <div>Add properties to start tracking Healthy Homes and regulatory compliance per-property.</div>';
+  }else if(overdueTotal>0){
+    banner.className='alert alert-red';
+    banner.innerHTML=`⚠️ <div><strong>${overdueTotal} compliance item${overdueTotal>1?'s':''} overdue</strong> across ${overdueProps.size} propert${overdueProps.size>1?'ies':'y'} — ${[...overdueProps].slice(0,3).join(', ')}${overdueProps.size>3?'…':''}. Penalties up to $7,200 per breach apply.</div>`;
+  }else if(dueSoonTotal>0){
+    banner.className='alert alert-amber';
+    banner.innerHTML=`⚠️ <div><strong>${dueSoonTotal} item${dueSoonTotal>1?'s':''} due for re-check</strong> within 30 days.</div>`;
+  }else{
+    banner.className='alert alert-blue';
+    banner.innerHTML='ℹ️ <div>All tracked compliance items are up to date.</div>';
+  }
+
+  if(propList){
+    if(!properties.length){
+      propList.innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:14px">No properties yet</td></tr>';
+    }else{
+      const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
+      propList.innerHTML=properties.map(p=>`
+        <tr>
+          <td style="cursor:pointer" ondblclick="openComplianceModal('${p.id}')" title="Double-click to update compliance"><strong>${p.address}</strong></td>
+          <td>${tenancyBadge(p.tenancy)}</td>
+          <td>${complianceSummaryBadge(p)}</td>
+        </tr>`).join('');
+    }
+  }
+}
 
 /* ============================================================
    PROPERTIES MODULE — same offline-first pattern as Inspections,
@@ -1766,6 +2092,7 @@ let editingPropertyId=null;
 function togglePropForm(show,record){
   document.getElementById('prop-form-card').style.display=show?'block':'none';
   const titleEl=document.getElementById('prop-form-title');
+  const deleteBtn=document.getElementById('prop-delete-btn');
   if(show){
     editingPropertyId=record?record.id:null;
     if(titleEl) titleEl.textContent=record?'Edit property':'New property';
@@ -1776,11 +2103,17 @@ function togglePropForm(show,record){
     document.getElementById('prop-tenancy').value=record?record.tenancy:'Long-term';
     document.getElementById('prop-rent').value=record?record.rentPerWeek:600;
     document.getElementById('prop-status').value=record?record.status:'Occupied';
-    document.getElementById('prop-compliance').value=record?record.complianceStatus:'Current';
     document.getElementById('prop-notes').value=record?(record.notes||''):'';
+    if(deleteBtn) deleteBtn.style.display=record?'inline-flex':'none';
   }else{
     editingPropertyId=null;
   }
+}
+
+async function deletePropertyFromForm(){
+  if(!editingPropertyId) return;
+  await deleteProperty(editingPropertyId);
+  togglePropForm(false);
 }
 
 async function editProperty(id){
@@ -1805,7 +2138,7 @@ async function saveProperty(){
     tenancy:document.getElementById('prop-tenancy').value,
     rentPerWeek:Number(document.getElementById('prop-rent').value)||0,
     status:document.getElementById('prop-status').value,
-    complianceStatus:document.getElementById('prop-compliance').value,
+    complianceItems:(isEdit&&existing)?(existing.complianceItems||{}):{},
     notes:document.getElementById('prop-notes').value,
     synced:false,
     pendingDelete:false,
@@ -1826,7 +2159,7 @@ async function renderPropertiesList(){
   const tbody=document.getElementById('prop-list');
   document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
-    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr>';
+    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr>';
     return;
   }
   const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
@@ -1834,16 +2167,14 @@ async function renderPropertiesList(){
     const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
     return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
   };
-  const compBadge=c=>c==='Current'?'<span class="badge bg">✓ Current</span>':'<span class="badge br">⚠ Overdue</span>';
   tbody.innerHTML=all.map(p=>`
     <tr>
-      <td><strong>${p.address}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m²</span></td>
+      <td style="cursor:pointer" ondblclick="editProperty('${p.id}')" title="Double-click to edit"><strong>${p.address}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m²</span></td>
       <td>${tenancyBadge(p.tenancy)}</td>
       <td>$${p.rentPerWeek}</td>
       <td>${statusBadge(p.status)}</td>
-      <td>${compBadge(p.complianceStatus)}</td>
+      <td>${complianceSummaryBadge(p)}</td>
       <td>${p.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editProperty('${p.id}')">Edit</button> <button class="btn btn-sm" onclick="deleteProperty('${p.id}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -1896,7 +2227,8 @@ async function pushPropertyToBackend(record){
       body:JSON.stringify({
         id:record.id,address:record.address,bedrooms:record.bedrooms,bathrooms:record.bathrooms,
         floor_area:record.floorArea,tenancy:record.tenancy,rent_per_week:record.rentPerWeek,
-        status:record.status,compliance_status:record.complianceStatus,notes:record.notes,
+        status:record.status,compliance_items:record.complianceItems||{},
+        compliance_status:overallComplianceStatus(record),notes:record.notes,
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
@@ -1961,6 +2293,7 @@ let editingTenantId=null;
 async function toggleTenantForm(show,record){
   document.getElementById('tenant-form-card').style.display=show?'block':'none';
   const titleEl=document.getElementById('tenant-form-title');
+  const deleteBtn=document.getElementById('tenant-delete-btn');
   if(show){
     editingTenantId=record?record.id:null;
     if(titleEl) titleEl.textContent=record?'Edit tenant':'New tenant';
@@ -1976,9 +2309,16 @@ async function toggleTenantForm(show,record){
     document.getElementById('tenant-notes').value=record?(record.notes||''):'';
     await populateTenantPropertyDropdown();
     if(record) document.getElementById('tenant-property').value=record.propertyId;
+    if(deleteBtn) deleteBtn.style.display=record?'inline-flex':'none';
   }else{
     editingTenantId=null;
   }
+}
+
+async function deleteTenantFromForm(){
+  if(!editingTenantId) return;
+  await deleteTenant(editingTenantId);
+  await toggleTenantForm(false);
 }
 
 async function editTenant(id){
@@ -2033,7 +2373,7 @@ async function renderTenantsList(){
   const tbody=document.getElementById('tenant-list');
   document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
-    tbody.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr>';
+    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr>';
     return;
   }
   const statusBadge=(t)=>{
@@ -2044,7 +2384,7 @@ async function renderTenantsList(){
   };
   tbody.innerHTML=all.map(t=>`
     <tr>
-      <td><strong>${t.tenantName}</strong></td>
+      <td style="cursor:pointer" ondblclick="editTenant('${t.id}')" title="Double-click to edit"><strong>${t.tenantName}</strong></td>
       <td>${addressOf(t)}</td>
       <td>${t.leaseStart||'—'}</td>
       <td>${t.leaseEnd||'—'}</td>
@@ -2052,7 +2392,6 @@ async function renderTenantsList(){
       <td>$${t.rentPerWeek}</td>
       <td>${statusBadge(t)}</td>
       <td>${t.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editTenant('${t.id}')">Edit</button> <button class="btn btn-sm" onclick="deleteTenant('${t.id}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -2165,6 +2504,7 @@ let editingMaintenanceId=null;
 async function toggleMaintForm(show,record){
   document.getElementById('maint-form-card').style.display=show?'block':'none';
   const titleEl=document.getElementById('maint-form-title');
+  const deleteBtn=document.getElementById('maint-delete-btn');
   if(show){
     editingMaintenanceId=record?record.id:null;
     if(titleEl) titleEl.textContent=record?'Edit maintenance request':'New maintenance request';
@@ -2175,9 +2515,16 @@ async function toggleMaintForm(show,record){
     document.getElementById('maint-status').value=record?record.status:'Unassigned';
     await populateMaintenancePropertyDropdown();
     if(record) document.getElementById('maint-property').value=record.propertyId;
+    if(deleteBtn) deleteBtn.style.display=record?'inline-flex':'none';
   }else{
     editingMaintenanceId=null;
   }
+}
+
+async function deleteMaintenanceFromForm(){
+  if(!editingMaintenanceId) return;
+  await deleteMaintenance(editingMaintenanceId);
+  await toggleMaintForm(false);
 }
 
 async function editMaintenance(id){
@@ -2227,7 +2574,7 @@ async function renderMaintenanceList(){
   const tbody=document.getElementById('maint-list');
   document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
-    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr>';
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr>';
     return;
   }
   const priorityDot=p=>{
@@ -2240,14 +2587,13 @@ async function renderMaintenanceList(){
   };
   tbody.innerHTML=all.map(m=>`
     <tr>
+      <td style="cursor:pointer" ondblclick="editMaintenance('${m.id}')" title="Double-click to edit">${m.issue}</td>
       <td>${addressOf(m)}</td>
-      <td>${m.issue}</td>
       <td>${m.reportedDate}</td>
       <td>${priorityDot(m.priority)}</td>
       <td>${m.assignedTo}</td>
       <td>${statusBadge(m.status)}</td>
       <td>${m.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editMaintenance('${m.id}')">Edit</button> <button class="btn btn-sm" onclick="deleteMaintenance('${m.id}')">Delete</button></td>
     </tr>`).join('');
 }
 
@@ -2373,34 +2719,35 @@ async function renderDashboard(){
   document.getElementById('dm-maint').textContent=openMaint.length;
   document.getElementById('dm-maint-sub').textContent=urgentMaint.length?`${urgentMaint.length} urgent`:'None urgent';
 
-  // Alerts — built from real compliance status + the one static NZ law note
-  const overdueProps=properties.filter(p=>p.complianceStatus==='Overdue');
+  // Alerts — built from real per-property compliance items + the one static NZ law note
+  const today=new Date(); today.setHours(0,0,0,0);
+  const overdueProps=properties.filter(p=>getPropertyCompliance(p).some(it=>isItemOverdue(it,today)));
   const alertsEl=document.getElementById('dash-alerts');
   let alertsHtml='';
   if(overdueProps.length){
     const names=overdueProps.map(p=>p.address).join(', ');
-    alertsHtml+=`<div class="alert alert-amber">⚠️ <div><strong>${overdueProps.length} compliance action${overdueProps.length>1?'s':''} due</strong> — ${names}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
+    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${names}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
   }
-  alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.</div></div>`;
+  alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.<span style="display:block;font-size:11px;opacity:.7;margin-top:2px">Last verified ${LAW_UPDATES_LAST_VERIFIED}</span></div></div>`;
   alertsEl.innerHTML=alertsHtml;
 
   // Lease renewals due
   const renewals=tenants.filter(t=>t.status==='Renewal due');
   document.getElementById('dash-renewals').innerHTML=renewals.length
-    ? renewals.map(t=>`<tr><td>${addressOf(t)}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
+    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${addressOf(t)}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
 
   // Rent arrears
   const arrears=tenants.filter(t=>t.status==='Arrears');
   document.getElementById('dash-arrears').innerHTML=arrears.length
-    ? arrears.map(t=>`<tr><td>${addressOf(t)}</td><td>${t.tenantName}</td><td>$${t.arrearsAmount}</td></tr>`).join('')
+    ? arrears.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${addressOf(t)}</td><td>${t.tenantName}</td><td>$${t.arrearsAmount}</td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr>';
 
   // Urgent maintenance
   document.getElementById('dash-maint').innerHTML=urgentMaint.length
     ? urgentMaint.map(m=>{
         const statusMap={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-        return `<tr><td>${addressOf(m)}</td><td>${m.issue}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${m.status}</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])" title="Double-click to open Maintenance"><td>${addressOf(m)}</td><td>${m.issue}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${m.status}</span></td></tr>`;
       }).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr>';
 }

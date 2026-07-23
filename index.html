@@ -91,27 +91,13 @@ select:focus,input:focus{border-color:var(--text);box-shadow:0 0 0 2px rgba(0,0,
 .controls{display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;align-items:center}
 label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 
-/* Statement styles */
-.stmt{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-lg);padding:1.5rem;max-width:660px}
-.stmt-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.25rem;padding-bottom:1rem;border-bottom:0.5px solid var(--border)}
-.stmt-title{font-size:16px;font-weight:600}
-.stmt-sub{font-size:12px;color:var(--text2);margin-top:3px}
-.stmt-logo{font-size:13px;font-weight:600;color:var(--text2);text-align:right}
-.stmt-logo div{font-size:11px;font-weight:400;margin-top:2px}
+/* Financial summary styles (used on the Financials page) */
 .section-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin:1rem 0 6px}
-.divider{border:none;border-top:0.5px solid var(--border);margin:.75rem 0}
 .sum-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:1rem}
 .sum-box{background:var(--bg2);border-radius:var(--radius);padding:10px 12px}
 .sum-label{font-size:11px;color:var(--text2);margin-bottom:4px}
 .sum-val{font-size:18px;font-weight:600}
-.footer-note{font-size:11px;color:var(--text3);margin-top:1.25rem;padding-top:1rem;border-top:0.5px solid var(--border);line-height:1.6}
-.notice-box{background:var(--red-bg);border:0.5px solid #F09595;border-radius:var(--radius);padding:1rem 1.25rem;margin-top:1rem;font-size:13px}
-.notice-title{font-weight:600;color:#501313;margin-bottom:6px}
-.notice-body{color:#791F1F;line-height:1.7}
-.green{color:var(--green-text)}.red{color:var(--red-text)}.muted{color:var(--text2)}
-
-/* Statement tabs */
-.stmt-pane{display:none}.stmt-pane.active{display:block}
+.red{color:var(--red-text)}
 
 /* Compliance */
 .comp-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:0.5px solid var(--border)}
@@ -150,7 +136,6 @@ textarea:focus{border-color:var(--text)}
 @media print{
   .sidebar,.topbar,.controls,.btn,.sync-banner{display:none!important}
   .main{overflow:visible}
-  .stmt{border:1px solid #ccc;max-width:100%}
 }
 
 /* Mobile layout — sidebar becomes a slide-out drawer instead of a fixed column */
@@ -767,8 +752,10 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card">
-    <div class="card-head">All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
-    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click an address to edit.</div>
+    <div class="card-head" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center"><span>All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an address to edit.</div>
+    </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th></tr></thead>
       <tbody id="prop-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
@@ -814,8 +801,10 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card">
-    <div class="card-head">Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
-    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click a tenant to edit.</div>
+    <div class="card-head" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center"><span>Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click a tenant to edit.</div>
+    </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th></tr></thead>
       <tbody id="tenant-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -861,8 +850,10 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card">
-    <div class="card-head">Maintenance requests <span id="maint-count" style="font-weight:400;color:var(--text3)"></span> <button class="btn btn-sm btn-primary" onclick="toggleMaintForm(true)">+ New request</button></div>
-    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click an issue to edit.</div>
+    <div class="card-head" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center"><span>Maintenance requests <span id="maint-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="toggleMaintForm(true)">+ New request</button></div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an issue to edit.</div>
+    </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Issue</th><th>Property</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th></tr></thead>
       <tbody id="maint-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -908,7 +899,7 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card">
-    <div class="card-head">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
+    <div class="card-head" style="justify-content:flex-start">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
       <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -988,8 +979,10 @@ textarea:focus{border-color:var(--text)}
     </div>
   </div>
   <div class="card">
-    <div class="card-head">Manage compliance by property</div>
-    <div style="padding:8px 1.25rem 0;font-size:11px;color:var(--text3)">Double-click an address to update its checklist.</div>
+    <div class="card-head" style="display:block">
+      <div>Manage compliance by property</div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an address to update its checklist.</div>
+    </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Summary</th></tr></thead>
       <tbody id="compliance-properties-list"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:14px">No properties yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -1008,8 +1001,10 @@ textarea:focus{border-color:var(--text)}
 <!-- ACTIVITY LOG -->
 <div class="page" id="page-activity">
   <div class="card">
-    <div class="card-head">Activity log <span id="activity-log-count" style="font-weight:400;color:var(--text3)"></span></div>
-    <div style="font-size:12px;color:var(--text2);padding:.75rem 1.25rem 0">Every property, tenant, maintenance and inspection record created, edited or deleted on this device, newest first.</div>
+    <div class="card-head" style="display:block">
+      <div>Activity log <span id="activity-log-count" style="font-weight:400;color:var(--text3)"></span></div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:4px">Every property, tenant, maintenance and inspection record created, edited or deleted on this device, newest first.</div>
+    </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>When</th><th>Type</th><th>Action</th><th>Details</th></tr></thead>
       <tbody id="activity-log-list"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -1406,6 +1401,13 @@ function todayStr(){
   return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
 }
 
+// Shared helper for safely dropping free-text values into template-literal
+// HTML (area notes, compliance item notes, etc) — prevents saved text like
+// "<script>" or "Tom & Jerry's place" from breaking the markup.
+function escapeHtml(str){
+  return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function addInspectionArea(name,opts){
   opts=opts||{};
   areaCounter++;
@@ -1415,7 +1417,7 @@ function addInspectionArea(name,opts){
   wrap.id=id;
   const statusOptions=['Good','Fair','Poor','N/A'];
   const statusSelectHtml=statusOptions.map(s=>`<option${opts.status===s?' selected':''}>${s}</option>`).join('');
-  const escapedNotes=(opts.notes||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const escapedNotes=escapeHtml(opts.notes);
   const photosHtml=(opts.photos||[]).map(src=>`<img class="photo-thumb" src="${src}">`).join('');
   wrap.innerHTML=`
     <div class="insp-area-head">
@@ -1470,7 +1472,27 @@ async function openCameraModal(areaId){
   }
   document.getElementById('camera-modal').style.display='flex';
   try{
-    cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+    // Request the highest resolution the device's rear camera supports —
+    // without explicit ideal/min constraints, browsers default to a modest
+    // stream resolution (often well under 2MP), which is why photos taken
+    // through this in-page camera looked noticeably softer than the iPhone's
+    // native camera app. "ideal" (not "exact"/"min") means the browser still
+    // falls back gracefully on devices/webcams that can't hit these numbers.
+    const highResConstraints={
+      video:{
+        facingMode:{ideal:'environment'},
+        width:{ideal:4032,min:1920},
+        height:{ideal:3024,min:1080}
+      },
+      audio:false
+    };
+    try{
+      cameraStream=await navigator.mediaDevices.getUserMedia(highResConstraints);
+    }catch(hiResErr){
+      // Device rejected the min constraints outright — retry with just a
+      // facingMode preference so we still get a stream on older hardware.
+      cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+    }
     document.getElementById('camera-video').srcObject=cameraStream;
   }catch(err){
     closeCameraModal();
@@ -1483,10 +1505,16 @@ function captureCameraShot(){
   if(!cameraStream) return;
   const video=document.getElementById('camera-video');
   const canvas=document.getElementById('camera-canvas');
-  canvas.width=video.videoWidth||1280;
-  canvas.height=video.videoHeight||960;
+  // videoWidth/videoHeight reflect whatever resolution getUserMedia actually
+  // negotiated (see openCameraModal's highResConstraints) — capture at that
+  // native size rather than a fixed fallback so quality isn't capped here.
+  canvas.width=video.videoWidth||1920;
+  canvas.height=video.videoHeight||1080;
   canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
-  const dataUrl=canvas.toDataURL('image/jpeg',0.85);
+  // 0.92 keeps compression visually near-lossless (iPhone's own camera app
+  // shoots JPEG at a similar ~0.9-0.95 quality); the previous 0.85 was
+  // visibly softening detail once viewed at full size in Supabase Storage.
+  const dataUrl=canvas.toDataURL('image/jpeg',0.92);
   cameraShots.push(dataUrl);
   updateCameraShotCount();
   const thumb=document.createElement('img');
@@ -1926,7 +1954,7 @@ function getPropertyCompliance(p){
   const stored=p.complianceItems||{};
   return complianceItemDefsForProperty(p).map(def=>{
     const s=stored[def.key]||{};
-    return {...def,status:s.status||'Not assessed',lastChecked:s.lastChecked||'',nextDue:s.nextDue||''};
+    return {...def,status:s.status||'Not assessed',lastChecked:s.lastChecked||'',nextDue:s.nextDue||'',notes:s.notes||''};
   });
 }
 function isItemOverdue(it,today){
@@ -1971,6 +1999,8 @@ async function openComplianceModal(id){
         <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${it.lastChecked}"></div>
         <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${it.nextDue}"></div>
       </div>
+      <label style="margin-top:8px">Notes / comments</label>
+      <textarea class="ci-notes" data-key="${it.key}" placeholder="Optional notes for this item..." style="min-height:36px">${escapeHtml(it.notes)}</textarea>
     </div>`).join('');
   document.getElementById('compliance-modal').style.display='flex';
 }
@@ -1988,7 +2018,8 @@ async function saveComplianceModal(){
     const key=sel.dataset.key;
     const last=document.querySelector(`.ci-last[data-key="${key}"]`).value;
     const next=document.querySelector(`.ci-next[data-key="${key}"]`).value;
-    items[key]={status:sel.value,lastChecked:last,nextDue:next};
+    const notes=document.querySelector(`.ci-notes[data-key="${key}"]`).value;
+    items[key]={status:sel.value,lastChecked:last,nextDue:next,notes};
   });
   p.complianceItems=items;
   p.synced=false;
@@ -2587,7 +2618,7 @@ async function renderMaintenanceList(){
   };
   tbody.innerHTML=all.map(m=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editMaintenance('${m.id}')" title="Double-click to edit">${m.issue}</td>
+      <td style="cursor:pointer" ondblclick="editMaintenance('${m.id}')" title="Double-click to edit"><strong>${m.issue}</strong></td>
       <td>${addressOf(m)}</td>
       <td>${m.reportedDate}</td>
       <td>${priorityDot(m.priority)}</td>

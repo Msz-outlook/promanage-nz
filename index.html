@@ -920,11 +920,15 @@ textarea:focus{border-color:var(--text)}
  *     statementNumber, periodStart, periodEnd, status,
  *     from:  { name, address, gstNumber, email, phone, bankAccount },
  *     owner: { name, email },
- *     property,
- *     openingBalance,
- *     income:   [{ date, description, amount }],
- *     expenses: [{ date, description, amount }],
- *     totalIncome, totalExpenses, netAmount, closingBalance,
+ *     properties: [{
+ *       propertyAddress,
+ *       openingBalance,
+ *       income:   [{ date, description, amount }],
+ *       expenses: [{ date, description, amount }],
+ *       totalIncome, totalExpenses, netAmount, closingBalance,
+ *       notes
+ *     }],
+ *     openingBalance, totalIncome, totalExpenses, netAmount, closingBalance, // combined across all properties
  *     notes
  *   }
  *   options = { fileName, download }
@@ -970,8 +974,7 @@ textarea:focus{border-color:var(--text)}
 
     var from = data.from || {};
     var owner = data.owner || {};
-    var income = data.income || [];
-    var expenses = data.expenses || [];
+    var properties = (data.properties && data.properties.length) ? data.properties : [{}];
 
     var doc = new JsPDF({ unit: "pt", format: "a4" });
     doc.setProperties({ title: "Owner Statement " + (data.statementNumber || "") });
@@ -1039,67 +1042,101 @@ textarea:focus{border-color:var(--text)}
 
     var ownerExtra = [];
     if (owner.email) ownerExtra.push(owner.email);
-    var y2 = addressBlock("Statement for", owner.name, [data.property], ownerExtra, MARGIN + colW + 20);
+    var propertyNames = properties.map(function (p) { return p.propertyAddress; }).filter(Boolean);
+    var ownerAddressLines = propertyNames.length
+      ? [propertyNames.length + " propert" + (propertyNames.length > 1 ? "ies" : "y") + ":"].concat(propertyNames)
+      : [];
+    var y2 = addressBlock("Statement for", owner.name, ownerAddressLines, ownerExtra, MARGIN + colW + 20);
 
     y = Math.max(y1, y2) + 18;
 
-    // --- Income table ---
+    function itemTable(title, items, color) {
+      if (y > PAGE_H - 200) { doc.addPage(); y = MARGIN; }
+      setText(doc, color);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.heading);
+      doc.text(title, MARGIN, y);
+      y += 10;
+      var body = (items || []).map(function (it) {
+        return [it.date || "", it.description || "", money(it.amount)];
+      });
+      if (!body.length) body = [["—", "No " + title.toLowerCase() + " recorded this period", money(0)]];
+      autoTable({
+        startY: y,
+        head: [["Date", "Description", "Amount"]],
+        body: body,
+        theme: "grid",
+        styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
+        headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
+        alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
+        columnStyles: {
+          0: { cellWidth: USABLE_W * 0.18 },
+          1: { cellWidth: USABLE_W * 0.57 },
+          2: { cellWidth: USABLE_W * 0.25, halign: "right" }
+        },
+        margin: { left: MARGIN, right: MARGIN }
+      });
+      y = doc.lastAutoTable.finalY + 16;
+    }
+
+    function propertyTotalsBox(prop) {
+      if (y > PAGE_H - 110) { doc.addPage(); y = MARGIN; }
+      var boxW = 230, rowH = 14;
+      var rows = [
+        ["Opening balance", money(prop.openingBalance)],
+        ["Net amount", money(prop.netAmount)],
+        ["Closing balance", money(prop.closingBalance)]
+      ];
+      var boxX = PAGE_W - MARGIN - boxW;
+      var by = y;
+      rows.forEach(function (row, i) {
+        var isLast = i === rows.length - 1;
+        doc.setFont("helvetica", isLast ? "bold" : "normal");
+        doc.setFontSize(FS.small);
+        setText(doc, isLast ? COLORS.text : COLORS.muted);
+        doc.text(row[0], boxX, by + 10);
+        doc.text(row[1], boxX + boxW, by + 10, { align: "right" });
+        by += rowH;
+      });
+      y = by + 6;
+    }
+
+    // --- Per-property sections: each property gets its own income/expenses/subtotal ---
+    properties.forEach(function (prop, idx) {
+      if (y > PAGE_H - 220) { doc.addPage(); y = MARGIN; }
+      setText(doc, COLORS.text);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.heading + 1);
+      doc.text(prop.propertyAddress || ("Property " + (idx + 1)), MARGIN, y);
+      y += 6;
+      setDraw(doc, COLORS.grid);
+      doc.setLineWidth(0.75);
+      doc.line(MARGIN, y, PAGE_W - MARGIN, y);
+      y += 16;
+
+      itemTable("Income", prop.income, COLORS.income);
+      itemTable("Expenses", prop.expenses, COLORS.expense);
+      propertyTotalsBox(prop);
+
+      if (prop.notes) {
+        setText(doc, COLORS.muted);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(FS.small);
+        doc.splitTextToSize(prop.notes, USABLE_W).forEach(function (line) {
+          doc.text(line, MARGIN, y);
+          y += 11;
+        });
+      }
+      y += 18;
+    });
+
+    // --- Combined totals box (bottom-right) ---
+    if (y > PAGE_H - 160) { doc.addPage(); y = MARGIN; }
     setText(doc, COLORS.text);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(FS.heading);
-    doc.text("Income", MARGIN, y);
-    y += 10;
-    var incomeBody = income.map(function (it) {
-      return [it.date || "", it.description || "", money(it.amount)];
-    });
-    if (!incomeBody.length) incomeBody = [["—", "No income recorded this period", money(0)]];
-    autoTable({
-      startY: y,
-      head: [["Date", "Description", "Amount"]],
-      body: incomeBody,
-      theme: "grid",
-      styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
-      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
-      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
-      columnStyles: {
-        0: { cellWidth: USABLE_W * 0.18 },
-        1: { cellWidth: USABLE_W * 0.57 },
-        2: { cellWidth: USABLE_W * 0.25, halign: "right" }
-      },
-      margin: { left: MARGIN, right: MARGIN }
-    });
-    y = doc.lastAutoTable.finalY + 20;
-
-    // --- Expenses table ---
-    if (y > PAGE_H - 220) { doc.addPage(); y = MARGIN; }
-    setText(doc, COLORS.text);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.heading);
-    doc.text("Expenses", MARGIN, y);
-    y += 10;
-    var expenseBody = expenses.map(function (it) {
-      return [it.date || "", it.description || "", money(it.amount)];
-    });
-    if (!expenseBody.length) expenseBody = [["—", "No expenses recorded this period", money(0)]];
-    autoTable({
-      startY: y,
-      head: [["Date", "Description", "Amount"]],
-      body: expenseBody,
-      theme: "grid",
-      styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
-      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
-      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
-      columnStyles: {
-        0: { cellWidth: USABLE_W * 0.18 },
-        1: { cellWidth: USABLE_W * 0.57 },
-        2: { cellWidth: USABLE_W * 0.25, halign: "right" }
-      },
-      margin: { left: MARGIN, right: MARGIN }
-    });
-    var afterTableY = doc.lastAutoTable.finalY + 16;
-
-    // --- Totals box (bottom-right) ---
-    if (afterTableY > PAGE_H - 160) { doc.addPage(); afterTableY = MARGIN; }
+    doc.text("Combined totals — all properties", MARGIN, y);
+    var afterTableY = y + 6;
     var boxW = 230, rowH = 16;
     var totalRows = [
       ["Opening balance", money(data.openingBalance)],
@@ -1668,7 +1705,7 @@ textarea:focus{border-color:var(--text)}
       <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:.6rem">
         Paste the JSON your monthly statement generator produces, then <strong>Load into form</strong> to review before saving — nothing is saved until you click Save. Once the generator is wired up it can call <code>window.importStatementJSON(data)</code> directly with the same shape, no paste step needed.
       </div>
-      <textarea id="statement-json-input" placeholder='{"statementNumber":"STMT-2026-07-0001","ownerName":"Nguyen family","propertyId":"","periodStart":"01 Jul 2026","periodEnd":"31 Jul 2026","openingBalance":0,"income":[{"date":"05 Jul 2026","description":"Rent received","amount":2500}],"expenses":[{"date":"10 Jul 2026","description":"Property management fee","amount":200}],"notes":""}' style="min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <textarea id="statement-json-input" placeholder='{"statementNumber":"STMT-2026-07-0001","ownerName":"Nguyen family","periodStart":"01 Jul 2026","periodEnd":"31 Jul 2026","properties":[{"propertyId":"","propertyAddress":"12 Example St","openingBalance":0,"income":[{"date":"05 Jul 2026","description":"Rent received","amount":2500}],"expenses":[{"date":"10 Jul 2026","description":"Property management fee","amount":200}],"notes":""}],"notes":""}' style="min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
       <div style="display:flex;gap:8px;margin-top:.6rem;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="loadStatementJSON()">⬇ Load into form</button>
         <button class="btn btn-sm" onclick="toggleStatementForm(true)">+ New statement (manual)</button>
@@ -1690,29 +1727,16 @@ textarea:focus{border-color:var(--text)}
       <div class="controls">
         <div style="flex:1;min-width:180px"><label>Owner name</label><input type="text" id="statement-owner-name" style="width:100%" placeholder="e.g. Nguyen family"></div>
         <div style="flex:1;min-width:180px"><label>Owner email (optional)</label><input type="text" id="statement-owner-email" style="width:100%" placeholder="e.g. owner@example.com"></div>
-        <div style="flex:1;min-width:220px">
-          <label>Related property</label>
-          <select id="statement-property" style="width:100%"><option value="">— None / external —</option></select>
-        </div>
       </div>
 
-      <div class="section-label" style="margin-top:1.1rem">Income</div>
-      <div class="table-outer"><div class="table-wrap"><table>
-        <thead><tr><th style="width:20%">Date</th><th style="width:55%">Description</th><th style="width:20%">Amount ($)</th><th style="width:5%"></th></tr></thead>
-        <tbody id="statement-income-body"></tbody>
-      </table></div></div>
-      <button class="btn btn-sm" style="margin-top:8px" onclick="addStatementItemRow('income')">+ Add income line</button>
-
-      <div class="section-label" style="margin-top:1.1rem">Expenses</div>
-      <div class="table-outer"><div class="table-wrap"><table>
-        <thead><tr><th style="width:20%">Date</th><th style="width:55%">Description</th><th style="width:20%">Amount ($)</th><th style="width:5%"></th></tr></thead>
-        <tbody id="statement-expense-body"></tbody>
-      </table></div></div>
-      <button class="btn btn-sm" style="margin-top:8px" onclick="addStatementItemRow('expense')">+ Add expense line</button>
+      <div class="section-label" style="margin-top:1.1rem">Properties</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:.4rem">One statement covers every property this owner has — add a block per property, each with its own income, expenses and opening balance.</div>
+      <div id="statement-properties-body"></div>
+      <button class="btn btn-sm" onclick="addStatementPropertyBlock()">+ Add property</button>
 
       <div class="inv-totals">
         <div class="inv-totals-box" style="width:260px">
-          <div><span>Opening balance</span><span><input type="number" id="statement-opening-balance" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></span></div>
+          <div><span>Opening balance</span><span id="statement-opening-total-display">$0.00</span></div>
           <div><span>Total income</span><span id="statement-income-total-display">$0.00</span></div>
           <div><span>Total expenses</span><span id="statement-expense-total-display">$0.00</span></div>
           <div><span>Net amount</span><span id="statement-net-display">$0.00</span></div>
@@ -2152,10 +2176,10 @@ function mapRemoteInvoice(row){
 function mapRemoteStatement(row){
   return{
     id:row.id,statementNumber:row.statement_number,
-    propertyId:row.property_id,propertyAddress:row.property_address,
     ownerName:row.owner_name,ownerEmail:row.owner_email,
     periodStart:row.period_start,periodEnd:row.period_end,status:row.status,
-    openingBalance:row.opening_balance,income:row.income||[],expenses:row.expenses||[],
+    properties:row.properties||[],
+    openingBalance:row.opening_balance,
     totalIncome:row.total_income,totalExpenses:row.total_expenses,
     netAmount:row.net_amount,closingBalance:row.closing_balance,notes:row.notes,
     createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
@@ -4255,11 +4279,76 @@ window.importInvoiceJSON=importInvoiceJSON;
 let editingStatementId=null;
 let statementRowCounter=0;
 
-async function populateStatementPropertyDropdown(selectedId){
+let statementBlockCounter=0;
+
+async function statementPropertyOptionsHtml(selectedId){
   const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
-  const select=document.getElementById('statement-property');
-  select.innerHTML='<option value="">— None / external —</option>'+props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
-  if(selectedId) select.value=selectedId;
+  return '<option value="">— None / external —</option>'+props.map(p=>`<option value="${p.id}"${p.id===selectedId?' selected':''}>${p.address}</option>`).join('');
+}
+
+function statementPropertyBlockHtml(blockId,optionsHtml,propBlock){
+  propBlock=propBlock||{};
+  return `<div class="stmt-property-block" id="${blockId}" style="border:0.5px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:12px">
+      <div class="controls" style="align-items:flex-end">
+        <div style="flex:1;min-width:220px">
+          <label>Link to property (optional)</label>
+          <select class="stmt-prop-select" style="width:100%" onchange="if(this.value)this.closest('.stmt-property-block').querySelector('.stmt-prop-address').value=this.options[this.selectedIndex].textContent">${optionsHtml}</select>
+        </div>
+        <div style="flex:1;min-width:220px"><label>Property address</label><input type="text" class="stmt-prop-address" value="${escapeAttr(propBlock.propertyAddress||'')}" placeholder="e.g. 12 Example St" style="width:100%"></div>
+        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${propBlock.openingBalance||0}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
+        <button type="button" class="btn btn-sm btn-danger" onclick="removeStatementPropertyBlock('${blockId}')">✕ Remove property</button>
+      </div>
+
+      <div class="section-label" style="margin-top:.8rem">Income</div>
+      <div class="table-outer"><div class="table-wrap"><table>
+        <thead><tr><th style="width:20%">Date</th><th style="width:55%">Description</th><th style="width:20%">Amount ($)</th><th style="width:5%"></th></tr></thead>
+        <tbody class="stmt-income-body"></tbody>
+      </table></div></div>
+      <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addStatementItemRow(this.closest('.stmt-property-block'),'income')">+ Add income line</button>
+
+      <div class="section-label" style="margin-top:.8rem">Expenses</div>
+      <div class="table-outer"><div class="table-wrap"><table>
+        <thead><tr><th style="width:20%">Date</th><th style="width:55%">Description</th><th style="width:20%">Amount ($)</th><th style="width:5%"></th></tr></thead>
+        <tbody class="stmt-expense-body"></tbody>
+      </table></div></div>
+      <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addStatementItemRow(this.closest('.stmt-property-block'),'expense')">+ Add expense line</button>
+
+      <label style="margin-top:.6rem">Notes for this property (optional)</label>
+      <textarea class="stmt-prop-notes" placeholder="e.g. Tenancy ended 16 Jul 2026...">${escapeHtml(propBlock.notes||'')}</textarea>
+
+      <div class="inv-totals" style="margin-top:.5rem">
+        <div class="inv-totals-box" style="width:260px">
+          <div><span>Income</span><span class="stmt-prop-income-total">$0.00</span></div>
+          <div><span>Expenses</span><span class="stmt-prop-expense-total">$0.00</span></div>
+          <div class="inv-total-row"><span>Closing balance</span><span class="stmt-prop-closing-total">$0.00</span></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function addStatementPropertyBlock(propBlock){
+  statementBlockCounter++;
+  const blockId='stmtprop'+statementBlockCounter;
+  const optionsHtml=await statementPropertyOptionsHtml(propBlock?propBlock.propertyId:'');
+  document.getElementById('statement-properties-body').insertAdjacentHTML('beforeend',statementPropertyBlockHtml(blockId,optionsHtml,propBlock));
+  const block=document.getElementById(blockId);
+  if(propBlock && propBlock.income && propBlock.income.length){
+    propBlock.income.forEach(it=>addStatementItemRow(block,'income',it));
+  }else{
+    addStatementItemRow(block,'income');
+  }
+  if(propBlock && propBlock.expenses && propBlock.expenses.length){
+    propBlock.expenses.forEach(it=>addStatementItemRow(block,'expense',it));
+  }else{
+    addStatementItemRow(block,'expense');
+  }
+  recalcStatementTotals();
+}
+
+function removeStatementPropertyBlock(blockId){
+  const block=document.getElementById(blockId);
+  if(block) block.remove();
+  recalcStatementTotals();
 }
 
 function statementItemRowHtml(rowId,item){
@@ -4272,10 +4361,10 @@ function statementItemRowHtml(rowId,item){
     </tr>`;
 }
 
-function addStatementItemRow(section,item){
+function addStatementItemRow(block,section,item){
   statementRowCounter++;
   const rowId='stmt'+section+statementRowCounter;
-  document.getElementById('statement-'+section+'-body').insertAdjacentHTML('beforeend',statementItemRowHtml(rowId,item));
+  block.querySelector('.stmt-'+section+'-body').insertAdjacentHTML('beforeend',statementItemRowHtml(rowId,item));
   recalcStatementTotals();
 }
 
@@ -4285,26 +4374,34 @@ function removeStatementItemRow(rowId){
   recalcStatementTotals();
 }
 
-function sumStatementRows(section){
+function sumStatementRows(block,section){
   let total=0;
-  document.querySelectorAll('#statement-'+section+'-body tr').forEach(row=>{
+  block.querySelectorAll('.stmt-'+section+'-body tr').forEach(row=>{
     total+=Number(row.querySelector('.stmt-amount').value)||0;
   });
   return total;
 }
 
 function recalcStatementTotals(){
-  const totalIncome=sumStatementRows('income');
-  const totalExpenses=sumStatementRows('expense');
-  const opening=Number(document.getElementById('statement-opening-balance').value)||0;
-  const net=totalIncome-totalExpenses;
-  const closing=opening+net;
+  let totalIncome=0,totalExpenses=0,openingBalance=0,closingBalance=0;
   const fmt=n=>'$'+n.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.querySelectorAll('.stmt-property-block').forEach(block=>{
+    const inc=sumStatementRows(block,'income');
+    const exp=sumStatementRows(block,'expense');
+    const opening=Number(block.querySelector('.stmt-prop-opening').value)||0;
+    const closing=opening+(inc-exp);
+    block.querySelector('.stmt-prop-income-total').textContent=fmt(inc);
+    block.querySelector('.stmt-prop-expense-total').textContent=fmt(exp);
+    block.querySelector('.stmt-prop-closing-total').textContent=fmt(closing);
+    totalIncome+=inc; totalExpenses+=exp; openingBalance+=opening; closingBalance+=closing;
+  });
+  const net=totalIncome-totalExpenses;
+  document.getElementById('statement-opening-total-display').textContent=fmt(openingBalance);
   document.getElementById('statement-income-total-display').textContent=fmt(totalIncome);
   document.getElementById('statement-expense-total-display').textContent=fmt(totalExpenses);
   document.getElementById('statement-net-display').textContent=fmt(net);
-  document.getElementById('statement-closing-display').textContent=fmt(closing);
-  return {totalIncome,totalExpenses,net,closing,opening};
+  document.getElementById('statement-closing-display').textContent=fmt(closingBalance);
+  return {totalIncome,totalExpenses,net,closing:closingBalance,opening:openingBalance};
 }
 
 async function nextStatementNumber(){
@@ -4332,21 +4429,10 @@ async function toggleStatementForm(show,record){
     document.getElementById('statement-status').value=record?record.status:'Draft';
     document.getElementById('statement-owner-name').value=record?(record.ownerName||''):'';
     document.getElementById('statement-owner-email').value=record?(record.ownerEmail||''):'';
-    document.getElementById('statement-opening-balance').value=record?(record.openingBalance||0):0;
     document.getElementById('statement-notes').value=record?(record.notes||''):'';
-    await populateStatementPropertyDropdown(record?record.propertyId:'');
-    document.getElementById('statement-income-body').innerHTML='';
-    document.getElementById('statement-expense-body').innerHTML='';
-    if(record && record.income && record.income.length){
-      record.income.forEach(it=>addStatementItemRow('income',it));
-    }else{
-      addStatementItemRow('income');
-    }
-    if(record && record.expenses && record.expenses.length){
-      record.expenses.forEach(it=>addStatementItemRow('expense',it));
-    }else{
-      addStatementItemRow('expense');
-    }
+    document.getElementById('statement-properties-body').innerHTML='';
+    const propList=(record && record.properties && record.properties.length)?record.properties:[null];
+    for(const p of propList){ await addStatementPropertyBlock(p); }
     recalcStatementTotals();
     if(deleteBtn) deleteBtn.style.display=(record&&record.id)?'inline-flex':'none';
     document.getElementById('statement-form-card').scrollIntoView({behavior:'smooth'});
@@ -4373,30 +4459,39 @@ async function saveStatement(){
   const ownerName=document.getElementById('statement-owner-name').value.trim();
   if(!statementNumber){ alert('Statement number is required.'); return; }
   if(!ownerName){ alert('Owner name is required.'); return; }
-  const readRows=section=>Array.from(document.querySelectorAll('#statement-'+section+'-body tr')).map(row=>({
+  const blocks=Array.from(document.querySelectorAll('.stmt-property-block'));
+  if(!blocks.length){ alert('Add at least one property.'); return; }
+  const readRows=(block,section)=>Array.from(block.querySelectorAll('.stmt-'+section+'-body tr')).map(row=>({
       date:row.querySelector('.stmt-date').value.trim(),
       description:row.querySelector('.stmt-desc').value.trim(),
       amount:Number(row.querySelector('.stmt-amount').value)||0
     })).filter(it=>it.description||it.amount);
-  const income=readRows('income');
-  const expenses=readRows('expense');
+  const properties=blocks.map(block=>{
+    const propertyId=block.querySelector('.stmt-prop-select').value;
+    const propertyAddress=block.querySelector('.stmt-prop-address').value.trim();
+    const income=readRows(block,'income');
+    const expenses=readRows(block,'expense');
+    const openingBalance=Number(block.querySelector('.stmt-prop-opening').value)||0;
+    const totalIncome=income.reduce((s,it)=>s+it.amount,0);
+    const totalExpenses=expenses.reduce((s,it)=>s+it.amount,0);
+    const netAmount=totalIncome-totalExpenses;
+    const closingBalance=openingBalance+netAmount;
+    const notes=block.querySelector('.stmt-prop-notes').value;
+    return {propertyId,propertyAddress,openingBalance,income,expenses,totalIncome,totalExpenses,netAmount,closingBalance,notes};
+  });
   const {totalIncome,totalExpenses,net,closing,opening}=recalcStatementTotals();
-  const propertySelect=document.getElementById('statement-property');
-  const propertyId=propertySelect.value;
-  const propertyAddress=propertyId?propertySelect.options[propertySelect.selectedIndex].textContent:'';
   const isEdit=!!editingStatementId;
   const existing=isEdit?(await dbGetAll('statements')).find(s=>s.id===editingStatementId):null;
   const record={
     id:isEdit?editingStatementId:'stmt_'+Date.now(),
     statementNumber,
-    propertyId,propertyAddress,
     ownerName,
     ownerEmail:document.getElementById('statement-owner-email').value.trim(),
     periodStart:document.getElementById('statement-period-start').value,
     periodEnd:document.getElementById('statement-period-end').value,
     status:document.getElementById('statement-status').value,
+    properties,
     openingBalance:opening,
-    income,expenses,
     totalIncome,totalExpenses,netAmount:net,closingBalance:closing,
     notes:document.getElementById('statement-notes').value,
     synced:false,
@@ -4431,7 +4526,7 @@ async function renderStatementsList(){
     <tr>
       <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
       <td>${s.ownerName}</td>
-      <td>${s.propertyAddress||'—'}</td>
+      <td>${(s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', ')||'—'}</td>
       <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
       <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(s.status)}</td>
@@ -4482,11 +4577,10 @@ async function pushStatementToBackend(record){
       },
       body:JSON.stringify({
         id:record.id,statement_number:record.statementNumber,
-        property_id:record.propertyId||null,property_address:record.propertyAddress,
         owner_name:record.ownerName,owner_email:record.ownerEmail,
         period_start:record.periodStart,period_end:record.periodEnd,
         status:record.status,opening_balance:record.openingBalance,
-        income:record.income,expenses:record.expenses,
+        properties:record.properties,
         total_income:record.totalIncome,total_expenses:record.totalExpenses,
         net_amount:record.netAmount,closing_balance:record.closingBalance,
         notes:record.notes,
@@ -4553,9 +4647,8 @@ async function generateStatementPDF(id){
         bankAccount:[BUSINESS_INFO.BANK.BANK_NAME,BUSINESS_INFO.BANK.ACCOUNT_NUMBER].filter(Boolean).join(' — ')||undefined
       },
       owner:{ name:s.ownerName, email:s.ownerEmail },
-      property:s.propertyAddress,
+      properties:s.properties||[],
       openingBalance:s.openingBalance,
-      income:s.income, expenses:s.expenses,
       totalIncome:s.totalIncome, totalExpenses:s.totalExpenses,
       netAmount:s.netAmount, closingBalance:s.closingBalance,
       notes:s.notes
@@ -4569,19 +4662,25 @@ async function generateStatementPDF(id){
 
 /* --- JSON import — the integration point for your future statement
    generator. Expected shape (totals are recalculated client-side from
-   income/expenses + openingBalance, so the generator doesn't need to
-   compute them):
+   each property's income/expenses + openingBalance, so the generator
+   doesn't need to compute them). One statement covers every property
+   an owner has for the period — list them all in "properties":
    {
      "statementNumber": "STMT-2026-07-0001",
-     "propertyId": "",                    // matches a Properties record id, if known
-     "propertyAddress": "",                // fallback label if propertyId is blank/unmatched
      "ownerName": "", "ownerEmail": "",
      "periodStart": "01 Jul 2026", "periodEnd": "31 Jul 2026",
      "status": "Draft",                    // Draft | Sent | Paid
-     "openingBalance": 0,
-     "income":   [{ "date": "", "description": "", "amount": 0 }],
-     "expenses": [{ "date": "", "description": "", "amount": 0 }],
-     "notes": ""
+     "properties": [
+       {
+         "propertyId": "",                 // matches a Properties record id, if known
+         "propertyAddress": "",             // fallback label if propertyId is blank/unmatched
+         "openingBalance": 0,
+         "income":   [{ "date": "", "description": "", "amount": 0 }],
+         "expenses": [{ "date": "", "description": "", "amount": 0 }],
+         "notes": ""                        // optional, property-specific remarks
+       }
+     ],
+     "notes": ""                            // general/payment notes for the whole statement
    }
    Once wired up, the generator can call window.importStatementJSON(data)
    directly with a JS object — no paste step needed. --- */
@@ -4599,16 +4698,19 @@ async function importStatementJSON(data){
   await toggleStatementForm(true,{
     id:null,
     statementNumber:data.statementNumber||await nextStatementNumber(),
-    propertyId:data.propertyId||'',
-    propertyAddress:data.propertyAddress||'',
     ownerName:data.ownerName||'',
     ownerEmail:data.ownerEmail||'',
     periodStart:data.periodStart||'',
     periodEnd:data.periodEnd||'',
     status:data.status||'Draft',
-    openingBalance:data.openingBalance||0,
-    income:data.income||[],
-    expenses:data.expenses||[],
+    properties:(data.properties||[]).map(p=>({
+      propertyId:p.propertyId||'',
+      propertyAddress:p.propertyAddress||'',
+      openingBalance:p.openingBalance||0,
+      income:p.income||[],
+      expenses:p.expenses||[],
+      notes:p.notes||''
+    })),
     notes:data.notes||''
   });
   const jsonInput=document.getElementById('statement-json-input');

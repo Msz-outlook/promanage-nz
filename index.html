@@ -77,6 +77,13 @@ tbody tr:hover td{background:var(--bg2)}
 .btn-primary:hover{opacity:.85}
 .btn-danger{background:var(--red-bg);color:var(--red-text);border-color:#E9A6A6}
 .btn-danger:hover{background:#F8D9D9}
+.item-input{width:100%;padding:5px 6px;border:0.5px solid var(--border2);border-radius:4px;background:var(--bg);color:var(--text);font-size:12.5px;font-family:inherit;outline:none}
+.item-input:focus{border-color:var(--text)}
+.item-remove{background:transparent;border:none;color:var(--red-text);cursor:pointer;font-size:15px;padding:2px 6px}
+.inv-totals{display:flex;justify-content:flex-end;margin-top:10px}
+.inv-totals-box{width:220px;font-size:13px}
+.inv-totals-box div{display:flex;justify-content:space-between;padding:4px 0}
+.inv-totals-box .inv-total-row{border-top:0.5px solid var(--border);margin-top:4px;padding-top:8px;font-weight:600;font-size:14.5px}
 .btn-sm{padding:4px 10px;font-size:12px}
 
 /* Alerts */
@@ -608,6 +615,562 @@ textarea:focus{border-color:var(--text)}
   global.FindingsReport = { generate: generate, normalizeToDataUrl: normalizeToDataUrl };
 })(typeof window !== "undefined" ? window : this);
 
+/*
+ * InvoiceReport — client-side NZ tax-invoice PDF generator.
+ *
+ * Ported from msz's invoice_generator.py (reportlab) so the on-screen PDF
+ * matches that layout: accent-teal "TAX INVOICE" header with an optional
+ * logo, sender block top-right, Bill To + a meta table (invoice #,
+ * reference, dates, terms), a line-item table with hairline row rules and
+ * an accent header bar, an emphasised total bar, a Payment Details block,
+ * notes, and a footer credit line. Pure browser JS (jsPDF + jspdf-autotable)
+ * — no server/Python involved at generation time. invoice_generator.py +
+ * invoice_data.json remain a valid offline path too; paste that JSON into
+ * the "Import invoice (JSON)" box on the Invoices page to load it straight
+ * into this same form/PDF.
+ *
+ * Public API: await InvoiceReport.generate(data, options)
+ *   data = {
+ *     invoiceNumber, reference, issueDate, dueDate, paymentTermsDays, status,
+ *     from:   { name, address:[lines], email, phone, gstNumber, logoPath,
+ *               bank: { accountName, bankName, accountNumber, referenceNote } },
+ *     billTo: { name, attention, address, email },   // address: string or [lines]
+ *     items:  [{ description, quantity, unitPrice, amount }],
+ *     gstMode: 'exclusive' | 'inclusive' | 'none',
+ *     subtotal, gst, total,
+ *     notes
+ *   }
+ *   options = { fileName, download }
+ *   Returns: Promise<Blob>
+ */
+(function (global) {
+  "use strict";
+
+  var PAGE_W = 595.28, PAGE_H = 841.89;
+  var MARGIN = 43.2;
+  var USABLE_W = PAGE_W - 2 * MARGIN;
+  var MM = 2.834645669; // 1mm in pt — used for the logo max-size box
+
+  var COLORS = { accent: "#1f4e5f", grey: "#666666", rule: "#dddddd", text: "#000000", white: "#ffffff" };
+  var FS = { title: 26, titleWithLogo: 20, label: 10, body: 9.5, small: 9, footer: 8 };
+
+  function hexToRgb(hex) {
+    var h = hex.replace("#", "");
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
+  function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
+  function setFill(doc, hex) { var c = hexToRgb(hex); doc.setFillColor(c[0], c[1], c[2]); }
+  function money(n) { return "$" + (Number(n) || 0).toLocaleString("en-NZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+  function getAutoTable(doc) {
+    if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
+    if (global.jspdf && typeof global.jspdf.autoTable === "function") {
+      return function (opts) { return global.jspdf.autoTable(doc, opts); };
+    }
+    throw new Error("jspdf-autotable is not loaded");
+  }
+
+  // Best-effort logo fetch — mirrors the Python script's try/except: a
+  // missing path, a 404, or a decode failure just means the invoice prints
+  // without a logo. It never blocks generation. Only works for a logo file
+  // hosted alongside index.html (e.g. logo.png on GitHub Pages), since the
+  // browser can't read an arbitrary local filesystem path.
+  async function loadLogo(path) {
+    if (!path) return null;
+    try {
+      var res = await fetch(path);
+      if (!res.ok) return null;
+      var blob = await res.blob();
+      var bitmap = await createImageBitmap(blob);
+      var canvas = document.createElement("canvas");
+      canvas.width = bitmap.width; canvas.height = bitmap.height;
+      canvas.getContext("2d").drawImage(bitmap, 0, 0);
+      if (bitmap.close) bitmap.close();
+      return { dataUrl: canvas.toDataURL("image/png"), w: canvas.width, h: canvas.height };
+    } catch (err) {
+      if (global.console) console.warn("InvoiceReport: logo unavailable:", err && err.message);
+      return null;
+    }
+  }
+
+  async function generate(data, options) {
+    options = options || {};
+    var fileName = options.fileName || "invoice.pdf";
+    var doDownload = options.download !== false;
+
+    if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
+    var JsPDF = global.jspdf.jsPDF;
+
+    var from = data.from || {};
+    var bank = from.bank || {};
+    var billTo = data.billTo || {};
+    var items = data.items || [];
+    var fromAddress = Array.isArray(from.address) ? from.address : (from.address ? [from.address] : []);
+    var billAddress = Array.isArray(billTo.address) ? billTo.address : (billTo.address ? String(billTo.address).split("\n").filter(Boolean) : []);
+
+    var logo = await loadLogo(from.logoPath);
+
+    var doc = new JsPDF({ unit: "pt", format: "a4" });
+    doc.setProperties({ title: "Invoice " + (data.invoiceNumber || "") });
+    var autoTable = getAutoTable(doc);
+
+    var left = MARGIN, right = PAGE_W - MARGIN;
+    var y = MARGIN + 4;
+
+    // --- Logo + "TAX INVOICE" title (top-left) ---
+    var titleBottom;
+    if (logo) {
+      var maxW = 50 * MM, maxH = 22 * MM;
+      var scale = Math.min(maxW / logo.w, maxH / logo.h, 1);
+      var dw = logo.w * scale, dh = logo.h * scale;
+      doc.addImage(logo.dataUrl, "PNG", left, y, dw, dh);
+      setText(doc, COLORS.accent);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.titleWithLogo);
+      doc.text("TAX INVOICE", left, y + dh + 18);
+      titleBottom = y + dh + 24;
+    } else {
+      setText(doc, COLORS.accent);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.title);
+      doc.text("TAX INVOICE", left, y + FS.title);
+      titleBottom = y + FS.title + 6;
+    }
+
+    // --- Sender block (top-right) ---
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    setText(doc, COLORS.text);
+    doc.text(from.name || "—", right, y + 11, { align: "right" });
+    var sy = y + 11 + 14;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(FS.small);
+    setText(doc, COLORS.grey);
+    fromAddress.forEach(function (line) { doc.text(line, right, sy, { align: "right" }); sy += 12; });
+    if (from.email) { doc.text(from.email, right, sy, { align: "right" }); sy += 12; }
+    if (from.phone) { doc.text(from.phone, right, sy, { align: "right" }); sy += 12; }
+    if (from.gstNumber) { doc.text("GST No: " + from.gstNumber, right, sy, { align: "right" }); sy += 12; }
+
+    y = Math.max(titleBottom, sy) + 26;
+
+    // --- Bill To (left) / meta table (right) ---
+    var colW = USABLE_W / 2 - 10;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.label);
+    setText(doc, COLORS.accent);
+    doc.text("BILL TO", left, y);
+    var by = y + 14;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(FS.body);
+    setText(doc, COLORS.text);
+    doc.text(billTo.name || "—", left, by); by += 12;
+    if (billTo.attention) { doc.text("Attn: " + billTo.attention, left, by); by += 12; }
+    billAddress.forEach(function (line) {
+      doc.splitTextToSize(line, colW).forEach(function (l) { doc.text(l, left, by); by += 12; });
+    });
+    if (billTo.email) { setText(doc, COLORS.grey); doc.text(billTo.email, left, by); by += 12; setText(doc, COLORS.text); }
+
+    var meta = [["Invoice number", data.invoiceNumber || "—"]];
+    if (data.reference) meta.push(["Reference", data.reference]);
+    meta.push(["Invoice date", data.issueDate || "—"]);
+    if (data.paymentTermsDays != null && data.paymentTermsDays !== "") meta.push(["Payment terms", data.paymentTermsDays + " days"]);
+    if (data.dueDate) meta.push(["Due date", data.dueDate]);
+    if (data.status) meta.push(["Status", data.status]);
+
+    var my = y;
+    meta.forEach(function (row) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.small);
+      setText(doc, COLORS.grey);
+      doc.text(row[0], right - colW, my);
+      doc.setFont("helvetica", "bold");
+      setText(doc, COLORS.text);
+      doc.text(String(row[1]), right, my, { align: "right" });
+      my += 14;
+    });
+
+    y = Math.max(by, my) + 22;
+
+    // --- Line items table (hairline row rules, accent header bar) ---
+    var body = items.map(function (it) {
+      var amt = it.amount != null ? it.amount : (it.quantity || 0) * (it.unitPrice || 0);
+      return [it.description || "", String(it.quantity != null ? it.quantity : ""), money(it.unitPrice), money(amt)];
+    });
+
+    autoTable({
+      startY: y,
+      head: [["Description", "Qty", "Unit price", "Amount (excl. GST)"]],
+      body: body,
+      theme: "plain",
+      styles: { font: "helvetica", fontSize: FS.body, cellPadding: { top: 6, bottom: 6, left: 4, right: 4 }, textColor: hexToRgb(COLORS.text) },
+      headStyles: { fillColor: hexToRgb(COLORS.accent), textColor: [255, 255, 255], fontStyle: "bold", fontSize: FS.small },
+      columnStyles: {
+        0: { cellWidth: USABLE_W * 0.5 },
+        1: { cellWidth: USABLE_W * 0.12, halign: "right" },
+        2: { cellWidth: USABLE_W * 0.19, halign: "right" },
+        3: { cellWidth: USABLE_W * 0.19, halign: "right" }
+      },
+      margin: { left: MARGIN, right: MARGIN },
+      didDrawCell: function (d) {
+        if (d.section !== "body") return;
+        setDraw(doc, COLORS.rule);
+        doc.setLineWidth(0.5);
+        doc.line(d.cell.x, d.cell.y + d.cell.height, d.cell.x + d.cell.width, d.cell.y + d.cell.height);
+      }
+    });
+
+    var afterTableY = doc.lastAutoTable.finalY + 16;
+
+    // --- Totals (right-aligned; total row emphasised with an accent bar) ---
+    var boxW = 220;
+    var totalRows = [["Subtotal (excl. GST)", money(data.subtotal)]];
+    if (data.gstMode !== "none") totalRows.push(["GST (15%)", money(data.gst)]);
+    totalRows.push([(data.gstMode === "none" ? "Total" : "Total (incl. GST)") + " NZD", money(data.total)]);
+
+    if (afterTableY + totalRows.length * 20 + 150 > PAGE_H - MARGIN) { doc.addPage(); afterTableY = MARGIN; }
+
+    var boxX = right - boxW;
+    var ty = afterTableY;
+    totalRows.forEach(function (row, i) {
+      var isLast = i === totalRows.length - 1;
+      if (isLast) {
+        setFill(doc, COLORS.accent);
+        doc.rect(boxX - 4, ty - 2, boxW + 4, 20, "F");
+        setText(doc, COLORS.white);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(FS.label + 1);
+      } else {
+        setText(doc, COLORS.text);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(FS.body);
+      }
+      doc.text(row[0], boxX, ty + 12);
+      doc.text(row[1], boxX + boxW, ty + 12, { align: "right" });
+      ty += isLast ? 22 : 18;
+    });
+
+    // --- Payment details (only shown once at least one bank field is set) ---
+    var hasBank = bank.accountName || bank.bankName || bank.accountNumber || bank.referenceNote;
+    var py = ty + 24;
+    if (hasBank) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.label);
+      setText(doc, COLORS.accent);
+      doc.text("PAYMENT DETAILS", left, py);
+      py += 14;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.body);
+      setText(doc, COLORS.text);
+      if (bank.accountName) { doc.text("Account name: " + bank.accountName, left, py); py += 12; }
+      if (bank.bankName) { doc.text("Bank: " + bank.bankName, left, py); py += 12; }
+      if (bank.accountNumber) { doc.text("Account number: " + bank.accountNumber, left, py); py += 12; }
+      if (bank.referenceNote) { setText(doc, COLORS.grey); doc.text(bank.referenceNote, left, py); py += 14; setText(doc, COLORS.text); }
+    }
+
+    // --- Notes ---
+    if (data.notes) {
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(FS.body);
+      setText(doc, COLORS.text);
+      doc.splitTextToSize(data.notes, USABLE_W).forEach(function (line) { doc.text(line, left, py); py += 12; });
+    }
+
+    // --- Footer on every page ---
+    var totalPages = doc.internal.getNumberOfPages();
+    var footerBits = [from.name || "Invoice"];
+    if (from.gstNumber) footerBits.push("GST No: " + from.gstNumber);
+    var generatedOn = new Date().toLocaleDateString("en-NZ", { day: "2-digit", month: "short", year: "numeric" });
+    for (var p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      setDraw(doc, COLORS.rule);
+      doc.setLineWidth(0.5);
+      doc.line(MARGIN, PAGE_H - 34, PAGE_W - MARGIN, PAGE_H - 34);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.footer);
+      setText(doc, COLORS.grey);
+      doc.text(footerBits.join("  |  ") + "  |  Generated " + generatedOn, PAGE_W / 2, PAGE_H - 22, { align: "center" });
+      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 22, { align: "right" });
+    }
+
+    var blob = doc.output("blob");
+    if (doDownload) doc.save(fileName);
+    return blob;
+  }
+
+  global.InvoiceReport = { generate: generate };
+})(typeof window !== "undefined" ? window : this);
+
+/*
+ * StatementReport — client-side monthly owner-statement PDF generator,
+ * same pattern as InvoiceReport/FindingsReport above (pure browser JS,
+ * jsPDF + jspdf-autotable, no server).
+ *
+ * NOTE FOR msz: this is a working placeholder so the Statements section
+ * is functional today, in the same spirit as the InvoiceReport note
+ * above. Once your monthly-statement JSON generator exists, either feed
+ * its output through window.importStatementJSON(data) (see the comment
+ * above loadStatementJSON() in the STATEMENTS MODULE script) to reuse
+ * this layout as-is, or port your own layout logic into generate()
+ * below — keep the same data shape so nothing else in the app needs
+ * to change.
+ *
+ * Public API: await StatementReport.generate(data, options)
+ *   data = {
+ *     statementNumber, periodStart, periodEnd, status,
+ *     from:  { name, address, gstNumber, email, phone, bankAccount },
+ *     owner: { name, email },
+ *     property,
+ *     openingBalance,
+ *     income:   [{ date, description, amount }],
+ *     expenses: [{ date, description, amount }],
+ *     totalIncome, totalExpenses, netAmount, closingBalance,
+ *     notes
+ *   }
+ *   options = { fileName, download }
+ *   Returns: Promise<Blob>
+ */
+(function (global) {
+  "use strict";
+
+  var PAGE_W = 595.28, PAGE_H = 841.89;
+  var MARGIN = 43.2;
+  var USABLE_W = PAGE_W - 2 * MARGIN;
+
+  var COLORS = {
+    header: "#37474F", grid: "#CCCCCC", altRow: "#F7F7F7",
+    text: "#000000", muted: "#666666", accent: "#185FA5",
+    income: "#3B6D11", expense: "#A32D2D"
+  };
+  var FS = { title: 20, heading: 12, body: 9.5, small: 8.5, footer: 8 };
+
+  function hexToRgb(hex) {
+    var h = hex.replace("#", "");
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
+  function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
+  function money(n) { return "$" + (Number(n) || 0).toLocaleString("en-NZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+  function getAutoTable(doc) {
+    if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
+    if (global.jspdf && typeof global.jspdf.autoTable === "function") {
+      return function (opts) { return global.jspdf.autoTable(doc, opts); };
+    }
+    throw new Error("jspdf-autotable is not loaded");
+  }
+
+  async function generate(data, options) {
+    options = options || {};
+    var fileName = options.fileName || "statement.pdf";
+    var doDownload = options.download !== false;
+
+    if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
+    var JsPDF = global.jspdf.jsPDF;
+
+    var from = data.from || {};
+    var owner = data.owner || {};
+    var income = data.income || [];
+    var expenses = data.expenses || [];
+
+    var doc = new JsPDF({ unit: "pt", format: "a4" });
+    doc.setProperties({ title: "Owner Statement " + (data.statementNumber || "") });
+    var autoTable = getAutoTable(doc);
+
+    var y = MARGIN;
+
+    // --- Title + statement meta (top-right) ---
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.title);
+    setText(doc, COLORS.text);
+    doc.text("OWNER STATEMENT", MARGIN, y + FS.title);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(FS.body);
+    var metaLines = [
+      ["Statement #", data.statementNumber || "—"],
+      ["Period", (data.periodStart || "—") + " – " + (data.periodEnd || "—")],
+      ["Status", data.status || "—"]
+    ];
+    var metaY = y;
+    metaLines.forEach(function (row) {
+      setText(doc, COLORS.muted);
+      doc.text(row[0] + ":", PAGE_W - MARGIN - 200, metaY, { align: "left" });
+      setText(doc, COLORS.text);
+      doc.setFont("helvetica", "bold");
+      doc.text(String(row[1]), PAGE_W - MARGIN, metaY, { align: "right" });
+      doc.setFont("helvetica", "normal");
+      metaY += 14;
+    });
+    y += FS.title + 24;
+
+    // --- From (manager) / Owner / Property ---
+    var colW = USABLE_W / 2 - 10;
+    function addressBlock(label, name, addressLines, extra, x) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.small);
+      setText(doc, COLORS.muted);
+      doc.text(label.toUpperCase(), x, y);
+      var by = y + 14;
+      doc.setFontSize(FS.body);
+      setText(doc, COLORS.text);
+      doc.text(name || "—", x, by);
+      by += 13;
+      doc.setFont("helvetica", "normal");
+      (addressLines || []).forEach(function (line) {
+        if (!line) return;
+        doc.splitTextToSize(line, colW).forEach(function (l) {
+          doc.text(l, x, by);
+          by += 12;
+        });
+      });
+      (extra || []).forEach(function (line) {
+        setText(doc, COLORS.muted);
+        doc.text(line, x, by);
+        by += 12;
+      });
+      return by;
+    }
+    var fromExtra = [];
+    if (from.gstNumber) fromExtra.push("GST #: " + from.gstNumber);
+    if (from.email) fromExtra.push(from.email);
+    if (from.phone) fromExtra.push(from.phone);
+    var y1 = addressBlock("Property manager", from.name, [from.address], fromExtra, MARGIN);
+
+    var ownerExtra = [];
+    if (owner.email) ownerExtra.push(owner.email);
+    var y2 = addressBlock("Statement for", owner.name, [data.property], ownerExtra, MARGIN + colW + 20);
+
+    y = Math.max(y1, y2) + 18;
+
+    // --- Income table ---
+    setText(doc, COLORS.text);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.heading);
+    doc.text("Income", MARGIN, y);
+    y += 10;
+    var incomeBody = income.map(function (it) {
+      return [it.date || "", it.description || "", money(it.amount)];
+    });
+    if (!incomeBody.length) incomeBody = [["—", "No income recorded this period", money(0)]];
+    autoTable({
+      startY: y,
+      head: [["Date", "Description", "Amount"]],
+      body: incomeBody,
+      theme: "grid",
+      styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
+      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
+      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
+      columnStyles: {
+        0: { cellWidth: USABLE_W * 0.18 },
+        1: { cellWidth: USABLE_W * 0.57 },
+        2: { cellWidth: USABLE_W * 0.25, halign: "right" }
+      },
+      margin: { left: MARGIN, right: MARGIN }
+    });
+    y = doc.lastAutoTable.finalY + 20;
+
+    // --- Expenses table ---
+    if (y > PAGE_H - 220) { doc.addPage(); y = MARGIN; }
+    setText(doc, COLORS.text);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.heading);
+    doc.text("Expenses", MARGIN, y);
+    y += 10;
+    var expenseBody = expenses.map(function (it) {
+      return [it.date || "", it.description || "", money(it.amount)];
+    });
+    if (!expenseBody.length) expenseBody = [["—", "No expenses recorded this period", money(0)]];
+    autoTable({
+      startY: y,
+      head: [["Date", "Description", "Amount"]],
+      body: expenseBody,
+      theme: "grid",
+      styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
+      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
+      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
+      columnStyles: {
+        0: { cellWidth: USABLE_W * 0.18 },
+        1: { cellWidth: USABLE_W * 0.57 },
+        2: { cellWidth: USABLE_W * 0.25, halign: "right" }
+      },
+      margin: { left: MARGIN, right: MARGIN }
+    });
+    var afterTableY = doc.lastAutoTable.finalY + 16;
+
+    // --- Totals box (bottom-right) ---
+    if (afterTableY > PAGE_H - 160) { doc.addPage(); afterTableY = MARGIN; }
+    var boxW = 230, rowH = 16;
+    var totalRows = [
+      ["Opening balance", money(data.openingBalance)],
+      ["Total income", money(data.totalIncome)],
+      ["Total expenses", money(data.totalExpenses)],
+      ["Net amount", money(data.netAmount)],
+      ["Closing balance", money(data.closingBalance)]
+    ];
+
+    var boxX = PAGE_W - MARGIN - boxW;
+    var by = afterTableY;
+    totalRows.forEach(function (row, i) {
+      var isLast = i === totalRows.length - 1;
+      if (isLast) {
+        setDraw(doc, COLORS.grid);
+        doc.setLineWidth(0.5);
+        doc.line(boxX, by, boxX + boxW, by);
+        by += 6;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(FS.heading);
+      } else {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(FS.body);
+      }
+      setText(doc, COLORS.text);
+      doc.text(row[0], boxX, by + 10);
+      doc.text(row[1], boxX + boxW, by + 10, { align: "right" });
+      by += rowH;
+    });
+
+    // --- Notes / payment details ---
+    var noteY = Math.max(by, afterTableY) + 20;
+    if (data.notes || from.bankAccount) {
+      if (noteY > PAGE_H - 80) { doc.addPage(); noteY = MARGIN; }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.small);
+      setText(doc, COLORS.muted);
+      doc.text("NOTES", MARGIN, noteY);
+      noteY += 14;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.body);
+      setText(doc, COLORS.text);
+      var noteText = (data.notes || "") + (from.bankAccount ? (data.notes ? "\n" : "") + "Bank account: " + from.bankAccount : "");
+      doc.splitTextToSize(noteText, USABLE_W).forEach(function (line) {
+        doc.text(line, MARGIN, noteY);
+        noteY += 12;
+      });
+    }
+
+    // --- Footer on every page ---
+    var totalPages = doc.internal.getNumberOfPages();
+    for (var p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      setDraw(doc, COLORS.grid);
+      doc.setLineWidth(0.5);
+      doc.line(MARGIN, PAGE_H - 37, PAGE_W - MARGIN, PAGE_H - 37);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FS.footer);
+      setText(doc, COLORS.muted);
+      doc.text((from.name || "Owner Statement") + " — " + (data.statementNumber || ""), MARGIN, PAGE_H - 26);
+      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, { align: "right" });
+    }
+
+    var blob = doc.output("blob");
+    if (doDownload) doc.save(fileName);
+    return blob;
+  }
+
+  global.StatementReport = { generate: generate };
+})(typeof window !== "undefined" ? window : this);
+
 </script>
 <body>
 
@@ -648,6 +1211,8 @@ textarea:focus{border-color:var(--text)}
   <div class="nav-section">
     <div class="nav-label">Finance</div>
     <div class="nav-item" onclick="nav('financials',this)"><span class="nav-icon">📊</span> Financials</div>
+    <div class="nav-item" onclick="nav('invoices',this)"><span class="nav-icon">🧾</span> Invoices</div>
+    <div class="nav-item" onclick="nav('statements',this)"><span class="nav-icon">📨</span> Statements</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Compliance</div>
@@ -656,6 +1221,10 @@ textarea:focus{border-color:var(--text)}
   <div class="nav-section">
     <div class="nav-label">Activity</div>
     <div class="nav-item" onclick="nav('activity',this)"><span class="nav-icon">🕒</span> Activity Log</div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-label">Automation</div>
+    <div class="nav-item" onclick="nav('email-triage',this)"><span class="nav-icon">📧</span> Email Triage</div>
   </div>
   <div style="margin-top:auto;padding:1rem;border-top:0.5px solid var(--border)">
     <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">Sign out</button>
@@ -680,39 +1249,50 @@ textarea:focus{border-color:var(--text)}
 <!-- DASHBOARD -->
 <div class="page active" id="page-dashboard">
   <div id="dash-alerts"></div>
-  <div class="metrics" id="dash-metrics">
-    <div class="metric"><div class="metric-label">Properties</div><div class="metric-val" id="dm-properties">—</div><div class="metric-sub" id="dm-properties-sub"></div></div>
-    <div class="metric"><div class="metric-label">Occupancy</div><div class="metric-val" id="dm-occupancy">—</div><div class="metric-sub" id="dm-occupancy-sub"></div></div>
-    <div class="metric"><div class="metric-label">Monthly rent</div><div class="metric-val" id="dm-rent">—</div><div class="metric-sub" id="dm-rent-sub"></div></div>
-    <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val" id="dm-maint">—</div><div class="metric-sub" id="dm-maint-sub"></div></div>
-  </div>
-  <div class="two-col">
-    <div class="card">
-      <div class="card-head">Lease renewals due</div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Lease end</th></tr></thead>
-        <tbody id="dash-renewals"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr></tbody>
-      </table></div><div class="scroll-fade"></div></div>
-    </div>
-    <div class="card">
-      <div class="card-head">Rent arrears <button class="btn btn-sm" onclick="nav('tenants',document.querySelectorAll('.nav-item')[2])">View tenants →</button></div>
-      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Amount</th></tr></thead>
-        <tbody id="dash-arrears"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr></tbody>
-      </table></div><div class="scroll-fade"></div></div>
-    </div>
-  </div>
+
   <div class="card">
-    <div class="card-head">Urgent maintenance</div>
+    <div class="card-head">Urgent maintenance <button class="btn btn-sm" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])">View maintenance →</button></div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead>
       <tbody id="dash-maint"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
   </div>
+
+  <div class="metrics" id="dash-metrics">
+    <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val" id="dm-maint">—</div><div class="metric-sub" id="dm-maint-sub"></div></div>
+    <div class="metric"><div class="metric-label">Not compliant</div><div class="metric-val" id="dm-noncompliant">—</div><div class="metric-sub" id="dm-noncompliant-sub"></div></div>
+    <div class="metric"><div class="metric-label">Inspections due</div><div class="metric-val" id="dm-inspections">—</div><div class="metric-sub" id="dm-inspections-sub"></div></div>
+    <div class="metric"><div class="metric-label">Next statement cycle</div><div class="metric-val" id="dm-statement">—</div><div class="metric-sub" id="dm-statement-sub"></div></div>
+  </div>
+
+  <div class="two-col">
+    <div class="card">
+      <div class="card-head">Properties not compliant <button class="btn btn-sm" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8])">View compliance →</button></div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Overdue items</th><th></th></tr></thead>
+        <tbody id="dash-noncompliant"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr></tbody>
+      </table></div><div class="scroll-fade"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head">Next inspection per property <button class="btn btn-sm" onclick="nav('inspections',document.querySelectorAll('.nav-item')[4])">View inspections →</button></div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Last inspected</th><th>Next due</th><th>Status</th></tr></thead>
+        <tbody id="dash-inspections"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr></tbody>
+      </table></div><div class="scroll-fade"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">Lease renewals due</div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Tenant</th><th>Lease end</th></tr></thead>
+      <tbody id="dash-renewals"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
+  </div>
+
   <div class="card">
     <div class="card-head">Quick links</div>
     <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" onclick="nav('properties',document.querySelectorAll('.nav-item')[1]);togglePropForm(true)">🏠 Add property</button>
       <button class="btn" onclick="nav('tenants',document.querySelectorAll('.nav-item')[2]);toggleTenantForm(true)">👤 Add tenant</button>
       <button class="btn" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3]);toggleMaintForm(true)">🔧 New maintenance request</button>
-      <button class="btn" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6])">✅ Compliance check</button>
+      <button class="btn" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8])">✅ Compliance check</button>
     </div>
   </div>
 </div>
@@ -868,6 +1448,23 @@ textarea:focus{border-color:var(--text)}
   </div>
 </div>
 
+<!-- EMAIL TRIAGE -->
+<div class="page" id="page-email-triage">
+  <div class="alert alert-blue">
+    ✉️ <div><strong>Test mode — no mailbox connected.</strong> This page runs the triage pipeline against a fixed set of sample emails (<code>MOCK_INBOX</code> in the code) so you can see how incoming mail would flow into maintenance requests. High-confidence maintenance emails are auto-created below and on refresh; everything else waits here for a one-click decision. Wire up a real inbox later by replacing <code>fetchIncomingEmails()</code> with a live IMAP/Gmail/forwarding-webhook source — nothing else in this pipeline needs to change.</div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span>Sample mailbox <span id="triage-count" style="font-weight:400;color:var(--text3)"></span></span>
+      <button class="btn btn-sm" onclick="processEmailTriageInbox()">🔄 Check inbox</button>
+    </div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Received</th><th>From</th><th>Subject</th><th>Property match</th><th>Priority</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody id="triage-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No emails checked yet</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
+  </div>
+</div>
+
 <!-- INSPECTIONS -->
 <div class="page" id="page-inspections">
   <div class="sync-banner sync-online" id="sync-banner">
@@ -965,6 +1562,188 @@ textarea:focus{border-color:var(--text)}
   </div>
 </div>
 
+<!-- INVOICES -->
+<div class="page" id="page-invoices">
+  <div class="sync-banner sync-online" id="sync-banner-invoice">
+    <span><span class="sync-dot"></span><span id="sync-status-text-invoice">Online</span> · <span id="sync-pending-text-invoice">0 pending sync</span></span>
+    <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">Import invoice (JSON)</div>
+    <div class="card-body">
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:.6rem">
+        Paste the same JSON you'd edit for <code>invoice_generator.py</code> (the <code>invoice_data.json</code> shape — <code>sender</code>/<code>bank</code>/<code>client</code>/<code>invoice</code>/<code>line_items</code>), then <strong>Load into form</strong> to review before saving — nothing is saved until you click Save. <code>sender</code>/<code>bank</code>/<code>logo</code> in the JSON also update your letterhead for this session. This can be called directly as <code>window.importInvoiceJSON(data)</code> too.
+      </div>
+      <textarea id="invoice-json-input" placeholder='{"sender":{"name":"Your Business Name Ltd","address":["123 Example Road","Suburb, Town 0000"],"email":"accounts@yourbusiness.co.nz","phone":"+64 0 000 0000","gst_number":"123-456-789"},"bank":{"account_name":"Your Business Name Ltd","bank":"Bank Name","account_number":"00-0000-0000000-00","reference_note":"Please use the invoice number as the payment reference."},"client":{"name":"Client Name Ltd","attention":"Accounts Payable","address":["456 Client Street","Suburb, City 0000"]},"invoice":{"invoice_number":"INV-0001","reference":"PO-PLACEHOLDER-123","invoice_date":"2026-07-24","payment_terms_days":30,"auto_due_date":true,"notes":"Thank you for your business."},"line_items":[{"description":"Placeholder line","quantity":2,"unit_price":150.00}]}' style="min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <div style="display:flex;gap:8px;margin-top:.6rem;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="loadInvoiceJSON()">⬇ Load into form</button>
+        <button class="btn btn-sm" onclick="toggleInvoiceForm(true)">+ New invoice (manual)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="invoice-form-card" style="display:none">
+    <div class="card-head" id="invoice-form-title">New invoice</div>
+    <div class="card-body">
+      <div class="controls">
+        <div><label>Invoice number</label><input type="text" id="invoice-number" style="width:130px" placeholder="INV-0001"></div>
+        <div><label>Reference (PO #)</label><input type="text" id="invoice-reference" style="width:150px" placeholder="e.g. PO-2026-0123"></div>
+        <div><label>Issue date</label><input type="text" id="invoice-issue-date" style="width:130px" placeholder="e.g. 25 Jul 2026" onchange="autoFillInvoiceDueDate()"></div>
+        <div><label>Payment terms (days)</label><input type="number" id="invoice-payment-terms" style="width:90px" value="14" min="0" onchange="autoFillInvoiceDueDate()"></div>
+        <div><label>Due date</label><input type="text" id="invoice-due-date" style="width:130px" placeholder="e.g. 08 Aug 2026"></div>
+        <div><label>Status</label><select id="invoice-status"><option>Draft</option><option>Sent</option><option>Paid</option><option>Overdue</option></select></div>
+      </div>
+
+      <div class="section-label" style="margin-top:1rem">Bill to</div>
+      <div class="controls">
+        <div style="flex:1;min-width:180px"><label>Name / company</label><input type="text" id="invoice-bill-name" style="width:100%" placeholder="e.g. Nguyen family, or First National Progressive"></div>
+        <div style="flex:1;min-width:160px"><label>Attention (optional)</label><input type="text" id="invoice-bill-attention" style="width:100%" placeholder="e.g. Accounts Payable"></div>
+        <div style="flex:1;min-width:180px"><label>Email (optional)</label><input type="text" id="invoice-bill-email" style="width:100%" placeholder="e.g. name@example.com"></div>
+      </div>
+      <label>Address (optional)</label>
+      <textarea id="invoice-bill-address" placeholder="Billing address..." style="min-height:44px"></textarea>
+
+      <div class="controls" style="margin-top:.6rem">
+        <div style="flex:1;min-width:220px">
+          <label>Related property (optional — for tagging/reporting)</label>
+          <select id="invoice-property" style="width:100%"><option value="">— None / external —</option></select>
+        </div>
+        <div><label>GST treatment</label><select id="invoice-gst-mode" onchange="recalcInvoiceTotals()">
+          <option value="exclusive">Plus GST (15%)</option>
+          <option value="inclusive">Includes GST (15%)</option>
+          <option value="none">No GST</option>
+        </select></div>
+      </div>
+
+      <div class="section-label" style="margin-top:1.1rem">Line items</div>
+      <div class="table-outer"><div class="table-wrap"><table>
+        <thead><tr><th style="width:46%">Description</th><th style="width:12%">Qty</th><th style="width:18%">Unit price ($)</th><th style="width:18%" class="tr">Amount ($)</th><th style="width:6%"></th></tr></thead>
+        <tbody id="invoice-items-body"></tbody>
+      </table></div></div>
+      <button class="btn btn-sm" style="margin-top:8px" onclick="addInvoiceItemRow()">+ Add line</button>
+
+      <div class="inv-totals">
+        <div class="inv-totals-box">
+          <div><span>Subtotal</span><span id="invoice-subtotal-display">$0.00</span></div>
+          <div><span>GST</span><span id="invoice-gst-display">$0.00</span></div>
+          <div class="inv-total-row"><span>Total</span><span id="invoice-total-display">$0.00</span></div>
+        </div>
+      </div>
+
+      <label style="margin-top:.75rem">Notes / payment details</label>
+      <textarea id="invoice-notes" placeholder="e.g. Payment due within 14 days. Bank account: 12-3456-7890123-00"></textarea>
+
+      <div style="display:flex;gap:8px;margin-top:.75rem;justify-content:space-between">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="saveInvoice()">💾 Save invoice</button>
+          <button class="btn" onclick="toggleInvoiceForm(false)">Cancel</button>
+        </div>
+        <button class="btn btn-danger" id="invoice-delete-btn" style="display:none" onclick="deleteInvoiceFromForm()">🗑 Delete invoice</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center"><span>All invoices <span id="invoice-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="toggleInvoiceForm(true)">+ New invoice</button></div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an invoice to edit.</div>
+    </div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Bill to</th><th>Property</th><th>Issue date</th><th>Due date</th><th class="tr">Total</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+      <tbody id="invoice-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No invoices yet — click "+ New invoice" to create your first one</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
+  </div>
+</div>
+
+<!-- STATEMENTS -->
+<div class="page" id="page-statements">
+  <div class="sync-banner sync-online" id="sync-banner-statement">
+    <span><span class="sync-dot"></span><span id="sync-status-text-statement">Online</span> · <span id="sync-pending-text-statement">0 pending sync</span></span>
+    <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">Import statement (JSON)</div>
+    <div class="card-body">
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:.6rem">
+        Paste the JSON your monthly statement generator produces, then <strong>Load into form</strong> to review before saving — nothing is saved until you click Save. Once the generator is wired up it can call <code>window.importStatementJSON(data)</code> directly with the same shape, no paste step needed.
+      </div>
+      <textarea id="statement-json-input" placeholder='{"statementNumber":"STMT-2026-07-0001","ownerName":"Nguyen family","propertyId":"","periodStart":"01 Jul 2026","periodEnd":"31 Jul 2026","openingBalance":0,"income":[{"date":"05 Jul 2026","description":"Rent received","amount":2500}],"expenses":[{"date":"10 Jul 2026","description":"Property management fee","amount":200}],"notes":""}' style="min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <div style="display:flex;gap:8px;margin-top:.6rem;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="loadStatementJSON()">⬇ Load into form</button>
+        <button class="btn btn-sm" onclick="toggleStatementForm(true)">+ New statement (manual)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="statement-form-card" style="display:none">
+    <div class="card-head" id="statement-form-title">New statement</div>
+    <div class="card-body">
+      <div class="controls">
+        <div><label>Statement number</label><input type="text" id="statement-number" style="width:170px" placeholder="STMT-2026-07-0001"></div>
+        <div><label>Period start</label><input type="text" id="statement-period-start" style="width:130px" placeholder="e.g. 01 Jul 2026"></div>
+        <div><label>Period end</label><input type="text" id="statement-period-end" style="width:130px" placeholder="e.g. 31 Jul 2026"></div>
+        <div><label>Status</label><select id="statement-status"><option>Draft</option><option>Sent</option><option>Paid</option></select></div>
+      </div>
+
+      <div class="section-label" style="margin-top:1rem">Owner</div>
+      <div class="controls">
+        <div style="flex:1;min-width:180px"><label>Owner name</label><input type="text" id="statement-owner-name" style="width:100%" placeholder="e.g. Nguyen family"></div>
+        <div style="flex:1;min-width:180px"><label>Owner email (optional)</label><input type="text" id="statement-owner-email" style="width:100%" placeholder="e.g. owner@example.com"></div>
+        <div style="flex:1;min-width:220px">
+          <label>Related property</label>
+          <select id="statement-property" style="width:100%"><option value="">— None / external —</option></select>
+        </div>
+      </div>
+
+      <div class="section-label" style="margin-top:1.1rem">Income</div>
+      <div class="table-outer"><div class="table-wrap"><table>
+        <thead><tr><th style="width:20%">Date</th><th style="width:55%">Description</th><th style="width:20%">Amount ($)</th><th style="width:5%"></th></tr></thead>
+        <tbody id="statement-income-body"></tbody>
+      </table></div></div>
+      <button class="btn btn-sm" style="margin-top:8px" onclick="addStatementItemRow('income')">+ Add income line</button>
+
+      <div class="section-label" style="margin-top:1.1rem">Expenses</div>
+      <div class="table-outer"><div class="table-wrap"><table>
+        <thead><tr><th style="width:20%">Date</th><th style="width:55%">Description</th><th style="width:20%">Amount ($)</th><th style="width:5%"></th></tr></thead>
+        <tbody id="statement-expense-body"></tbody>
+      </table></div></div>
+      <button class="btn btn-sm" style="margin-top:8px" onclick="addStatementItemRow('expense')">+ Add expense line</button>
+
+      <div class="inv-totals">
+        <div class="inv-totals-box" style="width:260px">
+          <div><span>Opening balance</span><span><input type="number" id="statement-opening-balance" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></span></div>
+          <div><span>Total income</span><span id="statement-income-total-display">$0.00</span></div>
+          <div><span>Total expenses</span><span id="statement-expense-total-display">$0.00</span></div>
+          <div><span>Net amount</span><span id="statement-net-display">$0.00</span></div>
+          <div class="inv-total-row"><span>Closing balance</span><span id="statement-closing-display">$0.00</span></div>
+        </div>
+      </div>
+
+      <label style="margin-top:.75rem">Notes / payment details</label>
+      <textarea id="statement-notes" placeholder="e.g. Net amount paid to owner's nominated account on 20 Jul 2026."></textarea>
+
+      <div style="display:flex;gap:8px;margin-top:.75rem;justify-content:space-between">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="saveStatement()">💾 Save statement</button>
+          <button class="btn" onclick="toggleStatementForm(false)">Cancel</button>
+        </div>
+        <button class="btn btn-danger" id="statement-delete-btn" style="display:none" onclick="deleteStatementFromForm()">🗑 Delete statement</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center"><span>All statements <span id="statement-count" style="font-weight:400;color:var(--text3)"></span></span></div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click a statement to edit.</div>
+    </div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Statement #</th><th>Owner</th><th>Property</th><th>Period</th><th class="tr">Net amount</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+      <tbody id="statement-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr></tbody>
+    </table></div><div class="scroll-fade"></div></div>
+  </div>
+</div>
+
 <!-- COMPLIANCE -->
 <div class="page" id="page-compliance">
   <div class="alert alert-blue" id="compliance-alert-banner">ℹ️ <div>Loading…</div></div>
@@ -1048,7 +1827,7 @@ textarea:focus{border-color:var(--text)}
 </div>
 
 <script>
-const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',compliance:'NZ Compliance',activity:'Activity Log'};
+const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',invoices:'Invoices',statements:'Owner Statements',compliance:'NZ Compliance',activity:'Activity Log','email-triage':'Email Triage'};
 function nav(id,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
@@ -1061,6 +1840,9 @@ function nav(id,el){
   if(id==='dashboard') renderDashboard();
   if(id==='activity') renderActivityLog();
   if(id==='compliance') renderComplianceLive();
+  if(id==='invoices') renderInvoicesList();
+  if(id==='statements') renderStatementsList();
+  if(id==='email-triage') renderEmailTriageList();
 }
 function toggleSidebar(force){
   const sidebar=document.getElementById('sidebar');
@@ -1090,6 +1872,31 @@ const CONFIG = {
   SUPABASE_URL: 'https://ilxjyhnbnsufeomnkmsg.supabase.co',
   SUPABASE_KEY: 'sb_publishable_4-vXVhXsr40g1KuLdihxhw_XH5-2Vqn',
   STORAGE_BUCKET: 'inspection-photos'
+};
+
+// Printed as the "From" block + Payment Details on every generated invoice
+// PDF — edit with your real details (mirrors SENDER/BANK/LOGO from your
+// invoice_generator.py CONFIG). GST_NUMBER blank = "GST No" line omitted;
+// leave a BANK field blank to skip that line; leave all of BANK blank to
+// skip the whole Payment Details block. Pasting an invoice_data.json with
+// "sender"/"bank"/"logo" via Import JSON on the Invoices page overrides
+// these for that session too — see importInvoiceJSON() below.
+const BUSINESS_INFO = {
+  NAME: 'Your Business Name Ltd',
+  ADDRESS: ['Christchurch, New Zealand'],   // array = one printed line per entry
+  GST_NUMBER: '',
+  EMAIL: '',
+  PHONE: '',
+  BANK: {
+    ACCOUNT_NAME: '',
+    BANK_NAME: '',
+    ACCOUNT_NUMBER: '',
+    REFERENCE_NOTE: 'Please use the invoice number as the payment reference.'
+  },
+  // Optional logo — host logo.png next to index.html on GitHub Pages and
+  // set PATH:'logo.png'. Leave blank for no logo (title prints instead,
+  // same fallback behaviour as the Python script).
+  LOGO: { PATH: '' }
 };
 
 // The NZ law/compliance content in this app (dashboard alert + Compliance
@@ -1142,6 +1949,8 @@ async function doLogin(){
   updateTenantSyncBanner();
   await renderMaintenanceList();
   updateMaintSyncBanner();
+  await renderInvoicesList();
+  updateInvoiceSyncBanner();
   await renderDashboard();
   await renderActivityLog();
   await renderComplianceLive();
@@ -1158,7 +1967,7 @@ sb.auth.onAuthStateChange((event)=>{
   if(event==='SIGNED_OUT') checkSession();
 });
 
-const DB_NAME='promanageDB', DB_VERSION=5;
+const DB_NAME='promanageDB', DB_VERSION=8;
 let dbInstance=null;
 
 function openDB(){
@@ -1181,6 +1990,15 @@ function openDB(){
       }
       if(!db.objectStoreNames.contains('activityLog')){
         db.createObjectStore('activityLog',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('invoices')){
+        db.createObjectStore('invoices',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('statements')){
+        db.createObjectStore('statements',{keyPath:'id'});
+      }
+      if(!db.objectStoreNames.contains('emailTriage')){
+        db.createObjectStore('emailTriage',{keyPath:'id'});
       }
     };
     req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
@@ -1320,16 +2138,43 @@ function mapRemoteInspection(row){
     createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
   };
 }
+function mapRemoteInvoice(row){
+  return{
+    id:row.id,invoiceNumber:row.invoice_number,reference:row.reference,
+    billToName:row.bill_to_name,billToAttention:row.bill_to_attention,billToEmail:row.bill_to_email,
+    billToAddress:row.bill_to_address,propertyId:row.property_id,propertyAddress:row.property_address,
+    issueDate:row.issue_date,dueDate:row.due_date,paymentTermsDays:row.payment_terms_days,
+    gstMode:row.gst_mode,items:row.items||[],notes:row.notes,
+    status:row.status,subtotal:row.subtotal,gst:row.gst,total:row.total,
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
+function mapRemoteStatement(row){
+  return{
+    id:row.id,statementNumber:row.statement_number,
+    propertyId:row.property_id,propertyAddress:row.property_address,
+    ownerName:row.owner_name,ownerEmail:row.owner_email,
+    periodStart:row.period_start,periodEnd:row.period_end,status:row.status,
+    openingBalance:row.opening_balance,income:row.income||[],expenses:row.expenses||[],
+    totalIncome:row.total_income,totalExpenses:row.total_expenses,
+    netAmount:row.net_amount,closingBalance:row.closing_balance,notes:row.notes,
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
 
 async function pullAllAndMerge(){
   await pullAndMerge('properties','properties',mapRemoteProperty);
   await pullAndMerge('tenants','tenants',mapRemoteTenant);
   await pullAndMerge('maintenance','maintenance',mapRemoteMaintenance);
   await pullAndMerge('inspections','inspections',mapRemoteInspection);
+  await pullAndMerge('invoices','invoices',mapRemoteInvoice);
+  await pullAndMerge('statements','statements',mapRemoteStatement);
   await renderPropertiesList();  updatePropSyncBanner();
   await renderTenantsList();     updateTenantSyncBanner();
   await renderMaintenanceList(); updateMaintSyncBanner();
   await renderInspectionList();  updateSyncBanner();
+  await renderInvoicesList();    updateInvoiceSyncBanner();
+  await renderStatementsList();  updateStatementSyncBanner();
   await renderDashboard();
   await renderComplianceLive();
 }
@@ -1345,6 +2190,8 @@ async function fullSyncNow(){
   await syncPendingTenants();
   await syncPendingMaintenance();
   await syncPendingInspections();
+  await syncPendingInvoices();
+  await syncPendingStatements();
   await pullAllAndMerge();
 }
 
@@ -1892,8 +2739,8 @@ async function updateSyncBanner(){
   pendingText.textContent=pendingCount+' pending sync';
 }
 
-window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();fullSyncNow();});
-window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();});
+window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();fullSyncNow();});
+window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
@@ -1909,9 +2756,13 @@ document.addEventListener('DOMContentLoaded',()=>{
   updateTenantSyncBanner();
   renderMaintenanceList();
   updateMaintSyncBanner();
+  renderInvoicesList();
+  updateInvoiceSyncBanner();
   renderDashboard();
   renderActivityLog();
   renderComplianceLive();
+  renderEmailTriageList();
+  processEmailTriageInbox(); // classifies MOCK_INBOX and auto-creates maintenance requests for clear matches
 });
 
 /* ============================================================
@@ -2719,60 +3570,1162 @@ async function updateMaintSyncBanner(){
 }
 
 /* ============================================================
+   EMAIL TRIAGE MODULE — test/mock mode, no mailbox connected.
+
+   Data flow:
+     1. fetchIncomingEmails() returns the raw inbox — today a fixed
+        MOCK_INBOX array. This is the ONLY function to replace when
+        a real mailbox is wired up (IMAP fetch, Gmail API, or a
+        forwarding rule that POSTs parsed emails somewhere this can
+        read) — everything downstream just needs {id,from,subject,
+        body,receivedAt} per message and doesn't care where it came
+        from.
+     2. classifyEmail() keyword-scores each message against known
+        property addresses + maintenance/urgent/non-maintenance
+        vocabulary to guess: is this a maintenance issue, which
+        property, how urgent.
+     3. processEmailTriageInbox() runs on every page load (and on
+        demand via "Check inbox"): new messages are classified once
+        (results are cached in the emailTriage store, keyed by the
+        email id, so re-running is a no-op for already-seen mail),
+        then:
+          - high-confidence maintenance -> a real 'maintenance'
+            record is created automatically (this is what makes it
+            "just appear" on the Maintenance page after a refresh)
+          - everything else waits in the Email Triage page for a
+            one-click "Create request" / "Dismiss" decision.
+   ============================================================ */
+
+const MOCK_INBOX=[
+  {id:'mail_001',from:'A. Nguyen <tenant.riccarton@example.com>',subject:'URGENT - no hot water since last night',
+   body:'Hi, we have had no hot water at all since last night at 8 Riccarton Road. Kids need baths, please send someone urgently.',
+   receivedAt:'2026-07-25T19:12:00'},
+  {id:'mail_002',from:'M. Patel <mpatel@example.com>',subject:'Kitchen tap dripping',
+   body:'The kitchen tap at 22 Ilam Road has been dripping constantly for about a week, not urgent but would be good to get it fixed.',
+   receivedAt:'2026-07-26T09:40:00'},
+  {id:'mail_003',from:'S. Wilson <s.wilson@example.com>',subject:'Rent payment confirmation',
+   body:'Just confirming this month\'s rent has been paid in full via automatic payment. Thanks!',
+   receivedAt:'2026-07-26T11:02:00'},
+  {id:'mail_004',from:'J. Taylor <jtaylor@example.com>',subject:'Odd noise near the laundry',
+   body:'Not totally sure if this is serious but there has been a rattling noise near the laundry at 8 Riccarton Road the last couple of days — probably nothing but wanted to flag it.',
+   receivedAt:'2026-07-26T14:20:00'},
+  {id:'mail_005',from:'Property Owner <owner@example.com>',subject:'Question about lease renewal',
+   body:'Hi, wondering what the process is for renewing the lease at 22 Ilam Road when it comes up in a few months.',
+   receivedAt:'2026-07-27T08:05:00'},
+  {id:'mail_006',from:'R. Chen <r.chen@example.com>',subject:'Garage door not closing',
+   body:'The garage door at our place has stopped closing properly and now will not lock at all — worried about security.',
+   receivedAt:'2026-07-27T09:30:00'}
+];
+
+// Swap this out for a real mail source later — see module note above.
+function fetchIncomingEmails(){
+  return MOCK_INBOX;
+}
+
+const TRIAGE_MAINT_KEYWORDS=['leak','leaking','broken','not working','doesn\'t work','stopped working','faulty',
+  'dripping','mould','mold','damp','crack','cracked','smoke alarm','power outage','no power','electrical','wiring',
+  'plumbing','blocked drain','gutter','roof','window','door lock','lock','pest','infestation','rodent','insulation',
+  'gas smell','hot water','heater','heating','rattling','rattle','not closing','security'];
+const TRIAGE_URGENT_KEYWORDS=['hot water','heating','security','gas smell','smoke alarm','flood','no power','break-in'];
+const TRIAGE_MINOR_KEYWORDS=['dripping','cosmetic','paint','garden','fence'];
+const TRIAGE_NONMAINT_KEYWORDS=['rent payment','rent paid','lease renewal','renewal','invoice attached',
+  'statement attached','thank you','application form','viewing request','newsletter','subscribe'];
+
+function matchTriageProperty(text,properties){
+  const lower=text.toLowerCase();
+  for(const p of properties){
+    const street=(p.address||'').split(',')[0].trim().toLowerCase();
+    if(street && lower.includes(street)) return p;
+  }
+  return null;
+}
+
+function classifyEmail(email,properties){
+  const text=(email.subject+' '+email.body).toLowerCase();
+  const maintHits=TRIAGE_MAINT_KEYWORDS.filter(k=>text.includes(k));
+  const nonMaintHits=TRIAGE_NONMAINT_KEYWORDS.filter(k=>text.includes(k));
+  const isUrgent=TRIAGE_URGENT_KEYWORDS.some(k=>text.includes(k));
+  const score=maintHits.length-nonMaintHits.length*2;
+
+  // A single hit is still auto-created when it's a recognised urgent
+  // category (hot water, heating, security, ...) — waiting for a second
+  // keyword match before acting on "no hot water" would defeat the point.
+  let classification;
+  if(score>=2 || (score===1 && isUrgent)) classification='maintenance';
+  else if(score===1) classification='review';
+  else classification='ignored';
+
+  const isMinor=TRIAGE_MINOR_KEYWORDS.some(k=>text.includes(k));
+  const suggestedPriority=isUrgent?'Urgent':(isMinor?'Low':'Medium');
+
+  const matchedProperty=matchTriageProperty(text,properties);
+
+  return{
+    classification,
+    suggestedPriority,
+    suggestedIssue:email.subject,
+    matchedPropertyId:matchedProperty?matchedProperty.id:'',
+    matchedPropertyAddress:matchedProperty?matchedProperty.address:'Unmatched — from email'
+  };
+}
+
+async function createMaintenanceFromTriage(triage){
+  const record={
+    id:'maint_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    propertyId:triage.matchedPropertyId||'',
+    propertyAddress:triage.matchedPropertyAddress||'Unmatched — from email',
+    issue:triage.suggestedIssue,
+    reportedDate:todayStr(),
+    priority:triage.suggestedPriority,
+    assignedTo:'—',
+    status:'Unassigned',
+    synced:false,
+    pendingDelete:false,
+    source:'email-triage',
+    triageEmailId:triage.id,
+    createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+  await dbPut('maintenance',record);
+  await logActivity('Maintenance','Created (auto, from email triage)',record.issue+' — '+record.propertyAddress);
+  return record;
+}
+
+async function processEmailTriageInbox(){
+  const properties=await dbGetAll('properties').catch(()=>[]);
+  const existing=await dbGetAll('emailTriage').catch(()=>[]);
+  const existingIds=new Set(existing.map(e=>e.id));
+  const incoming=fetchIncomingEmails();
+
+  for(const raw of incoming){
+    if(existingIds.has(raw.id)) continue; // already triaged on a previous refresh
+    const result=classifyEmail(raw,properties);
+    const record={
+      id:raw.id,from:raw.from,subject:raw.subject,body:raw.body,receivedAt:raw.receivedAt,
+      ...result,maintenanceId:null,processedAt:new Date().toISOString()
+    };
+    if(result.classification==='maintenance'){
+      const maintRecord=await createMaintenanceFromTriage(record);
+      record.status='auto-created';
+      record.maintenanceId=maintRecord.id;
+    }else if(result.classification==='ignored'){
+      record.status='ignored';
+    }else{
+      record.status='needs-review';
+    }
+    await dbPut('emailTriage',record);
+  }
+
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+  renderDashboard();
+  await renderEmailTriageList();
+}
+
+async function actionCreateFromEmail(id){
+  const all=await dbGetAll('emailTriage');
+  const rec=all.find(e=>e.id===id);
+  if(!rec) return;
+  const maintRecord=await createMaintenanceFromTriage(rec);
+  rec.status='created';
+  rec.maintenanceId=maintRecord.id;
+  await dbPut('emailTriage',rec);
+  await renderEmailTriageList();
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+  renderDashboard();
+}
+
+async function actionDismissEmail(id){
+  const all=await dbGetAll('emailTriage');
+  const rec=all.find(e=>e.id===id);
+  if(!rec) return;
+  rec.status='dismissed';
+  await dbPut('emailTriage',rec);
+  await renderEmailTriageList();
+}
+
+async function renderEmailTriageList(){
+  const tbody=document.getElementById('triage-list');
+  if(!tbody) return;
+  const all=await dbGetAll('emailTriage').catch(()=>[]);
+  all.sort((a,b)=>b.receivedAt.localeCompare(a.receivedAt));
+  const countEl=document.getElementById('triage-count');
+  if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No emails checked yet</td></tr>';
+    return;
+  }
+  const priorityDot=p=>{
+    const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+  };
+  const statusCell=rec=>{
+    if(rec.status==='auto-created') return {badge:'<span class="badge bg">✓ Auto-created</span>',action:'—'};
+    if(rec.status==='created') return {badge:'<span class="badge bg">✓ Created</span>',action:'—'};
+    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
+    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
+    return {badge:'<span class="badge ba">Needs review</span>',
+      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${rec.id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${rec.id}')">Dismiss</button>`};
+  };
+  tbody.innerHTML=all.map(rec=>{
+    const sc=statusCell(rec);
+    const received=new Date(rec.receivedAt).toLocaleString('en-NZ',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+    return `<tr>
+      <td>${received}</td>
+      <td>${rec.from}</td>
+      <td><strong>${rec.subject}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${rec.body.slice(0,80)}${rec.body.length>80?'…':''}</div></td>
+      <td>${rec.matchedPropertyAddress}</td>
+      <td>${priorityDot(rec.suggestedPriority)}</td>
+      <td>${sc.badge}</td>
+      <td style="white-space:nowrap">${sc.action}</td>
+    </tr>`;
+  }).join('');
+}
+
+/* ============================================================
+   INVOICES MODULE — same offline-first pattern as the others.
+   Line items are edited in-form and totalled live; "Generate PDF"
+   hands the saved record to InvoiceReport (embedded jsPDF module,
+   head of file) which renders and downloads the actual PDF client
+   side — no server/Python involved. See the note above the
+   InvoiceReport module for how to swap in a supplied generator.
+   ============================================================ */
+
+const GST_RATE = 0.15;
+let editingInvoiceId=null;
+let invoiceItemRowCounter=0;
+
+function dateAddDaysStr(days){
+  const d=new Date();
+  d.setDate(d.getDate()+days);
+  return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+}
+
+// --- Flexible date helpers for invoices (payment-terms auto-fill + JSON
+// import, which supplies ISO 'YYYY-MM-DD' dates like invoice_generator.py) ---
+const MONTH_ABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function formatDateNZ(d){ return String(d.getDate()).padStart(2,'0')+' '+MONTH_ABBR[d.getMonth()]+' '+d.getFullYear(); }
+function parseISODate(iso){
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(iso||'');
+  return m ? new Date(Number(m[1]),Number(m[2])-1,Number(m[3])) : null;
+}
+function parseFlexibleDate(str){
+  if(!str) return null;
+  const iso=parseISODate(str); if(iso) return iso;
+  let m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str.trim());
+  if(m) return new Date(Number(m[3]),Number(m[2])-1,Number(m[1]));
+  m=/^(\d{1,2})\s+([A-Za-z]{3})\w*\s+(\d{4})$/.exec(str.trim());
+  if(m){
+    const mi=MONTH_ABBR.findIndex(x=>x.toLowerCase()===m[2].slice(0,3).toLowerCase());
+    if(mi>-1) return new Date(Number(m[3]),mi,Number(m[1]));
+  }
+  return null;
+}
+function addDaysToDateStr(str,days){
+  const d=parseFlexibleDate(str)||new Date();
+  d.setDate(d.getDate()+(Number(days)||0));
+  return formatDateNZ(d);
+}
+function autoFillInvoiceDueDate(){
+  const issueEl=document.getElementById('invoice-issue-date');
+  const termsEl=document.getElementById('invoice-payment-terms');
+  if(!issueEl||!termsEl) return;
+  document.getElementById('invoice-due-date').value=addDaysToDateStr(issueEl.value||formatDateNZ(new Date()),termsEl.value||0);
+}
+
+async function populateInvoicePropertyDropdown(selectedId){
+  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const select=document.getElementById('invoice-property');
+  select.innerHTML='<option value="">— None / external —</option>'+props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+  if(selectedId) select.value=selectedId;
+}
+
+function invoiceItemRowHtml(rowId,item){
+  item=item||{};
+  return `<tr id="${rowId}">
+      <td><input type="text" class="item-input item-desc" value="${escapeAttr(item.description||'')}" placeholder="e.g. Property management fee — July"></td>
+      <td><input type="number" class="item-input item-qty" value="${item.quantity!=null?item.quantity:1}" min="0" step="1" oninput="recalcInvoiceTotals()"></td>
+      <td><input type="number" class="item-input item-price" value="${item.unitPrice!=null?item.unitPrice:0}" min="0" step="0.01" oninput="recalcInvoiceTotals()"></td>
+      <td class="tr item-amount">$0.00</td>
+      <td><button type="button" class="item-remove" onclick="removeInvoiceItemRow('${rowId}')" title="Remove line">✕</button></td>
+    </tr>`;
+}
+
+function escapeAttr(str){
+  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function addInvoiceItemRow(item){
+  invoiceItemRowCounter++;
+  const rowId='invitem'+invoiceItemRowCounter;
+  document.getElementById('invoice-items-body').insertAdjacentHTML('beforeend',invoiceItemRowHtml(rowId,item));
+  recalcInvoiceTotals();
+}
+
+function removeInvoiceItemRow(rowId){
+  const row=document.getElementById(rowId);
+  if(row) row.remove();
+  recalcInvoiceTotals();
+}
+
+function recalcInvoiceTotals(){
+  let subtotal=0;
+  document.querySelectorAll('#invoice-items-body tr').forEach(row=>{
+    const qty=Number(row.querySelector('.item-qty').value)||0;
+    const price=Number(row.querySelector('.item-price').value)||0;
+    const amount=qty*price;
+    row.querySelector('.item-amount').textContent='$'+amount.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
+    subtotal+=amount;
+  });
+  const mode=document.getElementById('invoice-gst-mode').value;
+  let gst=0,total=0;
+  if(mode==='exclusive'){ gst=subtotal*GST_RATE; total=subtotal+gst; }
+  else if(mode==='inclusive'){ total=subtotal; subtotal=total/(1+GST_RATE); gst=total-subtotal; }
+  else { total=subtotal; gst=0; }
+  document.getElementById('invoice-subtotal-display').textContent='$'+subtotal.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('invoice-gst-display').textContent='$'+gst.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('invoice-total-display').textContent='$'+total.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return {subtotal,gst,total};
+}
+
+async function nextInvoiceNumber(){
+  const all=await dbGetAll('invoices').catch(()=>[]);
+  const nums=all.map(inv=>{
+    const m=/(\d+)\s*$/.exec(inv.invoiceNumber||'');
+    return m?parseInt(m[1],10):0;
+  });
+  const next=(nums.length?Math.max(...nums):0)+1;
+  return 'INV-'+String(next).padStart(4,'0');
+}
+
+async function toggleInvoiceForm(show,record){
+  document.getElementById('invoice-form-card').style.display=show?'block':'none';
+  const titleEl=document.getElementById('invoice-form-title');
+  const deleteBtn=document.getElementById('invoice-delete-btn');
+  if(show){
+    editingInvoiceId=record?record.id:null;
+    if(titleEl) titleEl.textContent=record?'Edit invoice':'New invoice';
+    document.getElementById('invoice-number').value=record?record.invoiceNumber:await nextInvoiceNumber();
+    document.getElementById('invoice-reference').value=record?(record.reference||''):'';
+    document.getElementById('invoice-issue-date').value=record?record.issueDate:formatDateNZ(new Date());
+    document.getElementById('invoice-payment-terms').value=record?(record.paymentTermsDays!=null?record.paymentTermsDays:14):14;
+    document.getElementById('invoice-due-date').value=record?record.dueDate:addDaysToDateStr(formatDateNZ(new Date()),14);
+    document.getElementById('invoice-status').value=record?record.status:'Draft';
+    document.getElementById('invoice-bill-name').value=record?(record.billToName||''):'';
+    document.getElementById('invoice-bill-attention').value=record?(record.billToAttention||''):'';
+    document.getElementById('invoice-bill-email').value=record?(record.billToEmail||''):'';
+    document.getElementById('invoice-bill-address').value=record?(record.billToAddress||''):'';
+    document.getElementById('invoice-gst-mode').value=record?(record.gstMode||'exclusive'):'exclusive';
+    document.getElementById('invoice-notes').value=record?(record.notes||''):'';
+    await populateInvoicePropertyDropdown(record?record.propertyId:'');
+    document.getElementById('invoice-items-body').innerHTML='';
+    invoiceItemRowCounter=0;
+    if(record && record.items && record.items.length){
+      record.items.forEach(it=>addInvoiceItemRow(it));
+    }else{
+      addInvoiceItemRow();
+    }
+    recalcInvoiceTotals();
+    if(deleteBtn) deleteBtn.style.display=record?'inline-flex':'none';
+  }else{
+    editingInvoiceId=null;
+  }
+}
+
+async function deleteInvoiceFromForm(){
+  if(!editingInvoiceId) return;
+  await deleteInvoice(editingInvoiceId);
+  await toggleInvoiceForm(false);
+}
+
+async function editInvoice(id){
+  const all=await dbGetAll('invoices');
+  const record=all.find(i=>i.id===id);
+  if(!record) return;
+  await toggleInvoiceForm(true,record);
+  document.getElementById('page-invoices').scrollIntoView({behavior:'smooth'});
+}
+
+async function saveInvoice(){
+  const invoiceNumber=document.getElementById('invoice-number').value.trim();
+  const billToName=document.getElementById('invoice-bill-name').value.trim();
+  if(!invoiceNumber){ alert('Invoice number is required.'); return; }
+  if(!billToName){ alert('"Bill to" name is required.'); return; }
+  const items=Array.from(document.querySelectorAll('#invoice-items-body tr')).map(row=>{
+    const quantity=Number(row.querySelector('.item-qty').value)||0;
+    const unitPrice=Number(row.querySelector('.item-price').value)||0;
+    return{
+      description:row.querySelector('.item-desc').value.trim(),
+      quantity,unitPrice,amount:quantity*unitPrice
+    };
+  }).filter(it=>it.description||it.quantity||it.unitPrice);
+  if(!items.length){ alert('Add at least one line item.'); return; }
+  const {subtotal,gst,total}=recalcInvoiceTotals();
+  const propertySelect=document.getElementById('invoice-property');
+  const propertyId=propertySelect.value;
+  const propertyAddress=propertyId?propertySelect.options[propertySelect.selectedIndex].textContent:'';
+  const isEdit=!!editingInvoiceId;
+  const existing=isEdit?(await dbGetAll('invoices')).find(i=>i.id===editingInvoiceId):null;
+  const record={
+    id:isEdit?editingInvoiceId:'inv_'+Date.now(),
+    invoiceNumber,
+    reference:document.getElementById('invoice-reference').value.trim(),
+    billToName,
+    billToAttention:document.getElementById('invoice-bill-attention').value.trim(),
+    billToEmail:document.getElementById('invoice-bill-email').value.trim(),
+    billToAddress:document.getElementById('invoice-bill-address').value.trim(),
+    propertyId,propertyAddress,
+    issueDate:document.getElementById('invoice-issue-date').value||formatDateNZ(new Date()),
+    dueDate:document.getElementById('invoice-due-date').value,
+    paymentTermsDays:Number(document.getElementById('invoice-payment-terms').value)||0,
+    gstMode:document.getElementById('invoice-gst-mode').value,
+    items,
+    notes:document.getElementById('invoice-notes').value,
+    status:document.getElementById('invoice-status').value,
+    subtotal,gst,total,
+    synced:false,
+    pendingDelete:false,
+    createdAt:(isEdit&&existing)?existing.createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+  await dbPut('invoices',record);
+  await logActivity('Invoice',isEdit?'Updated':'Created',record.invoiceNumber+' — '+record.billToName);
+  await renderInvoicesList();
+  updateInvoiceSyncBanner();
+  toggleInvoiceForm(false);
+  if(navigator.onLine) syncPendingInvoices();
+}
+
+async function renderInvoicesList(){
+  const all=(await dbGetAll('invoices').catch(()=>[])).filter(i=>!i.pendingDelete);
+  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const tbody=document.getElementById('invoice-list');
+  if(!tbody) return;
+  const countEl=document.getElementById('invoice-count');
+  if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No invoices yet — click "+ New invoice" to create your first one</td></tr>';
+    return;
+  }
+  const statusBadge=s=>{
+    const map={Draft:'bgr',Sent:'bb',Paid:'bg',Overdue:'br'};
+    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+  };
+  tbody.innerHTML=all.map(inv=>`
+    <tr>
+      <td style="cursor:pointer" ondblclick="editInvoice('${inv.id}')" title="Double-click to edit"><strong>${inv.invoiceNumber}</strong></td>
+      <td>${inv.billToName}</td>
+      <td>${inv.propertyAddress||'—'}</td>
+      <td>${inv.issueDate||'—'}</td>
+      <td>${inv.dueDate||'—'}</td>
+      <td class="tr">$${(inv.total||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td>${statusBadge(inv.status)}</td>
+      <td>${inv.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
+      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${inv.id}')">📄 PDF</button></td>
+    </tr>`).join('');
+}
+
+async function deleteInvoice(id){
+  if(!confirm('Delete this invoice? This cannot be undone.'))return;
+  const all=await dbGetAll('invoices');
+  const record=all.find(i=>i.id===id);
+  if(!record)return;
+  await logActivity('Invoice','Deleted',record.invoiceNumber+' — '+record.billToName);
+  if(record.synced && navigator.onLine){
+    const token=await authHeader();
+    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{});
+    await dbDelete('invoices',id);
+  }else if(record.synced && !navigator.onLine){
+    record.pendingDelete=true;
+    record.synced=false;
+    await dbPut('invoices',record);
+  }else{
+    await dbDelete('invoices',id);
+  }
+  await renderInvoicesList();
+  updateInvoiceSyncBanner();
+}
+
+async function pushInvoiceToBackend(record){
+  if(!CONFIG.SUPABASE_URL) return true;
+  const token=await authHeader();
+  try{
+    if(record.pendingDelete){
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${record.id}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      return res.ok ? 'deleted' : false;
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify({
+        id:record.id,invoice_number:record.invoiceNumber,reference:record.reference,
+        bill_to_name:record.billToName,bill_to_attention:record.billToAttention,
+        bill_to_email:record.billToEmail,bill_to_address:record.billToAddress,
+        property_id:record.propertyId||null,property_address:record.propertyAddress,
+        issue_date:record.issueDate,due_date:record.dueDate,payment_terms_days:record.paymentTermsDays,
+        gst_mode:record.gstMode,
+        items:record.items,notes:record.notes,status:record.status,
+        subtotal:record.subtotal,gst:record.gst,total:record.total,
+        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
+      })
+    });
+    return res.ok;
+  }catch(err){
+    console.log('Invoice sync failed, will retry later:',err);
+    return false;
+  }
+}
+
+async function syncPendingInvoices(){
+  if(!navigator.onLine){
+    alert('Still offline — will sync automatically once connection returns.');
+    return;
+  }
+  const all=await dbGetAll('invoices');
+  const pending=all.filter(i=>!i.synced);
+  for(const record of pending){
+    const result=await pushInvoiceToBackend(record);
+    if(result==='deleted'){
+      await dbDelete('invoices',record.id);
+    }else if(result){
+      record.synced=true;
+      await dbPut('invoices',record);
+    }
+  }
+  await renderInvoicesList();
+  updateInvoiceSyncBanner();
+}
+
+async function updateInvoiceSyncBanner(){
+  const banner=document.getElementById('sync-banner-invoice');
+  if(!banner) return;
+  const statusText=document.getElementById('sync-status-text-invoice');
+  const pendingText=document.getElementById('sync-pending-text-invoice');
+  const all=await dbGetAll('invoices').catch(()=>[]);
+  const pendingCount=all.filter(i=>!i.synced).length;
+  const online=navigator.onLine;
+  banner.classList.toggle('sync-online',online);
+  banner.classList.toggle('sync-offline',!online);
+  statusText.textContent=online?'Online':'Offline';
+  pendingText.textContent=pendingCount+' pending sync';
+}
+
+async function generateInvoicePDF(id){
+  const all=await dbGetAll('invoices');
+  const inv=all.find(i=>i.id===id);
+  if(!inv) return;
+
+  const btn=event && event.target;
+  const original=btn?btn.textContent:null;
+  if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
+
+  try{
+    await InvoiceReport.generate({
+      invoiceNumber:inv.invoiceNumber,
+      reference:inv.reference,
+      issueDate:inv.issueDate,
+      dueDate:inv.dueDate,
+      paymentTermsDays:inv.paymentTermsDays,
+      status:inv.status,
+      from:{
+        name:BUSINESS_INFO.NAME,address:BUSINESS_INFO.ADDRESS,gstNumber:BUSINESS_INFO.GST_NUMBER,
+        email:BUSINESS_INFO.EMAIL,phone:BUSINESS_INFO.PHONE,logoPath:BUSINESS_INFO.LOGO.PATH,
+        bank:{
+          accountName:BUSINESS_INFO.BANK.ACCOUNT_NAME,bankName:BUSINESS_INFO.BANK.BANK_NAME,
+          accountNumber:BUSINESS_INFO.BANK.ACCOUNT_NUMBER,referenceNote:BUSINESS_INFO.BANK.REFERENCE_NOTE
+        }
+      },
+      billTo:{ name:inv.billToName, attention:inv.billToAttention, address:inv.billToAddress, email:inv.billToEmail },
+      items:inv.items,
+      gstMode:inv.gstMode,
+      subtotal:inv.subtotal, gst:inv.gst, total:inv.total,
+      notes:inv.notes
+    },{ fileName:`${sanitizeForPath(inv.invoiceNumber)}-${sanitizeForPath(inv.billToName)}.pdf`, download:true });
+  }catch(err){
+    alert('Could not generate invoice PDF: '+(err && err.message));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=original;}
+  }
+}
+
+/* --- JSON import — accepts the exact shape produced by/edited for
+   invoice_generator.py's invoice_data.json: { logo, sender, bank, client,
+   invoice, line_items }. Paste it into the "Import invoice (JSON)" box and
+   click "Load into form" to review before saving — nothing is written
+   until Save. sender/bank/logo (if present) also update BUSINESS_INFO for
+   this session, the same way invoice_generator.py's load_invoice_from_json()
+   overrides its module-level SENDER/BANK/LOGO — edit BUSINESS_INFO directly
+   in this file instead if you'd rather it always applies without pasting.
+   Can be called directly as window.importInvoiceJSON(data). --- */
+function loadInvoiceJSON(){
+  const raw=document.getElementById('invoice-json-input').value.trim();
+  if(!raw){ alert('Paste invoice JSON first.'); return; }
+  let data;
+  try{ data=JSON.parse(raw); }
+  catch(err){ alert("That isn't valid JSON: "+err.message); return; }
+  importInvoiceJSON(data);
+}
+
+async function importInvoiceJSON(data){
+  data=data||{};
+  if(data.sender){
+    Object.assign(BUSINESS_INFO,{
+      NAME:data.sender.name||BUSINESS_INFO.NAME,
+      ADDRESS:Array.isArray(data.sender.address)?data.sender.address:BUSINESS_INFO.ADDRESS,
+      EMAIL:data.sender.email||BUSINESS_INFO.EMAIL,
+      PHONE:data.sender.phone||BUSINESS_INFO.PHONE,
+      GST_NUMBER:data.sender.gst_number||BUSINESS_INFO.GST_NUMBER
+    });
+  }
+  if(data.bank){
+    Object.assign(BUSINESS_INFO.BANK,{
+      ACCOUNT_NAME:data.bank.account_name||BUSINESS_INFO.BANK.ACCOUNT_NAME,
+      BANK_NAME:data.bank.bank||BUSINESS_INFO.BANK.BANK_NAME,
+      ACCOUNT_NUMBER:data.bank.account_number||BUSINESS_INFO.BANK.ACCOUNT_NUMBER,
+      REFERENCE_NOTE:data.bank.reference_note||BUSINESS_INFO.BANK.REFERENCE_NOTE
+    });
+  }
+  if(data.logo && data.logo.path) BUSINESS_INFO.LOGO.PATH=data.logo.path;
+
+  const inv=data.invoice||{};
+  const client=data.client||{};
+  const items=(data.line_items||[]).map(li=>({
+    description:li.description||'',
+    quantity:Number(li.quantity)||0,
+    unitPrice:Number(li.unit_price)||0
+  }));
+
+  const issueDate=inv.invoice_date?formatDateNZ(parseISODate(inv.invoice_date)||new Date()):formatDateNZ(new Date());
+  const terms=inv.payment_terms_days!=null?inv.payment_terms_days:14;
+  let dueDate='';
+  if(inv.due_date) dueDate=formatDateNZ(parseISODate(inv.due_date)||new Date());
+  else if(inv.auto_due_date) dueDate=addDaysToDateStr(issueDate,terms);
+
+  const billAddressLines=Array.isArray(client.address)?client.address.filter(Boolean):[];
+
+  await toggleInvoiceForm(true,{
+    id:null,
+    invoiceNumber:inv.invoice_number||await nextInvoiceNumber(),
+    reference:inv.reference||'',
+    billToName:client.name||'',
+    billToAttention:client.attention||'',
+    billToEmail:'',
+    billToAddress:billAddressLines.join('\n'),
+    propertyId:'',
+    issueDate,
+    dueDate,
+    paymentTermsDays:terms,
+    gstMode:'exclusive',
+    items,
+    notes:inv.notes||'',
+    status:'Draft'
+  });
+  const jsonInput=document.getElementById('invoice-json-input');
+  if(jsonInput) jsonInput.value='';
+}
+window.importInvoiceJSON=importInvoiceJSON;
+
+/* ============================================================
+   STATEMENTS MODULE — monthly owner statements, same offline-first
+   pattern as Invoices above. Records can be created by hand in this
+   form, OR imported as JSON produced by an external generator: paste
+   into the "Import statement (JSON)" box and click "Load into form"
+   to review before saving, or once that generator is wired up it can
+   call window.importStatementJSON(data) directly — see the schema
+   comment above loadStatementJSON() below. Either path lands in the
+   same form/record shape, so nothing else here needs to change once
+   the real generator exists.
+   "Generate PDF" hands the saved record to StatementReport (embedded
+   jsPDF module, head of file) — see the note above that module for
+   how to swap in your own generator's layout.
+   ============================================================ */
+
+let editingStatementId=null;
+let statementRowCounter=0;
+
+async function populateStatementPropertyDropdown(selectedId){
+  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const select=document.getElementById('statement-property');
+  select.innerHTML='<option value="">— None / external —</option>'+props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+  if(selectedId) select.value=selectedId;
+}
+
+function statementItemRowHtml(rowId,item){
+  item=item||{};
+  return `<tr id="${rowId}">
+      <td><input type="text" class="item-input stmt-date" value="${escapeAttr(item.date||'')}" placeholder="e.g. 05 Jul 2026"></td>
+      <td><input type="text" class="item-input stmt-desc" value="${escapeAttr(item.description||'')}" placeholder="e.g. Rent received"></td>
+      <td><input type="number" class="item-input stmt-amount" value="${item.amount!=null?item.amount:0}" min="0" step="0.01" oninput="recalcStatementTotals()"></td>
+      <td><button type="button" class="item-remove" onclick="removeStatementItemRow('${rowId}')" title="Remove line">✕</button></td>
+    </tr>`;
+}
+
+function addStatementItemRow(section,item){
+  statementRowCounter++;
+  const rowId='stmt'+section+statementRowCounter;
+  document.getElementById('statement-'+section+'-body').insertAdjacentHTML('beforeend',statementItemRowHtml(rowId,item));
+  recalcStatementTotals();
+}
+
+function removeStatementItemRow(rowId){
+  const row=document.getElementById(rowId);
+  if(row) row.remove();
+  recalcStatementTotals();
+}
+
+function sumStatementRows(section){
+  let total=0;
+  document.querySelectorAll('#statement-'+section+'-body tr').forEach(row=>{
+    total+=Number(row.querySelector('.stmt-amount').value)||0;
+  });
+  return total;
+}
+
+function recalcStatementTotals(){
+  const totalIncome=sumStatementRows('income');
+  const totalExpenses=sumStatementRows('expense');
+  const opening=Number(document.getElementById('statement-opening-balance').value)||0;
+  const net=totalIncome-totalExpenses;
+  const closing=opening+net;
+  const fmt=n=>'$'+n.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('statement-income-total-display').textContent=fmt(totalIncome);
+  document.getElementById('statement-expense-total-display').textContent=fmt(totalExpenses);
+  document.getElementById('statement-net-display').textContent=fmt(net);
+  document.getElementById('statement-closing-display').textContent=fmt(closing);
+  return {totalIncome,totalExpenses,net,closing,opening};
+}
+
+async function nextStatementNumber(){
+  const all=await dbGetAll('statements').catch(()=>[]);
+  const now=new Date();
+  const prefix='STMT-'+now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const nums=all.filter(s=>(s.statementNumber||'').startsWith(prefix)).map(s=>{
+    const m=/(\d+)\s*$/.exec(s.statementNumber||'');
+    return m?parseInt(m[1],10):0;
+  });
+  const next=(nums.length?Math.max(...nums):0)+1;
+  return prefix+'-'+String(next).padStart(4,'0');
+}
+
+async function toggleStatementForm(show,record){
+  document.getElementById('statement-form-card').style.display=show?'block':'none';
+  const titleEl=document.getElementById('statement-form-title');
+  const deleteBtn=document.getElementById('statement-delete-btn');
+  if(show){
+    editingStatementId=record?record.id:null;
+    if(titleEl) titleEl.textContent=record?'Edit statement':'New statement';
+    document.getElementById('statement-number').value=record?record.statementNumber:await nextStatementNumber();
+    document.getElementById('statement-period-start').value=record?(record.periodStart||''):'';
+    document.getElementById('statement-period-end').value=record?(record.periodEnd||''):todayStr();
+    document.getElementById('statement-status').value=record?record.status:'Draft';
+    document.getElementById('statement-owner-name').value=record?(record.ownerName||''):'';
+    document.getElementById('statement-owner-email').value=record?(record.ownerEmail||''):'';
+    document.getElementById('statement-opening-balance').value=record?(record.openingBalance||0):0;
+    document.getElementById('statement-notes').value=record?(record.notes||''):'';
+    await populateStatementPropertyDropdown(record?record.propertyId:'');
+    document.getElementById('statement-income-body').innerHTML='';
+    document.getElementById('statement-expense-body').innerHTML='';
+    if(record && record.income && record.income.length){
+      record.income.forEach(it=>addStatementItemRow('income',it));
+    }else{
+      addStatementItemRow('income');
+    }
+    if(record && record.expenses && record.expenses.length){
+      record.expenses.forEach(it=>addStatementItemRow('expense',it));
+    }else{
+      addStatementItemRow('expense');
+    }
+    recalcStatementTotals();
+    if(deleteBtn) deleteBtn.style.display=(record&&record.id)?'inline-flex':'none';
+    document.getElementById('statement-form-card').scrollIntoView({behavior:'smooth'});
+  }else{
+    editingStatementId=null;
+  }
+}
+
+async function deleteStatementFromForm(){
+  if(!editingStatementId) return;
+  await deleteStatement(editingStatementId);
+  await toggleStatementForm(false);
+}
+
+async function editStatement(id){
+  const all=await dbGetAll('statements');
+  const record=all.find(s=>s.id===id);
+  if(!record) return;
+  await toggleStatementForm(true,record);
+}
+
+async function saveStatement(){
+  const statementNumber=document.getElementById('statement-number').value.trim();
+  const ownerName=document.getElementById('statement-owner-name').value.trim();
+  if(!statementNumber){ alert('Statement number is required.'); return; }
+  if(!ownerName){ alert('Owner name is required.'); return; }
+  const readRows=section=>Array.from(document.querySelectorAll('#statement-'+section+'-body tr')).map(row=>({
+      date:row.querySelector('.stmt-date').value.trim(),
+      description:row.querySelector('.stmt-desc').value.trim(),
+      amount:Number(row.querySelector('.stmt-amount').value)||0
+    })).filter(it=>it.description||it.amount);
+  const income=readRows('income');
+  const expenses=readRows('expense');
+  const {totalIncome,totalExpenses,net,closing,opening}=recalcStatementTotals();
+  const propertySelect=document.getElementById('statement-property');
+  const propertyId=propertySelect.value;
+  const propertyAddress=propertyId?propertySelect.options[propertySelect.selectedIndex].textContent:'';
+  const isEdit=!!editingStatementId;
+  const existing=isEdit?(await dbGetAll('statements')).find(s=>s.id===editingStatementId):null;
+  const record={
+    id:isEdit?editingStatementId:'stmt_'+Date.now(),
+    statementNumber,
+    propertyId,propertyAddress,
+    ownerName,
+    ownerEmail:document.getElementById('statement-owner-email').value.trim(),
+    periodStart:document.getElementById('statement-period-start').value,
+    periodEnd:document.getElementById('statement-period-end').value,
+    status:document.getElementById('statement-status').value,
+    openingBalance:opening,
+    income,expenses,
+    totalIncome,totalExpenses,netAmount:net,closingBalance:closing,
+    notes:document.getElementById('statement-notes').value,
+    synced:false,
+    pendingDelete:false,
+    createdAt:(isEdit&&existing)?existing.createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+  await dbPut('statements',record);
+  await logActivity('Statement',isEdit?'Updated':'Created',record.statementNumber+' — '+record.ownerName);
+  await renderStatementsList();
+  updateStatementSyncBanner();
+  toggleStatementForm(false);
+  if(navigator.onLine) syncPendingStatements();
+}
+
+async function renderStatementsList(){
+  const all=(await dbGetAll('statements').catch(()=>[])).filter(s=>!s.pendingDelete);
+  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const tbody=document.getElementById('statement-list');
+  if(!tbody) return;
+  const countEl=document.getElementById('statement-count');
+  if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr>';
+    return;
+  }
+  const statusBadge=s=>{
+    const map={Draft:'bgr',Sent:'bb',Paid:'bg'};
+    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+  };
+  tbody.innerHTML=all.map(s=>`
+    <tr>
+      <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
+      <td>${s.ownerName}</td>
+      <td>${s.propertyAddress||'—'}</td>
+      <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
+      <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td>${statusBadge(s.status)}</td>
+      <td>${s.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
+      <td><button class="btn btn-sm" onclick="generateStatementPDF('${s.id}')">📄 PDF</button></td>
+    </tr>`).join('');
+}
+
+async function deleteStatement(id){
+  if(!confirm('Delete this statement? This cannot be undone.'))return;
+  const all=await dbGetAll('statements');
+  const record=all.find(s=>s.id===id);
+  if(!record)return;
+  await logActivity('Statement','Deleted',record.statementNumber+' — '+record.ownerName);
+  if(record.synced && navigator.onLine){
+    const token=await authHeader();
+    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
+      method:'DELETE',
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    }).catch(()=>{});
+    await dbDelete('statements',id);
+  }else{
+    record.pendingDelete=true;
+    await dbPut('statements',record);
+  }
+  await renderStatementsList();
+  updateStatementSyncBanner();
+}
+
+async function pushStatementToBackend(record){
+  if(!CONFIG.SUPABASE_URL) return true;
+  const token=await authHeader();
+  try{
+    if(record.pendingDelete){
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${record.id}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      return res.ok ? 'deleted' : false;
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify({
+        id:record.id,statement_number:record.statementNumber,
+        property_id:record.propertyId||null,property_address:record.propertyAddress,
+        owner_name:record.ownerName,owner_email:record.ownerEmail,
+        period_start:record.periodStart,period_end:record.periodEnd,
+        status:record.status,opening_balance:record.openingBalance,
+        income:record.income,expenses:record.expenses,
+        total_income:record.totalIncome,total_expenses:record.totalExpenses,
+        net_amount:record.netAmount,closing_balance:record.closingBalance,
+        notes:record.notes,
+        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
+      })
+    });
+    return res.ok;
+  }catch(err){
+    console.log('Statement sync failed, will retry later:',err);
+    return false;
+  }
+}
+
+async function syncPendingStatements(){
+  if(!navigator.onLine){
+    alert('Still offline — will sync automatically once connection returns.');
+    return;
+  }
+  const all=await dbGetAll('statements');
+  const pending=all.filter(s=>!s.synced);
+  for(const record of pending){
+    const result=await pushStatementToBackend(record);
+    if(result==='deleted'){
+      await dbDelete('statements',record.id);
+    }else if(result){
+      record.synced=true;
+      await dbPut('statements',record);
+    }
+  }
+  await renderStatementsList();
+  updateStatementSyncBanner();
+}
+
+async function updateStatementSyncBanner(){
+  const banner=document.getElementById('sync-banner-statement');
+  if(!banner) return;
+  const statusText=document.getElementById('sync-status-text-statement');
+  const pendingText=document.getElementById('sync-pending-text-statement');
+  const all=await dbGetAll('statements').catch(()=>[]);
+  const pendingCount=all.filter(s=>!s.synced).length;
+  const online=navigator.onLine;
+  banner.classList.toggle('sync-online',online);
+  banner.classList.toggle('sync-offline',!online);
+  statusText.textContent=online?'Online':'Offline';
+  pendingText.textContent=pendingCount+' pending sync';
+}
+
+async function generateStatementPDF(id){
+  const all=await dbGetAll('statements');
+  const s=all.find(x=>x.id===id);
+  if(!s) return;
+
+  const btn=event && event.target;
+  const original=btn?btn.textContent:null;
+  if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
+
+  try{
+    await StatementReport.generate({
+      statementNumber:s.statementNumber,
+      periodStart:s.periodStart,periodEnd:s.periodEnd,status:s.status,
+      from:{
+        name:BUSINESS_INFO.NAME,address:BUSINESS_INFO.ADDRESS.join(', '),gstNumber:BUSINESS_INFO.GST_NUMBER,
+        email:BUSINESS_INFO.EMAIL,phone:BUSINESS_INFO.PHONE,
+        bankAccount:[BUSINESS_INFO.BANK.BANK_NAME,BUSINESS_INFO.BANK.ACCOUNT_NUMBER].filter(Boolean).join(' — ')||undefined
+      },
+      owner:{ name:s.ownerName, email:s.ownerEmail },
+      property:s.propertyAddress,
+      openingBalance:s.openingBalance,
+      income:s.income, expenses:s.expenses,
+      totalIncome:s.totalIncome, totalExpenses:s.totalExpenses,
+      netAmount:s.netAmount, closingBalance:s.closingBalance,
+      notes:s.notes
+    },{ fileName:`${sanitizeForPath(s.statementNumber)}-${sanitizeForPath(s.ownerName)}.pdf`, download:true });
+  }catch(err){
+    alert('Could not generate statement PDF: '+(err && err.message));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=original;}
+  }
+}
+
+/* --- JSON import — the integration point for your future statement
+   generator. Expected shape (totals are recalculated client-side from
+   income/expenses + openingBalance, so the generator doesn't need to
+   compute them):
+   {
+     "statementNumber": "STMT-2026-07-0001",
+     "propertyId": "",                    // matches a Properties record id, if known
+     "propertyAddress": "",                // fallback label if propertyId is blank/unmatched
+     "ownerName": "", "ownerEmail": "",
+     "periodStart": "01 Jul 2026", "periodEnd": "31 Jul 2026",
+     "status": "Draft",                    // Draft | Sent | Paid
+     "openingBalance": 0,
+     "income":   [{ "date": "", "description": "", "amount": 0 }],
+     "expenses": [{ "date": "", "description": "", "amount": 0 }],
+     "notes": ""
+   }
+   Once wired up, the generator can call window.importStatementJSON(data)
+   directly with a JS object — no paste step needed. --- */
+function loadStatementJSON(){
+  const raw=document.getElementById('statement-json-input').value.trim();
+  if(!raw){ alert('Paste statement JSON first.'); return; }
+  let data;
+  try{ data=JSON.parse(raw); }
+  catch(err){ alert("That isn't valid JSON: "+err.message); return; }
+  importStatementJSON(data);
+}
+
+async function importStatementJSON(data){
+  data=data||{};
+  await toggleStatementForm(true,{
+    id:null,
+    statementNumber:data.statementNumber||await nextStatementNumber(),
+    propertyId:data.propertyId||'',
+    propertyAddress:data.propertyAddress||'',
+    ownerName:data.ownerName||'',
+    ownerEmail:data.ownerEmail||'',
+    periodStart:data.periodStart||'',
+    periodEnd:data.periodEnd||'',
+    status:data.status||'Draft',
+    openingBalance:data.openingBalance||0,
+    income:data.income||[],
+    expenses:data.expenses||[],
+    notes:data.notes||''
+  });
+  const jsonInput=document.getElementById('statement-json-input');
+  if(jsonInput) jsonInput.value='';
+}
+window.importStatementJSON=importStatementJSON;
+
+/* ============================================================
    DASHBOARD — computed live from real Properties/Tenants/
    Maintenance data (no separate storage of its own).
    ============================================================ */
+
+// Routine inspection cadence used to work out each property's "next due"
+// date from its most recent saved inspection. Adjust if your routine
+// differs from quarterly.
+const INSPECTION_INTERVAL_DAYS = 180;
+
+function addDays(date,days){
+  const d=new Date(date);
+  d.setDate(d.getDate()+days);
+  return d;
+}
+
+// Most recent inspection per property, keyed by propertyId. Uses the
+// inspection's own date field (parsed flexibly) so a backdated inspection
+// sorts correctly; falls back to createdAt if the date field is unreadable.
+function lastInspectionByProperty(inspections){
+  const map=new Map();
+  inspections.forEach(insp=>{
+    if(!insp.propertyId) return;
+    const d=parseFlexibleDate(insp.date)||(insp.createdAt?new Date(insp.createdAt):null);
+    if(!d||isNaN(d.getTime())) return;
+    const prev=map.get(insp.propertyId);
+    if(!prev||d>prev.date) map.set(insp.propertyId,{date:d});
+  });
+  return map;
+}
+
+// Days remaining until the next monthly statement cycle (the 1st of next
+// month). Returns 0 if today already is the 1st.
+function daysUntilNextStatementCycle(){
+  const today=new Date(); today.setHours(0,0,0,0);
+  if(today.getDate()===1) return 0;
+  const nextFirst=new Date(today.getFullYear(),today.getMonth()+1,1);
+  return Math.round((nextFirst-today)/86400000);
+}
 
 async function renderDashboard(){
   const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
   const tenants=(await dbGetAll('tenants').catch(()=>[])).filter(t=>!t.pendingDelete);
   const maintenance=(await dbGetAll('maintenance').catch(()=>[])).filter(m=>!m.pendingDelete);
+  const inspections=(await dbGetAll('inspections').catch(()=>[])).filter(i=>!i.pendingDelete);
   const addressOf=resolvePropertyAddress(properties);
 
-  // Metrics
-  const ltCount=properties.filter(p=>p.tenancy==='Long-term').length;
-  const stCount=properties.filter(p=>p.tenancy==='Short-term').length;
-  document.getElementById('dm-properties').textContent=properties.length;
-  document.getElementById('dm-properties-sub').textContent=properties.length?`${ltCount} long-term · ${stCount} short-term`:'No properties added yet';
-
-  const occupied=properties.filter(p=>p.status==='Occupied'||p.status==='Booked').length;
-  const occPct=properties.length?Math.round((occupied/properties.length)*100):0;
-  document.getElementById('dm-occupancy').textContent=properties.length?occPct+'%':'—';
-  document.getElementById('dm-occupancy-sub').textContent=properties.length?`${occupied} of ${properties.length} occupied`:'';
-
-  const monthlyRent=properties.reduce((sum,p)=>sum+(p.rentPerWeek||0),0)*52/12;
-  const outstanding=tenants.reduce((sum,t)=>sum+(t.arrearsAmount||0),0);
-  document.getElementById('dm-rent').textContent='$'+Math.round(monthlyRent).toLocaleString();
-  document.getElementById('dm-rent-sub').textContent=outstanding?`$${outstanding.toLocaleString()} outstanding`:'No arrears';
-
+  // Open / urgent maintenance
   const openMaint=maintenance.filter(m=>m.status!=='Completed');
   const urgentMaint=openMaint.filter(m=>m.priority==='Urgent');
   document.getElementById('dm-maint').textContent=openMaint.length;
   document.getElementById('dm-maint-sub').textContent=urgentMaint.length?`${urgentMaint.length} urgent`:'None urgent';
 
-  // Alerts — built from real per-property compliance items + the one static NZ law note
+  // Compliance — built from real per-property compliance items
   const today=new Date(); today.setHours(0,0,0,0);
   const overdueProps=properties.filter(p=>getPropertyCompliance(p).some(it=>isItemOverdue(it,today)));
+  document.getElementById('dm-noncompliant').textContent=overdueProps.length;
+  document.getElementById('dm-noncompliant-sub').textContent=overdueProps.length?'Needs attention':(properties.length?'All compliant':'No properties yet');
+
   const alertsEl=document.getElementById('dash-alerts');
   let alertsHtml='';
   if(overdueProps.length){
     const names=overdueProps.map(p=>p.address).join(', ');
-    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${names}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[6]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
+    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${names}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
   }
   alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.<span style="display:block;font-size:11px;opacity:.7;margin-top:2px">Last verified ${LAW_UPDATES_LAST_VERIFIED}</span></div></div>`;
   alertsEl.innerHTML=alertsHtml;
+
+  // Next inspection per property — last saved inspection + routine cadence
+  const lastInspMap=lastInspectionByProperty(inspections);
+  const in30=addDays(today,30);
+  const inspRows=properties.map(p=>{
+    const last=lastInspMap.get(p.id);
+    const nextDue=last?addDays(last.date,INSPECTION_INTERVAL_DAYS):null;
+    let statusBadge,sortKey;
+    if(!last){ statusBadge='<span class="badge br">Never inspected</span>'; sortKey=-2; }
+    else if(nextDue<today){ statusBadge='<span class="badge br">Overdue</span>'; sortKey=-1; }
+    else if(nextDue<=in30){ statusBadge='<span class="badge ba">Due soon</span>'; sortKey=nextDue.getTime(); }
+    else { statusBadge='<span class="badge bg">OK</span>'; sortKey=nextDue.getTime(); }
+    return {address:p.address,lastStr:last?formatDateNZ(last.date):'Never',nextStr:nextDue?formatDateNZ(nextDue):'—',statusBadge,sortKey};
+  }).sort((a,b)=>a.sortKey-b.sortKey);
+
+  const inspDueCount=inspRows.filter(r=>r.sortKey<=in30.getTime()).length;
+  document.getElementById('dm-inspections').textContent=inspDueCount;
+  document.getElementById('dm-inspections-sub').textContent=inspDueCount?'Due within 30 days':(properties.length?'None due soon':'No properties yet');
+
+  document.getElementById('dash-inspections').innerHTML=inspRows.length
+    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',document.querySelectorAll('.nav-item')[4])" title="Double-click to open Inspections"><td>${r.address}</td><td>${r.lastStr}</td><td>${r.nextStr}</td><td>${r.statusBadge}</td></tr>`).join('')
+    : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr>';
+
+  // Properties not compliant
+  document.getElementById('dash-noncompliant').innerHTML=overdueProps.length
+    ? overdueProps.map(p=>{
+        const items=getPropertyCompliance(p).filter(it=>isItemOverdue(it,today));
+        const labels=items.map(it=>it.label).slice(0,2).join(', ')+(items.length>2?'…':'');
+        return `<tr style="cursor:pointer" ondblclick="nav('compliance',document.querySelectorAll('.nav-item')[8])" title="Double-click to open Compliance"><td>${p.address}</td><td style="font-size:12px;color:var(--text2)">${labels}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
+      }).join('')
+    : `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">${properties.length?'All properties compliant':'No properties yet'}</td></tr>`;
+
+  // Next monthly statement cycle — statement day is the 1st of next month
+  const statementDays=daysUntilNextStatementCycle();
+  const cycleMonth=new Date(today.getFullYear(),today.getMonth()+(today.getDate()===1?0:1),1);
+  document.getElementById('dm-statement').textContent=statementDays===0?'Today':statementDays+(statementDays===1?' day':' days');
+  document.getElementById('dm-statement-sub').textContent='1st '+MONTH_ABBR[cycleMonth.getMonth()]+' '+cycleMonth.getFullYear();
 
   // Lease renewals due
   const renewals=tenants.filter(t=>t.status==='Renewal due');
   document.getElementById('dash-renewals').innerHTML=renewals.length
     ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${addressOf(t)}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
-
-  // Rent arrears
-  const arrears=tenants.filter(t=>t.status==='Arrears');
-  document.getElementById('dash-arrears').innerHTML=arrears.length
-    ? arrears.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${addressOf(t)}</td><td>${t.tenantName}</td><td>$${t.arrearsAmount}</td></tr>`).join('')
-    : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No arrears</td></tr>';
 
   // Urgent maintenance
   document.getElementById('dash-maint').innerHTML=urgentMaint.length

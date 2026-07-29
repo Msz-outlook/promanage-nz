@@ -85,6 +85,9 @@ tbody tr:hover td{background:var(--bg2)}
 .inv-totals-box div{display:flex;justify-content:space-between;padding:4px 0}
 .inv-totals-box .inv-total-row{border-top:0.5px solid var(--border);margin-top:4px;padding-top:8px;font-weight:600;font-size:14.5px}
 .btn-sm{padding:4px 10px;font-size:12px}
+.btn:disabled{opacity:.4;cursor:default;pointer-events:none}
+.pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:.6rem 1.25rem;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)}
+.pagination:empty{display:none;padding:0;border-top:none}
 
 /* Alerts */
 .alert{padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:10px;display:flex;gap:8px;align-items:flex-start;line-height:1.5}
@@ -105,6 +108,7 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .sum-label{font-size:11px;color:var(--text2);margin-bottom:4px}
 .sum-val{font-size:18px;font-weight:600}
 .red{color:var(--red-text)}
+.green{color:var(--green-text)}
 
 /* Compliance */
 .comp-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:0.5px solid var(--border)}
@@ -1236,32 +1240,32 @@ textarea:focus{border-color:var(--text)}
   </div>
   <div class="nav-section">
     <div class="nav-label">Overview</div>
-    <div class="nav-item active" onclick="nav('dashboard',this)"><span class="nav-icon">⊞</span> Dashboard</div>
+    <div class="nav-item active" data-page="dashboard" onclick="nav('dashboard',this)"><span class="nav-icon">⊞</span> Dashboard</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Portfolio</div>
-    <div class="nav-item" onclick="nav('properties',this)"><span class="nav-icon">🏠</span> Properties</div>
-    <div class="nav-item" onclick="nav('tenants',this)"><span class="nav-icon">👤</span> Tenants</div>
-    <div class="nav-item" onclick="nav('maintenance',this)"><span class="nav-icon">🔧</span> Maintenance</div>
-    <div class="nav-item" onclick="nav('inspections',this)"><span class="nav-icon">📷</span> Inspections</div>
+    <div class="nav-item" data-page="properties" onclick="nav('properties',this)"><span class="nav-icon">🏠</span> Properties</div>
+    <div class="nav-item" data-page="tenants" onclick="nav('tenants',this)"><span class="nav-icon">👤</span> Tenants</div>
+    <div class="nav-item" data-page="maintenance" onclick="nav('maintenance',this)"><span class="nav-icon">🔧</span> Maintenance</div>
+    <div class="nav-item" data-page="inspections" onclick="nav('inspections',this)"><span class="nav-icon">📷</span> Inspections</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Finance</div>
-    <div class="nav-item" onclick="nav('financials',this)"><span class="nav-icon">📊</span> Financials</div>
-    <div class="nav-item" onclick="nav('invoices',this)"><span class="nav-icon">🧾</span> Invoices</div>
-    <div class="nav-item" onclick="nav('statements',this)"><span class="nav-icon">📨</span> Statements</div>
+    <div class="nav-item" data-page="financials" onclick="nav('financials',this)"><span class="nav-icon">📊</span> Financials</div>
+    <div class="nav-item" data-page="invoices" onclick="nav('invoices',this)"><span class="nav-icon">🧾</span> Invoices</div>
+    <div class="nav-item" data-page="statements" onclick="nav('statements',this)"><span class="nav-icon">📨</span> Statements</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Compliance</div>
-    <div class="nav-item" onclick="nav('compliance',this)"><span class="nav-icon">✅</span> NZ Compliance</div>
+    <div class="nav-item" data-page="compliance" onclick="nav('compliance',this)"><span class="nav-icon">✅</span> NZ Compliance</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Activity</div>
-    <div class="nav-item" onclick="nav('activity',this)"><span class="nav-icon">🕒</span> Activity Log</div>
+    <div class="nav-item" data-page="activity" onclick="nav('activity',this)"><span class="nav-icon">🕒</span> Activity Log</div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Automation</div>
-    <div class="nav-item" onclick="nav('email-triage',this)"><span class="nav-icon">📧</span> Email Triage</div>
+    <div class="nav-item" data-page="email-triage" onclick="nav('email-triage',this)"><span class="nav-icon">📧</span> Email Triage</div>
   </div>
   <div style="margin-top:auto;padding:1rem;border-top:0.5px solid var(--border)">
     <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">Sign out</button>
@@ -1349,6 +1353,7 @@ textarea:focus{border-color:var(--text)}
         <div><label>Bedrooms</label><input type="number" id="prop-bed" style="width:80px" value="3"></div>
         <div><label>Bathrooms</label><input type="number" id="prop-bath" style="width:80px" value="1"></div>
         <div><label>Floor area (m²)</label><input type="number" id="prop-area" style="width:100px" value="100"></div>
+        <div><label>Parking</label><select id="prop-parking" style="width:80px"><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></div>
       </div>
       <div class="controls">
         <div><label>Tenancy</label><select id="prop-tenancy"><option>Long-term</option><option>Short-term</option></select></div>
@@ -1376,6 +1381,7 @@ textarea:focus{border-color:var(--text)}
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th></tr></thead>
       <tbody id="prop-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="prop-pagination"></div>
   </div>
 
 </div>
@@ -1425,6 +1431,7 @@ textarea:focus{border-color:var(--text)}
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th></tr></thead>
       <tbody id="tenant-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="tenant-pagination"></div>
   </div>
   <div class="card">
     <div class="card-head">NZ RTA key rules</div>
@@ -1474,6 +1481,7 @@ textarea:focus{border-color:var(--text)}
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Issue</th><th>Property</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th></tr></thead>
       <tbody id="maint-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="maint-pagination"></div>
   </div>
   <div class="card">
     <div class="card-head">NZ landlord repair obligations</div>
@@ -1487,18 +1495,19 @@ textarea:focus{border-color:var(--text)}
 
 <!-- EMAIL TRIAGE -->
 <div class="page" id="page-email-triage">
-  <div class="alert alert-blue">
-    ✉️ <div><strong>Test mode — no mailbox connected.</strong> This page runs the triage pipeline against a fixed set of sample emails (<code>MOCK_INBOX</code> in the code) so you can see how incoming mail would flow into maintenance requests. High-confidence maintenance emails are auto-created below and on refresh; everything else waits here for a one-click decision. Wire up a real inbox later by replacing <code>fetchIncomingEmails()</code> with a live IMAP/Gmail/forwarding-webhook source — nothing else in this pipeline needs to change.</div>
+  <div class="alert alert-blue" id="triage-mode-banner">
+    ✉️ <div id="triage-mode-text"></div>
   </div>
 
   <div class="card">
     <div class="card-head">
-      <span>Sample mailbox <span id="triage-count" style="font-weight:400;color:var(--text3)"></span></span>
+      <span>Mailbox <span id="triage-count" style="font-weight:400;color:var(--text3)"></span></span>
       <button class="btn btn-sm" onclick="processEmailTriageInbox()">🔄 Check inbox</button>
     </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Received</th><th>From</th><th>Subject</th><th>Property match</th><th>Priority</th><th>Status</th><th>Action</th></tr></thead>
       <tbody id="triage-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No emails checked yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="triage-pagination"></div>
   </div>
 </div>
 
@@ -1537,58 +1546,66 @@ textarea:focus{border-color:var(--text)}
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
       <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="insp-pagination"></div>
   </div>
 </div>
 
 <!-- FINANCIALS -->
 <div class="page" id="page-financials">
-  <div class="alert alert-blue">ℹ️ <div><strong>Manually updated snapshot</strong> — as of 15 Jul 2026, split by property (your only 2 contacts in Xero). This isn't a live feed; ask Claude in chat to "pull fresh Xero numbers" whenever you want it refreshed.</div></div>
-  <div class="metrics">
-    <div class="metric"><div class="metric-label">Total income (this period)</div><div class="metric-val">$11,290</div><div class="metric-sub">1 Apr – 15 Jul 2026</div></div>
-    <div class="metric"><div class="metric-label">Net profit</div><div class="metric-val" style="color:var(--green-text)">$3,789</div><div class="metric-sub">Expenses: $7,501</div></div>
-    <div class="metric"><div class="metric-label">Total overdue</div><div class="metric-val" style="color:var(--red-text)">$29,067</div><div class="metric-sub">10 invoices, all overdue</div></div>
-    <div class="metric"><div class="metric-label">Cash balance</div><div class="metric-val">$0</div><div class="metric-sub">$7,864 owed by you</div></div>
-  </div>
-  <div class="two-col">
-    <div class="card">
-      <div class="card-head">2/107 Deans Ave</div>
-      <div class="card-body">
-        <div class="sum-grid" style="margin-top:0">
-          <div class="sum-box"><div class="sum-label">Revenue (this period)</div><div class="sum-val">$5,970</div></div>
-          <div class="sum-box"><div class="sum-label">Share of total income</div><div class="sum-val">52.9%</div></div>
-        </div>
-        <div class="section-label" style="margin-top:1rem">Overdue invoices (top shown)</div>
-        <table><thead><tr><th>Invoice</th><th class="tr">Amount</th><th>Overdue</th></tr></thead><tbody>
-          <tr><td>INV-0042</td><td class="tr red">$3,400.00</td><td><span class="badge br">106d</span></td></tr>
-          <tr><td>INV-0049</td><td class="tr red">$3,250.00</td><td><span class="badge br">45d</span></td></tr>
-        </tbody></table>
-      </div>
+  <div class="alert alert-blue">ℹ️ <div><strong>Agency view — what ProManage earns, not what the owners earn</strong> — revenue is the fee lines you charged on your saved owner statements (management, letting, inspection, admin). Rent collected and tradie costs are owner money passing through and are reported separately below. <span id="fin-banner-detail"></span> <a href="#" onclick="nav('statements',document.querySelectorAll('.nav-item')[7]);return false" style="color:inherit;text-decoration:underline">Go to Owner Statements →</a></div></div>
+
+  <div id="fin-controls" style="display:none">
+    <div class="controls" style="align-items:flex-end;margin-bottom:.5rem">
+      <div><label>Period</label><select id="fin-period-select" onchange="applyFinancialsPeriodFilter()" style="min-width:220px"></select></div>
+      <div style="align-self:center;color:var(--text3);font-size:11px;padding:0 2px">or</div>
+      <div><label>Period from</label><input type="text" id="fin-filter-from" style="width:130px" placeholder="dd/mm/yyyy" oninput="applyFinancialsDateFilter()"></div>
+      <div><label>Period to</label><input type="text" id="fin-filter-to" style="width:130px" placeholder="dd/mm/yyyy" oninput="applyFinancialsDateFilter()"></div>
+      <button class="btn btn-sm" onclick="clearFinancialsFilter()">Clear</button>
     </div>
-    <div class="card">
-      <div class="card-head">405 Avonhead Road</div>
-      <div class="card-body">
-        <div class="sum-grid" style="margin-top:0">
-          <div class="sum-box"><div class="sum-label">Revenue (this period)</div><div class="sum-val">$5,320</div></div>
-          <div class="sum-box"><div class="sum-label">Share of total income</div><div class="sum-val">47.1%</div></div>
-        </div>
-        <div class="section-label" style="margin-top:1rem">Overdue invoices (top shown)</div>
-        <table><thead><tr><th>Invoice</th><th class="tr">Amount</th><th>Overdue</th></tr></thead><tbody>
-          <tr><td>INV-0044</td><td class="tr red">$3,250.00</td><td><span class="badge br">165d</span></td></tr>
-        </tbody></table>
-      </div>
+    <div id="fin-filter-hint" style="font-size:11px;color:var(--text3);margin-bottom:1rem">Pick a single period from the dropdown, or type a date range — whichever you use clears the other.</div>
+  </div>
+
+  <div class="card" id="fin-empty" style="display:none">
+    <div class="card-body" style="text-align:center;color:var(--text3);padding:2rem">
+      No owner statements saved yet. <a href="#" onclick="nav('statements',document.querySelectorAll('.nav-item')[7]);return false">Add one on the Owner Statements page</a> to see financials here.
     </div>
   </div>
-  <div class="card">
-    <div class="card-head">Expense breakdown (portfolio-wide, this period)</div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th></tr></thead><tbody>
-      <tr><td>Legal expenses</td><td class="tr red">$4,300.00</td></tr>
-      <tr><td>Consulting & Accounting</td><td class="tr red">$1,380.00</td></tr>
-      <tr><td>General Expenses</td><td class="tr red">$1,011.45</td></tr>
-      <tr><td>Repairs and Maintenance</td><td class="tr red">$810.00</td></tr>
-      <tr style="font-weight:600"><td>Total expenses</td><td class="tr red">$7,501.45</td></tr>
-    </tbody></table></div><div class="scroll-fade"></div></div>
-    <div style="font-size:11px;color:var(--text3);padding:0 1.25rem 1rem">Xero doesn't currently tag these expenses to a specific property — shown portfolio-wide.</div>
+
+  <div id="fin-content" style="display:none">
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Agency revenue (ex GST)</div><div class="metric-val" id="fin-revenue" style="color:var(--green-text)">$0</div><div class="metric-sub" id="fin-revenue-sub"></div></div>
+      <div class="metric"><div class="metric-label">GST collected on fees</div><div class="metric-val" id="fin-gst">$0</div><div class="metric-sub" id="fin-gst-sub"></div></div>
+      <div class="metric"><div class="metric-label">Rent collected (owner funds)</div><div class="metric-val" id="fin-rent">$0</div><div class="metric-sub" id="fin-rent-sub"></div></div>
+      <div class="metric"><div class="metric-label">Effective fee rate</div><div class="metric-val" id="fin-fee-rate">0%</div><div class="metric-sub" id="fin-fee-rate-sub"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">Owner funds handled — money through the trust account, not agency income</div>
+      <div class="card-body">
+        <div class="sum-grid" style="margin-top:0" id="fin-client-funds"></div>
+        <div style="font-size:11px;color:var(--text3);margin-top:.75rem">Rent and receipts are collected on the owners' behalf; fees, GST, recoveries and tradie invoices are deducted before the balance is disbursed. Only the "Agency revenue" tile above is ProManage income.</div>
+      </div>
+    </div>
+
+    <div class="two-col" id="fin-property-cards"></div>
+
+    <div class="card">
+      <div class="card-head">Agency revenue by fee type</div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Fee type</th><th class="tr">Amount (ex GST)</th><th class="tr">% of revenue</th></tr></thead>
+        <tbody id="fin-revenue-breakdown"></tbody>
+      </table></div><div class="scroll-fade"></div></div>
+      <div style="font-size:11px;color:var(--text3);padding:0 1.25rem 1rem">Fee types are grouped automatically from the expense line-item descriptions on each owner statement — a line only counts as revenue if it reads as a fee you charged, never as a third-party invoice. Click a fee type to see the individual line items.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">Paid out on owners' behalf (pass-through, not agency expenses)</div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Category</th><th class="tr">Amount</th><th class="tr">% of pass-through</th></tr></thead>
+        <tbody id="fin-disbursement-breakdown"></tbody>
+      </table></div><div class="scroll-fade"></div></div>
+      <div style="font-size:11px;color:var(--text3);padding:0 1.25rem 1rem">Tradie and supplier invoices settled from owner funds, plus recoveries you paid first and recharged (advertising, credit checks). These are the owners' costs — they don't reduce your revenue. Click a category to see the individual line items.</div>
+    </div>
   </div>
+
   <div class="card">
     <div class="card-head">NZ tax reminders</div>
     <div class="card-body" style="font-size:13px;line-height:1.9;color:var(--text2)">
@@ -1689,6 +1706,7 @@ textarea:focus{border-color:var(--text)}
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Bill to</th><th>Property</th><th>Issue date</th><th>Due date</th><th class="tr">Total</th><th>Status</th><th>Sync</th><th></th></tr></thead>
       <tbody id="invoice-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No invoices yet — click "+ New invoice" to create your first one</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="invoice-pagination"></div>
   </div>
 </div>
 
@@ -1762,9 +1780,20 @@ textarea:focus{border-color:var(--text)}
       <div style="display:flex;justify-content:space-between;align-items:center"><span>All statements <span id="statement-count" style="font-weight:400;color:var(--text3)"></span></span></div>
       <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click a statement to edit.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Statement #</th><th>Owner</th><th>Property</th><th>Period</th><th class="tr">Net amount</th><th>Status</th><th>Sync</th><th></th></tr></thead>
-      <tbody id="statement-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr></tbody>
+    <div class="card-body" style="padding-bottom:0">
+      <div class="controls" style="align-items:flex-end;margin-bottom:.5rem">
+        <div><label>Period</label><select id="statement-filter-period" onchange="applyStatementPeriodFilter()" style="min-width:200px"><option value="all">All periods</option></select></div>
+        <div style="align-self:center;color:var(--text3);font-size:11px;padding:0 2px">or</div>
+        <div><label>Period from</label><input type="text" id="statement-filter-from" style="width:130px" placeholder="dd/mm/yyyy" oninput="applyStatementDateFilter()"></div>
+        <div><label>Period to</label><input type="text" id="statement-filter-to" style="width:130px" placeholder="dd/mm/yyyy" oninput="applyStatementDateFilter()"></div>
+        <button class="btn btn-sm" onclick="clearStatementDateFilter()">Clear</button>
+      </div>
+      <div id="statement-filter-hint" style="font-size:11px;color:var(--text3);margin-bottom:1rem">Pick a single period from the dropdown, or type a date range — whichever you use clears the other.</div>
+    </div>
+    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Statement #</th><th>Property</th><th>Period</th><th class="tr">Net to owner</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+      <tbody id="statement-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="statement-pagination"></div>
   </div>
 </div>
 
@@ -1806,11 +1835,12 @@ textarea:focus{border-color:var(--text)}
   <div class="card">
     <div class="card-head" style="display:block">
       <div>Activity log <span id="activity-log-count" style="font-weight:400;color:var(--text3)"></span></div>
-      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:4px">Every property, tenant, maintenance and inspection record created, edited or deleted on this device, newest first.</div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:4px">Every property, tenant, maintenance and inspection record created, edited or deleted, newest first.</div>
     </div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>When</th><th>Type</th><th>Action</th><th>Details</th></tr></thead>
       <tbody id="activity-log-list"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
+    <div class="pagination" id="activity-log-pagination"></div>
   </div>
 </div>
 
@@ -1852,11 +1882,14 @@ textarea:focus{border-color:var(--text)}
 
 <script>
 const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',maintenance:'Maintenance',inspections:'Inspections',financials:'Financials',invoices:'Invoices',statements:'Owner Statements',compliance:'NZ Compliance',activity:'Activity Log','email-triage':'Email Triage'};
-function nav(id,el){
+let currentPageId='dashboard';
+function nav(id,el,fromPopState){
+  if(!pages[id]) id='dashboard';
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-  if(el)el.classList.add('active');
+  const navEl=el||document.querySelector('.nav-item[data-page="'+id+'"]');
+  if(navEl) navEl.classList.add('active');
   document.getElementById('topbar-title').textContent=pages[id]||id;
   if(window.innerWidth<=768) toggleSidebar(false);
   if(id==='inspections') populateInspectionPropertyDropdown();
@@ -1866,8 +1899,16 @@ function nav(id,el){
   if(id==='compliance') renderComplianceLive();
   if(id==='invoices') renderInvoicesList();
   if(id==='statements') renderStatementsList();
+  if(id==='financials') renderFinancials();
   if(id==='email-triage') renderEmailTriageList();
+  if(!fromPopState && id!==currentPageId) history.pushState({page:id},'','#'+id);
+  currentPageId=id;
 }
+window.addEventListener('popstate',e=>{
+  const id=(e.state&&e.state.page)||'dashboard';
+  nav(id,null,true);
+});
+history.replaceState({page:'dashboard'},'','#dashboard');
 function toggleSidebar(force){
   const sidebar=document.getElementById('sidebar');
   const overlay=document.getElementById('sidebar-overlay');
@@ -1897,6 +1938,23 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_4-vXVhXsr40g1KuLdihxhw_XH5-2Vqn',
   STORAGE_BUCKET: 'inspection-photos'
 };
+
+/* Demo/mock email triage. OFF by default: with a real dataset in the app,
+   MOCK_INBOX would otherwise auto-create fake maintenance jobs on every page
+   load (see processEmailTriageInbox()). Turn it on for a demo either by
+   flipping this constant, or without editing the file:
+     localStorage.setItem('promanage_demo_email_triage','1')  // then reload
+   Clean up anything it already created with purgeDemoTriageData() in the
+   console. Once a real mailbox is wired into fetchIncomingEmails(), this flag
+   stops applying to it — it only gates the mock inbox. */
+const DEMO_EMAIL_TRIAGE_DEFAULT = false;
+function demoEmailTriageEnabled(){
+  try{
+    const override=localStorage.getItem('promanage_demo_email_triage');
+    if(override!==null) return override==='1';
+  }catch(e){/* storage blocked — fall through to the default */}
+  return DEMO_EMAIL_TRIAGE_DEFAULT;
+}
 
 // Printed as the "From" block + Payment Details on every generated invoice
 // PDF — edit with your real details (mirrors SENDER/BANK/LOGO from your
@@ -2136,7 +2194,7 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
 function mapRemoteProperty(row){
   return{
     id:row.id,address:row.address,bedrooms:row.bedrooms,bathrooms:row.bathrooms,
-    floorArea:row.floor_area,tenancy:row.tenancy,rentPerWeek:row.rent_per_week,
+    floorArea:row.floor_area,parking:row.parking||0,tenancy:row.tenancy,rentPerWeek:row.rent_per_week,
     status:row.status,complianceItems:row.compliance_items||{},notes:row.notes,
     createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
   };
@@ -2173,6 +2231,13 @@ function mapRemoteInvoice(row){
     createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
   };
 }
+function mapRemoteActivityLog(row){
+  return{
+    id:row.id,entity:row.entity,action:row.action,detail:row.detail||'',
+    timestamp:row.created_at,
+    createdAt:row.created_at,updatedAt:row.updated_at||row.created_at
+  };
+}
 function mapRemoteStatement(row){
   return{
     id:row.id,statementNumber:row.statement_number,
@@ -2193,14 +2258,17 @@ async function pullAllAndMerge(){
   await pullAndMerge('inspections','inspections',mapRemoteInspection);
   await pullAndMerge('invoices','invoices',mapRemoteInvoice);
   await pullAndMerge('statements','statements',mapRemoteStatement);
+  await pullAndMerge('activityLog','activity_log',mapRemoteActivityLog);
   await renderPropertiesList();  updatePropSyncBanner();
   await renderTenantsList();     updateTenantSyncBanner();
   await renderMaintenanceList(); updateMaintSyncBanner();
   await renderInspectionList();  updateSyncBanner();
   await renderInvoicesList();    updateInvoiceSyncBanner();
   await renderStatementsList();  updateStatementSyncBanner();
+  await renderActivityLog();
   await renderDashboard();
   await renderComplianceLive();
+  await renderFinancials();
 }
 
 // Push anything pending, then pull whatever changed elsewhere. Pushing first
@@ -2216,12 +2284,14 @@ async function fullSyncNow(){
   await syncPendingInspections();
   await syncPendingInvoices();
   await syncPendingStatements();
+  await syncPendingActivityLog();
   await pullAllAndMerge();
 }
 
 /* ============================================================
    ACTIVITY LOG — every create/update/delete across all modules
-   is written here with a timestamp, purely local (IndexedDB).
+   is written here with a timestamp, then synced to Supabase the
+   same offline-first way as every other entity (see fullSyncNow).
    ============================================================ */
 function formatLogTime(iso){
   const d=new Date(iso);
@@ -2229,16 +2299,76 @@ function formatLogTime(iso){
   return d.toLocaleDateString('en-NZ',{day:'2-digit',month:'short',year:'numeric'})+' '+d.toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'});
 }
 async function logActivity(entity,action,detail){
+  const now=new Date().toISOString();
   const record={
     id:'log_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
-    timestamp:new Date().toISOString(),
+    timestamp:now,
     entity,
     action,
-    detail:detail||''
+    detail:detail||'',
+    synced:false,
+    pendingDelete:false,
+    createdAt:now,
+    updatedAt:now
   };
   await dbPut('activityLog',record);
   renderActivityLog();
 }
+
+// --- Shared pagination for all list tables (activity log, properties, tenants, etc.) ---
+const PAGINATION_CONFIG={
+  activity:{pageSize:20,containerId:'activity-log-pagination'},
+  properties:{pageSize:10,containerId:'prop-pagination'},
+  tenants:{pageSize:10,containerId:'tenant-pagination'},
+  maintenance:{pageSize:10,containerId:'maint-pagination'},
+  triage:{pageSize:10,containerId:'triage-pagination'},
+  inspections:{pageSize:10,containerId:'insp-pagination'},
+  invoices:{pageSize:10,containerId:'invoice-pagination'},
+  statements:{pageSize:10,containerId:'statement-pagination'}
+};
+const pageState={};
+// Slices `all` to the current page for `key`, clamping the stored page to the
+// valid range (list can shrink/grow between renders), and refreshes the footer controls.
+function getListPage(key,all){
+  const cfg=PAGINATION_CONFIG[key];
+  const totalPages=Math.max(1,Math.ceil(all.length/cfg.pageSize));
+  let page=pageState[key]||1;
+  if(page>totalPages) page=totalPages;
+  if(page<1) page=1;
+  pageState[key]=page;
+  renderPaginationControls(key,all.length);
+  const start=(page-1)*cfg.pageSize;
+  return all.slice(start,start+cfg.pageSize);
+}
+function renderPaginationControls(key,totalItems){
+  const cfg=PAGINATION_CONFIG[key];
+  const el=document.getElementById(cfg.containerId);
+  if(!el) return;
+  if(!totalItems || totalItems<=cfg.pageSize){ el.innerHTML=''; return; }
+  const totalPages=Math.max(1,Math.ceil(totalItems/cfg.pageSize));
+  const page=pageState[key]||1;
+  const start=(page-1)*cfg.pageSize+1;
+  const end=Math.min(page*cfg.pageSize,totalItems);
+  el.innerHTML=`<span>${start}–${end} of ${totalItems}</span>
+    <button class="btn btn-sm" onclick="changeListPage('${key}',${page-1})" ${page<=1?'disabled':''}>‹ Prev</button>
+    <span>Page ${page} of ${totalPages}</span>
+    <button class="btn btn-sm" onclick="changeListPage('${key}',${page+1})" ${page>=totalPages?'disabled':''}>Next ›</button>`;
+}
+const LIST_RENDERERS={
+  get activity(){return renderActivityLog},
+  get properties(){return renderPropertiesList},
+  get tenants(){return renderTenantsList},
+  get maintenance(){return renderMaintenanceList},
+  get triage(){return renderEmailTriageList},
+  get inspections(){return renderInspectionList},
+  get invoices(){return renderInvoicesList},
+  get statements(){return renderStatementsList}
+};
+function changeListPage(key,page){
+  pageState[key]=page;
+  LIST_RENDERERS[key]();
+}
+
 async function renderActivityLog(){
   const tbody=document.getElementById('activity-log-list');
   if(!tbody) return;
@@ -2248,19 +2378,57 @@ async function renderActivityLog(){
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr>';
+    renderPaginationControls('activity',0);
     return;
   }
+  const pageItems=getListPage('activity',all);
   const actionBadge=a=>{
     const map={Created:'bg',Updated:'bb',Deleted:'br'};
     return `<span class="badge ${map[a]||'bgr'}">${a}</span>`;
   };
-  tbody.innerHTML=all.slice(0,300).map(l=>`
+  tbody.innerHTML=pageItems.map(l=>`
     <tr>
       <td style="white-space:nowrap">${formatLogTime(l.timestamp)}</td>
       <td>${l.entity}</td>
       <td>${actionBadge(l.action)}</td>
       <td>${l.detail}</td>
     </tr>`).join('');
+}
+async function pushActivityLogToBackend(record){
+  if(!CONFIG.SUPABASE_URL) return true;
+  const token=await authHeader();
+  try{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/activity_log`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify({
+        id:record.id,entity:record.entity,action:record.action,detail:record.detail,
+        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
+      })
+    });
+    return res.ok;
+  }catch(err){
+    console.log('Activity log sync failed, will retry later:',err);
+    return false;
+  }
+}
+async function syncPendingActivityLog(){
+  if(!navigator.onLine) return;
+  const all=await dbGetAll('activityLog');
+  const pending=all.filter(l=>!l.synced);
+  for(const record of pending){
+    const result=await pushActivityLogToBackend(record);
+    if(result){
+      record.synced=true;
+      await dbPut('activityLog',record);
+    }
+  }
+  await renderActivityLog();
 }
 
 // --- Default room list for a new inspection, matches Healthy Homes areas ---
@@ -2537,9 +2705,11 @@ async function renderInspectionList(){
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr>';
+    renderPaginationControls('inspections',0);
     return;
   }
-  tbody.innerHTML=all.map(insp=>{
+  const pageItems=getListPage('inspections',all);
+  tbody.innerHTML=pageItems.map(insp=>{
     const photoCount=insp.areas.reduce((n,a)=>n+a.photos.length,0);
     const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
     return `<tr>
@@ -2619,11 +2789,17 @@ async function deleteInspection(id){
   if(record.synced && navigator.onLine){
     await deletePhotosFromStorage(record);
     const token=await authHeader();
-    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>{});
-    await dbDelete('inspections',id);
+    }).catch(()=>null);
+    if(res && res.ok){
+      await dbDelete('inspections',id);
+    }else{
+      record.pendingDelete=true;
+      record.synced=false;
+      await dbPut('inspections',record);
+    }
   }else if(record.synced && !navigator.onLine){
     record.pendingDelete=true;
     record.synced=false;
@@ -2786,7 +2962,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   renderActivityLog();
   renderComplianceLive();
   renderEmailTriageList();
-  processEmailTriageInbox(); // classifies MOCK_INBOX and auto-creates maintenance requests for clear matches
+  updateEmailTriageModeBanner();
+  // Only auto-runs in demo mode — otherwise MOCK_INBOX would auto-create fake
+  // maintenance requests on top of real data on every load.
+  if(demoEmailTriageEnabled()) processEmailTriageInbox();
 });
 
 /* ============================================================
@@ -3006,6 +3185,7 @@ function togglePropForm(show,record){
     document.getElementById('prop-bed').value=record?record.bedrooms:3;
     document.getElementById('prop-bath').value=record?record.bathrooms:1;
     document.getElementById('prop-area').value=record?record.floorArea:100;
+    document.getElementById('prop-parking').value=record?(record.parking||0):0;
     document.getElementById('prop-tenancy').value=record?record.tenancy:'Long-term';
     document.getElementById('prop-rent').value=record?record.rentPerWeek:600;
     document.getElementById('prop-status').value=record?record.status:'Occupied';
@@ -3041,6 +3221,7 @@ async function saveProperty(){
     bedrooms:Number(document.getElementById('prop-bed').value)||0,
     bathrooms:Number(document.getElementById('prop-bath').value)||0,
     floorArea:Number(document.getElementById('prop-area').value)||0,
+    parking:Number(document.getElementById('prop-parking').value)||0,
     tenancy:document.getElementById('prop-tenancy').value,
     rentPerWeek:Number(document.getElementById('prop-rent').value)||0,
     status:document.getElementById('prop-status').value,
@@ -3066,16 +3247,18 @@ async function renderPropertiesList(){
   document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr>';
+    renderPaginationControls('properties',0);
     return;
   }
+  const pageItems=getListPage('properties',all);
   const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
   const statusBadge=s=>{
     const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
     return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
   };
-  tbody.innerHTML=all.map(p=>`
+  tbody.innerHTML=pageItems.map(p=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editProperty('${p.id}')" title="Double-click to edit"><strong>${p.address}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m²</span></td>
+      <td style="cursor:pointer" ondblclick="editProperty('${p.id}')" title="Double-click to edit"><strong>${p.address}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m² · ${p.parking||0} parking</span></td>
       <td>${tenancyBadge(p.tenancy)}</td>
       <td>$${p.rentPerWeek}</td>
       <td>${statusBadge(p.status)}</td>
@@ -3093,11 +3276,17 @@ async function deleteProperty(id){
   if(record.synced && navigator.onLine){
     // Already in Supabase — delete remotely now
     const token=await authHeader();
-    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>{});
-    await dbDelete('properties',id);
+    }).catch(()=>null);
+    if(res && res.ok){
+      await dbDelete('properties',id);
+    }else{
+      record.pendingDelete=true;
+      record.synced=false;
+      await dbPut('properties',record);
+    }
   }else if(record.synced && !navigator.onLine){
     // Synced but offline right now — mark for remote delete on next sync
     record.pendingDelete=true;
@@ -3132,7 +3321,7 @@ async function pushPropertyToBackend(record){
       },
       body:JSON.stringify({
         id:record.id,address:record.address,bedrooms:record.bedrooms,bathrooms:record.bathrooms,
-        floor_area:record.floorArea,tenancy:record.tenancy,rent_per_week:record.rentPerWeek,
+        floor_area:record.floorArea,parking:record.parking||0,tenancy:record.tenancy,rent_per_week:record.rentPerWeek,
         status:record.status,compliance_items:record.complianceItems||{},
         compliance_status:overallComplianceStatus(record),notes:record.notes,
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
@@ -3280,15 +3469,17 @@ async function renderTenantsList(){
   document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr>';
+    renderPaginationControls('tenants',0);
     return;
   }
+  const pageItems=getListPage('tenants',all);
   const statusBadge=(t)=>{
     if(t.status==='Arrears') return `<span class="badge br">Arrears $${t.arrearsAmount}</span>`;
     if(t.status==='Renewal due') return '<span class="badge ba">Renewal due</span>';
     if(t.status==='Vacated') return '<span class="badge bgr">Vacated</span>';
     return '<span class="badge bg">Current</span>';
   };
-  tbody.innerHTML=all.map(t=>`
+  tbody.innerHTML=pageItems.map(t=>`
     <tr>
       <td style="cursor:pointer" ondblclick="editTenant('${t.id}')" title="Double-click to edit"><strong>${t.tenantName}</strong></td>
       <td>${addressOf(t)}</td>
@@ -3309,11 +3500,17 @@ async function deleteTenant(id){
   await logActivity('Tenant','Deleted',record.tenantName+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>{});
-    await dbDelete('tenants',id);
+    }).catch(()=>null);
+    if(res && res.ok){
+      await dbDelete('tenants',id);
+    }else{
+      record.pendingDelete=true;
+      record.synced=false;
+      await dbPut('tenants',record);
+    }
   }else if(record.synced && !navigator.onLine){
     record.pendingDelete=true;
     record.synced=false;
@@ -3481,8 +3678,10 @@ async function renderMaintenanceList(){
   document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr>';
+    renderPaginationControls('maintenance',0);
     return;
   }
+  const pageItems=getListPage('maintenance',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
     return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
@@ -3491,7 +3690,7 @@ async function renderMaintenanceList(){
     const map={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
     return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
   };
-  tbody.innerHTML=all.map(m=>`
+  tbody.innerHTML=pageItems.map(m=>`
     <tr>
       <td style="cursor:pointer" ondblclick="editMaintenance('${m.id}')" title="Double-click to edit"><strong>${m.issue}</strong></td>
       <td>${addressOf(m)}</td>
@@ -3511,11 +3710,17 @@ async function deleteMaintenance(id){
   await logActivity('Maintenance','Deleted',record.issue+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>{});
-    await dbDelete('maintenance',id);
+    }).catch(()=>null);
+    if(res && res.ok){
+      await dbDelete('maintenance',id);
+    }else{
+      record.pendingDelete=true;
+      record.synced=false;
+      await dbPut('maintenance',record);
+    }
   }else if(record.synced && !navigator.onLine){
     record.pendingDelete=true;
     record.synced=false;
@@ -3608,8 +3813,11 @@ async function updateMaintSyncBanner(){
         property addresses + maintenance/urgent/non-maintenance
         vocabulary to guess: is this a maintenance issue, which
         property, how urgent.
-     3. processEmailTriageInbox() runs on every page load (and on
-        demand via "Check inbox"): new messages are classified once
+     3. processEmailTriageInbox() runs on demand via "Check inbox",
+        and on page load only when demo mode is on (see
+        demoEmailTriageEnabled() — off by default so the sample
+        emails can't create maintenance records against real
+        properties): new messages are classified once
         (results are cached in the emailTriage store, keyed by the
         email id, so re-running is a no-op for already-seen mail),
         then:
@@ -3642,8 +3850,10 @@ const MOCK_INBOX=[
 ];
 
 // Swap this out for a real mail source later — see module note above.
+// Until then it returns nothing unless demo mode is explicitly enabled, so a
+// real dataset never gets sample maintenance jobs mixed into it.
 function fetchIncomingEmails(){
-  return MOCK_INBOX;
+  return demoEmailTriageEnabled()?MOCK_INBOX:[];
 }
 
 const TRIAGE_MAINT_KEYWORDS=['leak','leaking','broken','not working','doesn\'t work','stopped working','faulty',
@@ -3715,6 +3925,47 @@ async function createMaintenanceFromTriage(triage){
   return record;
 }
 
+function updateEmailTriageModeBanner(){
+  const el=document.getElementById('triage-mode-text');
+  if(!el) return;
+  const on=demoEmailTriageEnabled();
+  document.getElementById('triage-mode-banner').className='alert '+(on?'alert-amber':'alert-blue');
+  el.innerHTML=on
+    ?'<strong>Demo mode ON — sample emails, not a real mailbox.</strong> This page runs the triage pipeline against a fixed set of sample emails (<code>MOCK_INBOX</code> in the code). High-confidence maintenance emails are auto-created below and on refresh — <strong>against your real properties</strong>. Turn it off with <code>localStorage.removeItem(\'promanage_demo_email_triage\')</code> and reload; clean up what it created with <code>purgeDemoTriageData()</code>.'
+    :'<strong>No mailbox connected.</strong> Nothing is triaged and no maintenance requests are created from email. Wire up a real inbox by replacing <code>fetchIncomingEmails()</code> with a live IMAP/Gmail/forwarding-webhook source — nothing else in this pipeline needs to change. To preview the pipeline with sample emails instead, run <code>localStorage.setItem(\'promanage_demo_email_triage\',\'1\')</code> and reload.';
+}
+
+/* Console helper: removes the sample emails and every maintenance record they
+   auto-created (source:'email-triage' with a triageEmailId from MOCK_INBOX).
+   Records already synced are marked pendingDelete so the next sync removes
+   them from Supabase too, matching how deletes work everywhere else. */
+async function purgeDemoTriageData(){
+  const mockIds=new Set(MOCK_INBOX.map(m=>m.id));
+  const maint=await dbGetAll('maintenance').catch(()=>[]);
+  let removed=0;
+  for(const m of maint){
+    if(m.source!=='email-triage' || !mockIds.has(m.triageEmailId)) continue;
+    await logActivity('Maintenance','Deleted (demo triage cleanup)',m.issue+' — '+m.propertyAddress);
+    if(m.synced){
+      // synced=false too, or syncPendingMaintenance() (which scans !synced)
+      // would never pick the deletion up.
+      m.pendingDelete=true; m.synced=false; m.updatedAt=new Date().toISOString();
+      await dbPut('maintenance',m);
+    }else{
+      await dbDelete('maintenance',m.id);
+    }
+    removed++;
+  }
+  const triage=await dbGetAll('emailTriage').catch(()=>[]);
+  for(const t of triage){ if(mockIds.has(t.id)) await dbDelete('emailTriage',t.id); }
+  await renderMaintenanceList();
+  updateMaintSyncBanner();
+  renderDashboard();
+  await renderEmailTriageList();
+  console.log('Removed '+removed+' demo maintenance record(s) and '+triage.filter(t=>mockIds.has(t.id)).length+' cached triage result(s). Run fullSyncNow() to push deletions to Supabase.');
+  return removed;
+}
+
 async function processEmailTriageInbox(){
   const properties=await dbGetAll('properties').catch(()=>[]);
   const existing=await dbGetAll('emailTriage').catch(()=>[]);
@@ -3778,8 +4029,10 @@ async function renderEmailTriageList(){
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No emails checked yet</td></tr>';
+    renderPaginationControls('triage',0);
     return;
   }
+  const pageItems=getListPage('triage',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
     return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
@@ -3792,7 +4045,7 @@ async function renderEmailTriageList(){
     return {badge:'<span class="badge ba">Needs review</span>',
       action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${rec.id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${rec.id}')">Dismiss</button>`};
   };
-  tbody.innerHTML=all.map(rec=>{
+  tbody.innerHTML=pageItems.map(rec=>{
     const sc=statusCell(rec);
     const received=new Date(rec.receivedAt).toLocaleString('en-NZ',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
     return `<tr>
@@ -3837,8 +4090,10 @@ function parseISODate(iso){
 function parseFlexibleDate(str){
   if(!str) return null;
   const iso=parseISODate(str); if(iso) return iso;
-  let m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str.trim());
-  if(m) return new Date(Number(m[3]),Number(m[2])-1,Number(m[1]));
+  // dd/mm/yyyy, and the dd/mm/yy shorthand people type into the filter boxes
+  // (2-digit years are read as 20xx — this app has no pre-2000 records).
+  let m=/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(str.trim());
+  if(m) return new Date(m[3].length===2?2000+Number(m[3]):Number(m[3]),Number(m[2])-1,Number(m[1]));
   m=/^(\d{1,2})\s+([A-Za-z]{3})\w*\s+(\d{4})$/.exec(str.trim());
   if(m){
     const mi=MONTH_ABBR.findIndex(x=>x.toLowerCase()===m[2].slice(0,3).toLowerCase());
@@ -4030,13 +4285,15 @@ async function renderInvoicesList(){
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
     tbody.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No invoices yet — click "+ New invoice" to create your first one</td></tr>';
+    renderPaginationControls('invoices',0);
     return;
   }
+  const pageItems=getListPage('invoices',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg',Overdue:'br'};
     return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
   };
-  tbody.innerHTML=all.map(inv=>`
+  tbody.innerHTML=pageItems.map(inv=>`
     <tr>
       <td style="cursor:pointer" ondblclick="editInvoice('${inv.id}')" title="Double-click to edit"><strong>${inv.invoiceNumber}</strong></td>
       <td>${inv.billToName}</td>
@@ -4058,11 +4315,17 @@ async function deleteInvoice(id){
   await logActivity('Invoice','Deleted',record.invoiceNumber+' — '+record.billToName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>{});
-    await dbDelete('invoices',id);
+    }).catch(()=>null);
+    if(res && res.ok){
+      await dbDelete('invoices',id);
+    }else{
+      record.pendingDelete=true;
+      record.synced=false;
+      await dbPut('invoices',record);
+    }
   }else if(record.synced && !navigator.onLine){
     record.pendingDelete=true;
     record.synced=false;
@@ -4507,25 +4770,135 @@ async function saveStatement(){
   if(navigator.onLine) syncPendingStatements();
 }
 
+// Date-range filter, shared by the statement list and the financials page.
+// Both ends are optional, so an empty box means "open ended" in that
+// direction; a statement is kept when its period overlaps the range at all
+// (not only when fully inside it), which is what you want for a period that
+// straddles the boundary you typed.
+function readDateRangeFilter(fromId,toId){
+  const build=(id)=>{
+    const el=document.getElementById(id);
+    const text=el?el.value.trim():'';
+    return {text,date:text?parseFlexibleDate(text):null};
+  };
+  return {from:build(fromId),to:build(toId)};
+}
+// Which boxes hold text we couldn't parse — callers fall back to showing
+// everything rather than blanking the view while you're mid-keystroke.
+function badDateRangeInputs(filter){
+  return ['from','to'].filter(k=>filter[k].text&&!filter[k].date);
+}
+function dateRangeErrorText(badInput){
+  return `Can't read the "${badInput.map(k=>k==='from'?'Period from':'Period to').join('" and "')}" date — use dd/mm/yyyy (e.g. 01/07/2026). Showing everything.`;
+}
+function dateRangeScopeText(filter,shown,total){
+  const fmt=d=>d?formatDateNZ(d):'any';
+  return `Showing statements overlapping ${fmt(filter.from.date)} – ${fmt(filter.to.date)} · ${shown} of ${total}.`;
+}
+function statementInDateRange(s,filter){
+  const from=filter.from.date, to=filter.to.date;
+  if(!from&&!to) return true;
+  const start=parseFlexibleDate(s.periodStart);
+  const end=parseFlexibleDate(s.periodEnd)||start;
+  if(!start&&!end) return false;  // undated statement can't satisfy a range
+  if(from && (end||start) < from) return false;
+  if(to && (start||end) > to) return false;
+  return true;
+}
+// The dropdown and the range boxes are two ways to ask the same question, so
+// only one is ever live — using either clears the other rather than silently
+// intersecting them (a period pick that lands outside a typed range would
+// otherwise show nothing with no obvious cause).
+const statementPeriodKey=s=>(s.periodStart||'')+'|'+(s.periodEnd||'');
+function refreshStatementPeriodOptions(statements){
+  const selectEl=document.getElementById('statement-filter-period');
+  if(!selectEl) return 'all';
+  const periodsMap=new Map();
+  statements.forEach(s=>{
+    const key=statementPeriodKey(s);
+    if(!periodsMap.has(key)){
+      periodsMap.set(key,{
+        key,periodStart:s.periodStart,periodEnd:s.periodEnd,
+        sortDate:parseFlexibleDate(s.periodEnd)||parseFlexibleDate(s.periodStart)||new Date(0)
+      });
+    }
+  });
+  const periodOptions=Array.from(periodsMap.values()).sort((a,b)=>b.sortDate-a.sortDate);
+  const prevValue=selectEl.value;
+  selectEl.innerHTML='<option value="all">All periods</option>'
+    +periodOptions.map(p=>`<option value="${escapeAttr(p.key)}">${escapeHtml((p.periodStart||'—')+' – '+(p.periodEnd||'—'))}</option>`).join('');
+  selectEl.value=Array.from(selectEl.options).some(o=>o.value===prevValue)?prevValue:'all';
+  return selectEl.value;
+}
+function applyStatementDateFilter(){
+  const periodEl=document.getElementById('statement-filter-period');
+  if(periodEl) periodEl.value='all';
+  pageState.statements=1;
+  renderStatementsList();
+}
+function applyStatementPeriodFilter(){
+  const from=document.getElementById('statement-filter-from');
+  const to=document.getElementById('statement-filter-to');
+  if(from) from.value='';
+  if(to) to.value='';
+  pageState.statements=1;
+  renderStatementsList();
+}
+function clearStatementDateFilter(){
+  const periodEl=document.getElementById('statement-filter-period');
+  if(periodEl) periodEl.value='all';
+  applyStatementPeriodFilter();
+}
+
 async function renderStatementsList(){
-  const all=(await dbGetAll('statements').catch(()=>[])).filter(s=>!s.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const everything=(await dbGetAll('statements').catch(()=>[])).filter(s=>!s.pendingDelete);
+  const selectedPeriod=refreshStatementPeriodOptions(everything);
+  const filter=readDateRangeFilter('statement-filter-from','statement-filter-to');
+  const badInput=badDateRangeInputs(filter);
+  const all=selectedPeriod!=='all'
+    ? everything.filter(s=>statementPeriodKey(s)===selectedPeriod)
+    : (badInput.length?everything:everything.filter(s=>statementInDateRange(s,filter)));
+  const hint=document.getElementById('statement-filter-hint');
+  if(hint){
+    if(selectedPeriod!=='all'){
+      const label=selectedPeriod.split('|');
+      hint.textContent=`Showing the ${(label[0]||'—')+' – '+(label[1]||'—')} period · ${all.length} of ${everything.length}.`;
+    }else if(badInput.length){
+      hint.textContent=dateRangeErrorText(badInput);
+    }else if(filter.from.date||filter.to.date){
+      hint.textContent=dateRangeScopeText(filter,all.length,everything.length);
+    }else{
+      hint.textContent='Pick a single period from the dropdown, or type a date range — whichever you use clears the other.';
+    }
+  }
+  const statementNumValue=s=>{
+    const n=parseInt(String(s.statementNumber||'').replace(/\D/g,''),10);
+    return isNaN(n)?-Infinity:n;
+  };
+  all.sort((a,b)=>{
+    const diff=statementNumValue(b)-statementNumValue(a);
+    return diff!==0?diff:(b.createdAt||'').localeCompare(a.createdAt||'');
+  });
   const tbody=document.getElementById('statement-list');
   if(!tbody) return;
   const countEl=document.getElementById('statement-count');
-  if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
+  const filtering=all.length!==everything.length;
+  if(countEl) countEl.textContent=everything.length?(filtering?`(${all.length} of ${everything.length})`:`(${all.length})`):'';
   if(!all.length){
-    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr>';
+    tbody.innerHTML=everything.length
+      ? '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No statements in that date range — widen it or click Clear</td></tr>'
+      : '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr>';
+    renderPaginationControls('statements',0);
     return;
   }
+  const pageItems=getListPage('statements',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg'};
     return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
   };
-  tbody.innerHTML=all.map(s=>`
+  tbody.innerHTML=pageItems.map(s=>`
     <tr>
       <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
-      <td>${s.ownerName}</td>
       <td>${(s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', ')||'—'}</td>
       <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
       <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -4543,11 +4916,17 @@ async function deleteStatement(id){
   await logActivity('Statement','Deleted',record.statementNumber+' — '+record.ownerName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>{});
-    await dbDelete('statements',id);
+    }).catch(()=>null);
+    if(res && res.ok){
+      await dbDelete('statements',id);
+    }else{
+      record.pendingDelete=true;
+      record.synced=false;
+      await dbPut('statements',record);
+    }
   }else{
     record.pendingDelete=true;
     await dbPut('statements',record);
@@ -4717,6 +5096,354 @@ async function importStatementJSON(data){
   if(jsonInput) jsonInput.value='';
 }
 window.importStatementJSON=importStatementJSON;
+
+/* ============================================================
+   FINANCIALS — the AGENCY's books, computed live from Owner
+   Statements (no separate storage of its own, and no manual Xero
+   paste-in). Reads the nested statement.properties entries per the
+   shape documented in CLAUDE.md.
+
+   The critical distinction this page exists to make: an owner
+   statement is written from the OWNER's point of view, so its
+   `income` is rent we collected for them and its `expenses` are
+   deductions from their money. Neither is ours. What ProManage
+   actually earns is the subset of those expense lines that are
+   fees we charged — see classifyStatementExpenseLine(), which
+   splits every expense line four ways:
+
+     'fee'          → agency revenue, ex GST (management, letting,
+                      inspection, admin, expense-handling fees)
+     'gst'          → GST charged on those fees; collected for IRD,
+                      so reported separately and never as revenue
+     'recovery'     → costs we paid then recharged (TradeMe
+                      advertising, credit checks) — pass-through,
+                      tracked apart from earned fees
+     'disbursement' → third-party tradie/supplier invoices settled
+                      out of owner funds; never touches our P&L
+
+   Anything unrecognised falls through to 'disbursement', which
+   keeps revenue honest (a new fee type shows up as an unexpected
+   pass-through category rather than silently inflating income).
+   ============================================================ */
+
+// A vendor line reads like "Aqua Pro Plumbing Limited — plumbing / gas
+// (301427)": a supplier name, an em/en dash, and usually an invoice
+// reference. Fee lines never carry that shape, so this guard stops a
+// third-party invoice that merely mentions "inspection" from being
+// booked as our revenue.
+function isThirdPartyVendorLine(d){
+  return /[—–]/.test(d) || /\(\s*inv/i.test(d) || /\(\s*\d{3,}\s*\)/.test(d);
+}
+
+// Fee lines carrying GST are written as "GST for management fees" /
+// "GST for expense / other fees" — always GST-prefixed.
+function isGstLine(d){
+  return /^gst\b/.test(d) || d.includes('gst for');
+}
+
+const AGENCY_RECOVERY_KEYWORDS=['advertising','listing fee','trademe','credit check','tribunal filing','bond lodgement fee'];
+
+const AGENCY_FEE_CATEGORY_RULES=[
+  ['Management fees',['management fee','managing agent','agent fee','commission']],
+  ['Letting & leasing fees',['letting fee','leasing fee','lease fee','renewal fee','tenancy agreement fee']],
+  ['Inspection & report fees',['inspection','in - going report','ingoing report','in-going report','outgoing report','report fee']],
+  ['Administration fees',['admin fee','administration fee','statement fee','sundry fee']],
+  ['Expense handling fees',['expense fee','disbursement fee']],
+];
+
+function classifyStatementExpenseLine(description){
+  const d=(description||'').toLowerCase();
+  if(isGstLine(d)) return 'gst';
+  if(AGENCY_RECOVERY_KEYWORDS.some(k=>d.includes(k))) return 'recovery';
+  if(!isThirdPartyVendorLine(d)&&AGENCY_FEE_CATEGORY_RULES.some(([,keywords])=>keywords.some(k=>d.includes(k)))) return 'fee';
+  return 'disbursement';
+}
+
+function categorizeAgencyFeeDescription(description){
+  const d=(description||'').toLowerCase();
+  for(const [category,keywords] of AGENCY_FEE_CATEGORY_RULES){
+    if(keywords.some(k=>d.includes(k))) return category;
+  }
+  return 'Other agency fees';
+}
+
+// Categories for the pass-through table. 'Property management fees'
+// stays in the list deliberately: if a genuine fee line ever fails the
+// classifier above it surfaces here under an obviously-wrong heading
+// instead of hiding in "Other".
+const EXPENSE_CATEGORY_RULES=[
+  ['Advertising, credit checks & recoveries',['advertising','listing fee','trademe','credit check','tribunal filing']],
+  ['Property management fees',['management fee','managing agent','letting fee','agent fee']],
+  ['Garden & grounds maintenance',['garden','lawn','mow','landscap','tree','hedge','grounds']],
+  ['Cleaning',['clean']],
+  ['Repairs & maintenance',['repair','plumb','electrical','handyman','maintenance','fix','replace']],
+  ['Compliance & inspections',['healthy homes','smoke alarm','compliance','inspection','meth test','insulation']],
+  ['Insurance',['insurance','premium']],
+  ['Rates & council',['rates','council']],
+  ['Utilities',['power','electricity','gas bill','water usage','broadband','internet']],
+  ['Legal & professional fees',['legal','solicitor','accounting','accountant']],
+  ['Bank & finance charges',['bank fee','interest','loan','mortgage','finance charge']],
+  ['Pest control',['pest','spray','rodent','possum']],
+];
+function categorizeExpenseDescription(description){
+  const d=(description||'').toLowerCase();
+  for(const [category,keywords] of EXPENSE_CATEGORY_RULES){
+    if(keywords.some(k=>d.includes(k))) return category;
+  }
+  return 'Other';
+}
+function toggleExpenseCategory(headerRow){
+  const itemsRow=headerRow.nextElementSibling;
+  if(!itemsRow) return;
+  const isOpen=itemsRow.style.display!=='none';
+  itemsRow.style.display=isOpen?'none':'table-row';
+  const caret=headerRow.querySelector('.fin-cat-caret');
+  if(caret) caret.textContent=isOpen?'▶':'▼';
+}
+function applyFinancialsDateFilter(){
+  const periodEl=document.getElementById('fin-period-select');
+  if(periodEl) periodEl.value='all';
+  renderFinancials();
+}
+function applyFinancialsPeriodFilter(){
+  const from=document.getElementById('fin-filter-from');
+  const to=document.getElementById('fin-filter-to');
+  if(from) from.value='';
+  if(to) to.value='';
+  renderFinancials();
+}
+function clearFinancialsFilter(){
+  const periodEl=document.getElementById('fin-period-select');
+  if(periodEl) periodEl.value='all';
+  applyFinancialsPeriodFilter();
+}
+
+async function renderFinancials(){
+  const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
+  const statements=(await dbGetAll('statements').catch(()=>[])).filter(s=>!s.pendingDelete);
+  const addressOf=resolvePropertyAddress(properties);
+
+  const emptyEl=document.getElementById('fin-empty');
+  const contentEl=document.getElementById('fin-content');
+  const controlsEl=document.getElementById('fin-controls');
+  const bannerDetail=document.getElementById('fin-banner-detail');
+
+  if(!statements.length){
+    emptyEl.style.display='block';
+    contentEl.style.display='none';
+    controlsEl.style.display='none';
+    if(bannerDetail) bannerDetail.textContent='No statements saved yet.';
+    return;
+  }
+  emptyEl.style.display='none';
+  contentEl.style.display='block';
+  controlsEl.style.display='block';
+
+  const allPropertyKeys=new Set();
+  statements.forEach(s=>(s.properties||[]).forEach(p=>{ if(p.propertyId||(p.propertyAddress||'').trim()) allPropertyKeys.add(p.propertyId||p.propertyAddress); }));
+  if(bannerDetail) bannerDetail.textContent=`${statements.length} statement${statements.length===1?'':'s'} on file across ${allPropertyKeys.size} propert${allPropertyKeys.size===1?'y':'ies'}.`;
+
+  // Period dropdown — one option per distinct periodStart/periodEnd pair
+  // found across all statements, newest first, plus an "all time" rollup.
+  const periodKey=s=>(s.periodStart||'')+'|'+(s.periodEnd||'');
+  const periodsMap=new Map();
+  statements.forEach(s=>{
+    const key=periodKey(s);
+    if(!periodsMap.has(key)){
+      periodsMap.set(key,{
+        key,periodStart:s.periodStart,periodEnd:s.periodEnd,
+        sortDate:parseFlexibleDate(s.periodEnd)||parseFlexibleDate(s.periodStart)||new Date(0)
+      });
+    }
+  });
+  const periodOptions=Array.from(periodsMap.values()).sort((a,b)=>b.sortDate-a.sortDate);
+
+  const selectEl=document.getElementById('fin-period-select');
+  const prevValue=selectEl.value;
+  selectEl.innerHTML='<option value="all">All time (every statement)</option>'
+    +periodOptions.map(p=>`<option value="${escapeAttr(p.key)}">${escapeHtml((p.periodStart||'—')+' – '+(p.periodEnd||'—'))}</option>`).join('');
+  selectEl.value=Array.from(selectEl.options).some(o=>o.value===prevValue)?prevValue:'all';
+
+  // Dropdown or typed range — same either/or rule as the statements page:
+  // whichever control you touch clears the other, so only one is ever live.
+  const selected=selectEl.value;
+  const rangeFilter=readDateRangeFilter('fin-filter-from','fin-filter-to');
+  const badInput=badDateRangeInputs(rangeFilter);
+  const filtered=selected!=='all'
+    ? statements.filter(s=>periodKey(s)===selected)
+    : (badInput.length?statements:statements.filter(s=>statementInDateRange(s,rangeFilter)));
+
+  const hintEl=document.getElementById('fin-filter-hint');
+  if(hintEl){
+    if(selected!=='all'){
+      hintEl.textContent=`Showing one period · ${filtered.length} of ${statements.length} statements.`;
+    }else if(badInput.length){
+      hintEl.textContent=dateRangeErrorText(badInput);
+    }else if(rangeFilter.from.date||rangeFilter.to.date){
+      hintEl.textContent=dateRangeScopeText(rangeFilter,filtered.length,statements.length);
+    }else{
+      hintEl.textContent='Pick a single period from the dropdown, or type a date range — whichever you use clears the other.';
+    }
+  }
+
+  // All the money flows are summed across every statement in scope.
+  // Closing balance is the exception — it's a point-in-time snapshot (see
+  // recalcStatementTotals: opening + net, per property), so summing it
+  // across multiple periods would double-count; instead we take each
+  // property's balance as of its most recent statement in scope.
+  //
+  // Every figure here is derived from the individual line items rather
+  // than the precomputed p.totalIncome/p.totalExpenses, because the fee
+  // vs pass-through split only exists at the line level — deriving the
+  // headline totals the same way is what guarantees the metric tiles,
+  // the funds grid and the two breakdown tables all reconcile.
+  const lineTotal=(items,fallback)=>Array.isArray(items)&&items.length
+    ? items.reduce((sum,it)=>sum+(it.amount||0),0)
+    : (fallback||0);
+
+  let rentCollected=0,feeRevenue=0,feeGst=0,recoveries=0,disbursements=0;
+  const propertyAgg=new Map();
+  const propertyClosing=new Map();
+  const feeCategoryAgg=new Map();
+  const passThroughCategoryAgg=new Map();
+
+  const addToCategory=(agg,category,label,amount)=>{
+    let catEntry=agg.get(category);
+    if(!catEntry){ catEntry={label:category,amount:0,items:new Map()}; agg.set(category,catEntry); }
+    catEntry.amount+=amount;
+    const itemKey=label.toLowerCase();
+    const existingItem=catEntry.items.get(itemKey);
+    if(existingItem) existingItem.amount+=amount;
+    else catEntry.items.set(itemKey,{label,amount});
+  };
+
+  filtered.forEach(s=>{
+    const sDate=parseFlexibleDate(s.periodEnd)||parseFlexibleDate(s.periodStart)||new Date(0);
+    (s.properties||[]).forEach(p=>{
+      const pIncome=lineTotal(p.income,p.totalIncome);
+      const pExpenses=lineTotal(p.expenses,p.totalExpenses);
+      rentCollected+=pIncome;
+
+      // Split this property block's expense lines into what we earned and
+      // what merely passed through us. Tallied for every block regardless
+      // of whether it's linked to a known property, so the totals always
+      // cover the full set of lines in scope.
+      let pFees=0;
+      (p.expenses||[]).forEach(it=>{
+        const label=(it.description||'').trim()||'Uncategorised';
+        const amount=it.amount||0;
+        switch(classifyStatementExpenseLine(label)){
+          case 'fee':
+            feeRevenue+=amount; pFees+=amount;
+            addToCategory(feeCategoryAgg,categorizeAgencyFeeDescription(label),label,amount);
+            break;
+          case 'gst':
+            feeGst+=amount;
+            break;
+          case 'recovery':
+            recoveries+=amount;
+            addToCategory(passThroughCategoryAgg,categorizeExpenseDescription(label),label,amount);
+            break;
+          default:
+            disbursements+=amount;
+            addToCategory(passThroughCategoryAgg,categorizeExpenseDescription(label),label,amount);
+        }
+      });
+
+      const identified=p.propertyId||(p.propertyAddress||'').trim();
+      if(identified){
+        const key=p.propertyId||('addr:'+p.propertyAddress);
+        if(!propertyAgg.has(key)) propertyAgg.set(key,{address:addressOf(p)||'Unspecified property',rent:0,fees:0});
+        const entry=propertyAgg.get(key);
+        entry.rent+=pIncome;
+        entry.fees+=pFees;
+        const pClosing=p.closingBalance!=null?p.closingBalance:(p.openingBalance||0)+(pIncome-pExpenses);
+        const prevClosing=propertyClosing.get(key);
+        if(!prevClosing||sDate>prevClosing.sortDate) propertyClosing.set(key,{value:pClosing,sortDate:sDate});
+      }
+    });
+  });
+
+  const closingBalance=Array.from(propertyClosing.values()).reduce((sum,v)=>sum+v.value,0);
+  const passThrough=recoveries+disbursements;
+  // What the owners actually receive: everything we collected for them,
+  // less every deduction — our fees and their GST included.
+  const ownerPayout=rentCollected-(feeRevenue+feeGst+passThrough);
+  // Fees as a share of the rent we put through the trust account. The
+  // headline "are we charging what we think we're charging" number.
+  const effectiveFeeRate=rentCollected>0?(feeRevenue/rentCollected)*100:0;
+  const fmt0=n=>{const sign=n<0?'-':'';return sign+'$'+Math.round(Math.abs(n)).toLocaleString('en-NZ');};
+  const fmt2=n=>{const sign=n<0?'-':'';return sign+'$'+Math.abs(n).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});};
+  // Span actually covered by the statements in scope — derived from `filtered`
+  // so it stays honest for a typed range, not just for a whole-period pick.
+  const rangeLabel=(()=>{
+    if(!filtered.length) return '—';
+    const dated=filtered.map(s=>({s,sortDate:parseFlexibleDate(s.periodEnd)||parseFlexibleDate(s.periodStart)||new Date(0)}))
+      .sort((a,b)=>a.sortDate-b.sortDate);
+    return `${dated[0].s.periodStart||'—'} – ${dated[dated.length-1].s.periodEnd||'—'}`;
+  })();
+
+  const statementScope=`${filtered.length} statement${filtered.length===1?'':'s'} in scope`;
+  document.getElementById('fin-revenue').textContent=fmt0(feeRevenue);
+  document.getElementById('fin-revenue-sub').textContent=rangeLabel;
+  document.getElementById('fin-gst').textContent=fmt0(feeGst);
+  document.getElementById('fin-gst-sub').textContent='Owed to IRD — not revenue';
+  document.getElementById('fin-rent').textContent=fmt0(rentCollected);
+  document.getElementById('fin-rent-sub').textContent='Held for owners · '+statementScope;
+  document.getElementById('fin-fee-rate').textContent=effectiveFeeRate.toFixed(1)+'%';
+  document.getElementById('fin-fee-rate-sub').textContent=rentCollected>0?'Of rent collected':'No rent recorded in scope';
+
+  const propertyEntries=Array.from(propertyAgg.values()).sort((a,b)=>b.fees-a.fees);
+  document.getElementById('fin-client-funds').innerHTML=`
+    <div class="sum-box"><div class="sum-label">Rent &amp; receipts collected</div><div class="sum-val">${fmt0(rentCollected)}</div></div>
+    <div class="sum-box"><div class="sum-label">Less agency fees + GST</div><div class="sum-val red">${fmt0(feeRevenue+feeGst)}</div></div>
+    <div class="sum-box"><div class="sum-label">Less recoveries recharged</div><div class="sum-val red">${fmt0(recoveries)}</div></div>
+    <div class="sum-box"><div class="sum-label">Less tradie &amp; supplier invoices</div><div class="sum-val red">${fmt0(disbursements)}</div></div>
+    <div class="sum-box"><div class="sum-label">Paid out to owners</div><div class="sum-val" style="color:${ownerPayout>=0?'var(--green-text)':'var(--red-text)'}">${fmt0(ownerPayout)}</div></div>
+    <div class="sum-box"><div class="sum-label">Closing balance held</div><div class="sum-val">${fmt0(closingBalance)}</div><div style="font-size:10px;color:var(--text3);margin-top:2px">${propertyEntries.length} propert${propertyEntries.length===1?'y':'ies'}</div></div>`;
+
+  document.getElementById('fin-property-cards').innerHTML=propertyEntries.length?propertyEntries.map(p=>{
+    const share=feeRevenue>0?((p.fees/feeRevenue)*100).toFixed(1):'0.0';
+    const rate=p.rent>0?((p.fees/p.rent)*100).toFixed(1)+'%':'—';
+    return `<div class="card">
+      <div class="card-head">${escapeHtml(p.address)}</div>
+      <div class="card-body">
+        <div class="sum-grid" style="margin-top:0">
+          <div class="sum-box"><div class="sum-label">Revenue (ex GST)</div><div class="sum-val green">${fmt0(p.fees)}</div></div>
+          <div class="sum-box"><div class="sum-label">Rent collected</div><div class="sum-val">${fmt0(p.rent)}</div></div>
+          <div class="sum-box"><div class="sum-label">Effective fee rate</div><div class="sum-val">${rate}</div></div>
+          <div class="sum-box"><div class="sum-label">Share of revenue</div><div class="sum-val">${share}%</div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join(''):'<div class="card"><div class="card-body" style="text-align:center;color:var(--text3);padding:1.5rem">No property-level detail on the statements in this period</div></div>';
+
+  // Shared renderer for the two breakdown tables — same expandable
+  // category rows, different money and a different denominator.
+  const categoryTableHtml=(agg,total,totalLabel,amountClass,emptyText)=>{
+    const entries=Array.from(agg.values()).sort((a,b)=>b.amount-a.amount);
+    if(!entries.length) return `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:14px">${emptyText}</td></tr>`;
+    return entries.map(c=>{
+      const items=Array.from(c.items.values()).sort((a,b)=>b.amount-a.amount);
+      const pct=total>0?((c.amount/total)*100).toFixed(1):'0.0';
+      const itemRows=items.map(it=>`<tr><td style="padding-left:2rem;color:var(--text2)">${escapeHtml(it.label)}</td><td class="tr ${amountClass}">${fmt2(it.amount)}</td><td class="tr"></td></tr>`).join('');
+      return `<tr class="fin-cat-row" onclick="toggleExpenseCategory(this)" style="cursor:pointer">
+        <td><span class="fin-cat-caret" style="display:inline-block;width:1em;color:var(--text3)">▶</span>${escapeHtml(c.label)} <span style="color:var(--text3);font-weight:400">(${items.length})</span></td>
+        <td class="tr ${amountClass}">${fmt2(c.amount)}</td>
+        <td class="tr">${pct}%</td>
+      </tr>
+      <tr class="fin-cat-items" style="display:none"><td colspan="3" style="padding:0"><table style="width:100%"><tbody>${itemRows}</tbody></table></td></tr>`;
+    }).join('')
+      +`<tr style="font-weight:600"><td>${totalLabel}</td><td class="tr ${amountClass}">${fmt2(total)}</td><td class="tr">100%</td></tr>`;
+  };
+
+  document.getElementById('fin-revenue-breakdown').innerHTML=categoryTableHtml(
+    feeCategoryAgg,feeRevenue,'Total agency revenue','green',
+    'No fee lines on the statements in this period — revenue is only counted from fees you charged.');
+  document.getElementById('fin-disbursement-breakdown').innerHTML=categoryTableHtml(
+    passThroughCategoryAgg,passThrough,'Total paid on owners’ behalf','red',
+    'No pass-through costs recorded for this period');
+}
 
 /* ============================================================
    DASHBOARD — computed live from real Properties/Tenants/

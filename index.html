@@ -2013,6 +2013,9 @@ async function checkSession(){
   const {data:{session}} = await sb.auth.getSession();
   if(session){
     showApp();
+    // Before anything reads or pushes IndexedDB: make sure what's on this
+    // device belongs to the account that just opened it.
+    await enforceLocalDataOwner(session.user && session.user.id);
     fullSyncNow(); // background — reconciles with Supabase now we know we're authenticated
   }else{
     document.getElementById('login-gate').style.display='flex';
@@ -2030,13 +2033,16 @@ async function doLogin(){
   const password=document.getElementById('login-password').value;
   const errEl=document.getElementById('login-error');
   errEl.style.display='none';
-  const {error}=await sb.auth.signInWithPassword({email,password});
+  const {data,error}=await sb.auth.signInWithPassword({email,password});
   if(error){
     errEl.textContent=error.message;
     errEl.style.display='block';
     return;
   }
   showApp();
+  // Has to happen before the renders below — they read straight out of
+  // IndexedDB, so a stale account's records would be on screen otherwise.
+  await enforceLocalDataOwner(data && data.user && data.user.id);
   await renderInspectionList();
   updateSyncBanner();
   await renderPropertiesList();
@@ -2054,6 +2060,18 @@ async function doLogin(){
 }
 
 async function doLogout(){
+  /* Signing out leaves this account's data on the device on purpose — it's an
+     offline-first app, and anything not yet pushed has to survive until the
+     same person signs back in. What does clear it is a DIFFERENT account
+     signing in here (see enforceLocalDataOwner), so unsynced work is worth a
+     warning while it can still be acted on. */
+  const unsynced=await countUnsyncedRecords().catch(()=>0);
+  if(unsynced>0){
+    const ok=confirm(unsynced+' change'+(unsynced===1?'':'s')+' on this device '+(unsynced===1?'has':'have')+' not reached the server yet.\n\n'+
+      (unsynced===1?'It stays':'They stay')+' here and will sync when you sign back in \u2014 but signing in as a different account on this device clears '+(unsynced===1?'it':'them')+'.\n\n'+
+      'Sign out anyway?');
+    if(!ok) return;
+  }
   await sb.auth.signOut();
   document.getElementById('login-gate').style.display='flex';
   document.getElementById('main-app').style.display='none';
@@ -2127,6 +2145,75 @@ function dbDelete(storeName,id){
     tx.oncomplete=()=>resolve();
     tx.onerror=(e)=>reject(e.target.error);
   }));
+}
+
+function dbClear(storeName){
+  return openDB().then(db=>new Promise((resolve,reject)=>{
+    const tx=db.transaction(storeName,'readwrite');
+    tx.objectStore(storeName).clear();
+    tx.oncomplete=()=>resolve();
+    tx.onerror=(e)=>reject(e.target.error);
+  }));
+}
+
+/* ============================================================
+   ACCOUNT ISOLATION — IndexedDB belongs to the device, not to
+   the account. Now that every row on the server carries a
+   user_id and RLS only ever hands back your own (see
+   supabase/schema.sql), the local copy is the one place two
+   accounts still overlap: sign out, sign in as someone else on
+   the same phone, and the previous manager's properties and
+   tenants are still sitting in the stores, rendered before any
+   sync gets a chance to run.
+
+   Worse than showing them: syncPendingProperties() and friends
+   push everything marked !synced, so the second account would
+   upload the first account's unsynced records into its own
+   rows — and with user_id defaulting to auth.uid() server-side,
+   they'd be stamped as genuinely theirs.
+
+   So a change of account wipes the local stores. Nothing is
+   lost that reached the server; what is lost is anything the
+   previous account had queued and never pushed, which is why
+   doLogout() warns about exactly that before signing out.
+   ============================================================ */
+const LOCAL_STORES=['inspections','properties','tenants','maintenance','activityLog','invoices','statements','emailTriage'];
+const LAST_USER_KEY='promanage_last_user_id';
+
+function readStoredLastUser(){
+  try{ return localStorage.getItem(LAST_USER_KEY); }
+  catch(e){ return null; } // storage blocked — treated as "no idea who was last here"
+}
+
+async function clearAllLocalData(){
+  for(const store of LOCAL_STORES){
+    await dbClear(store).catch(err=>console.log('Could not clear '+store+':',err));
+  }
+  clearSyncCursors();
+}
+
+// Called on every entry into the app with a session. Returns true if it wiped.
+async function enforceLocalDataOwner(userId){
+  if(!userId) return false;
+  const previous=readStoredLastUser();
+  let wiped=false;
+  if(previous && previous!==userId){
+    console.log('Different account on this device — clearing local data before sync');
+    await clearAllLocalData();
+    wiped=true;
+  }
+  try{ localStorage.setItem(LAST_USER_KEY,userId); }catch(e){/* storage blocked — no memory of this, so no wipe next time either */}
+  return wiped;
+}
+
+async function countUnsyncedRecords(){
+  let total=0;
+  for(const store of LOCAL_STORES){
+    if(store==='emailTriage') continue; // local-only cache, never pushed
+    const all=await dbGetAll(store).catch(()=>[]);
+    total+=all.filter(r=>!r.synced).length;
+  }
+  return total;
 }
 
 /* ============================================================
@@ -2205,17 +2292,81 @@ function parseSyncTime(value){
 const SYNC_PAGE_SIZE=500;      // rows per request; keep <= PostgREST max-rows
 const SYNC_MAX_ROWS=50000;     // ceiling per table, so one huge table can't hang the sync
 
+/* ============================================================
+   INCREMENTAL PULL — the sync used to re-download every row of
+   every table on every run. A device that had changed nothing,
+   syncing for the tenth time that morning, still pulled the
+   whole database down to discover that. Now it asks for
+   `updated_at=gt.<cursor>` and pulls only what moved, which is
+   what the (user_id, updated_at) index in supabase/schema.sql
+   is there to serve.
+
+   Why this can't be the ONLY mode, and why the code keeps both:
+   the reconciliation pass at the end of pullAndMerge() reads
+   "synced locally but absent from the response" as "deleted on
+   the server". An incremental response omits every unchanged
+   row by design, so running that pass against one would delete
+   almost the entire local database. So incremental pulls skip
+   it — and a remote delete would then never reach this device.
+   A periodic full pull is what closes that gap, and
+   FULL_PULL_INTERVAL_MS is how long a deletion made elsewhere
+   can stay invisible here.
+
+   The cursor is a server timestamp, never Date.now(). Every
+   updated_at is stamped by Postgres (see the set_updated_at
+   trigger), so the newest value we actually received is the one
+   safe thing to ask from next time — a device with a fast clock
+   that stored its own idea of "now" would skip every row
+   written in between. OVERLAP_MS re-reads a few seconds either
+   side of the boundary to cover a row committed mid-walk;
+   re-merging a row we already have is free, missing one is not.
+   ============================================================ */
+const FULL_PULL_INTERVAL_MS=12*60*60*1000; // how stale a remote delete may go unnoticed
+const SYNC_CURSOR_OVERLAP_MS=5000;         // re-read this much either side of the cursor
+const SYNC_CURSOR_KEY='promanage_sync_cursors';
+
+function readSyncCursors(){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(SYNC_CURSOR_KEY)||'{}');
+    return (parsed && typeof parsed==='object' && !Array.isArray(parsed))?parsed:{};
+  }catch(e){ return {}; } // unreadable or blocked — behaves as "no cursor", i.e. a full pull
+}
+function getSyncCursor(remoteTable){
+  const entry=readSyncCursors()[remoteTable];
+  return (entry && typeof entry==='object')?entry:{};
+}
+function setSyncCursor(remoteTable,patch){
+  try{
+    const all=readSyncCursors();
+    all[remoteTable]={...(all[remoteTable]||{}),...patch};
+    localStorage.setItem(SYNC_CURSOR_KEY,JSON.stringify(all));
+  }catch(e){/* storage blocked — every pull stays full, which is correct, just slower */}
+}
+function clearSyncCursors(){
+  try{ localStorage.removeItem(SYNC_CURSOR_KEY); }catch(e){}
+}
+
 /* Pages through a remote table using keyset pagination on the text
    primary key (id), which — unlike limit/offset — can't skip or
    duplicate rows when something is inserted mid-walk.
-   Returns {rows, complete}: `complete` true ONLY when the walk
-   reached a genuine last page. Callers must treat complete:false as
-   "this list may be partial" and skip any delete reconciliation. */
-async function fetchRemoteTablePaged(remoteTable,token){
+   Returns {rows, complete, newestUpdatedAt}: `complete` true ONLY
+   when the walk reached a genuine last page. Callers must treat
+   complete:false as "this list may be partial" and skip any delete
+   reconciliation — and must not advance their cursor past rows they
+   never received.
+
+   opts.since        — ISO timestamp; fetch only rows changed after it
+   opts.minCreatedAt — ISO timestamp; fetch only rows created after it
+                       (the activity log's retention window) */
+async function fetchRemoteTablePaged(remoteTable,token,opts){
+  opts=opts||{};
   const rows=[];
+  let newestUpdatedAt=null;
   let after=null;
   while(true){
     const params=[`select=*`,`order=id.asc`,`limit=${SYNC_PAGE_SIZE}`];
+    if(opts.since) params.push(`updated_at=gt.${encodeURIComponent(opts.since)}`);
+    if(opts.minCreatedAt) params.push(`created_at=gte.${encodeURIComponent(opts.minCreatedAt)}`);
     if(after!==null){
       // Double-quoted so a comma or paren inside an id can't be read as
       // PostgREST filter syntax; encoded so it survives the query string.
@@ -2227,44 +2378,69 @@ async function fetchRemoteTablePaged(remoteTable,token){
     });
     if(!res.ok){
       console.log(`Pull sync: ${remoteTable} page failed (${res.status}) — merging ${rows.length} row(s), skipping delete pass`);
-      return {rows,complete:false};
+      return {rows,complete:false,newestUpdatedAt};
     }
     let page;
     try{ page=await res.json(); }
     catch(err){
       console.log(`Pull sync: ${remoteTable} page was not valid JSON — skipping delete pass`,err);
-      return {rows,complete:false};
+      return {rows,complete:false,newestUpdatedAt};
     }
     if(!Array.isArray(page)){
       console.log(`Pull sync: ${remoteTable} page was not an array — skipping delete pass`,page);
-      return {rows,complete:false};
+      return {rows,complete:false,newestUpdatedAt};
     }
     rows.push(...page);
+    // Highest server-stamped updated_at seen so far — the only value that can
+    // safely become the next incremental cursor. Rows with a missing or
+    // unparseable timestamp simply don't contribute to it.
+    for(const row of page){
+      const stamped=parseSyncTime(row.updated_at)??parseSyncTime(row.created_at);
+      if(stamped!==null && (newestUpdatedAt===null || stamped>newestUpdatedAt)) newestUpdatedAt=stamped;
+    }
     // Only an EMPTY page proves we reached the end. A short page must
     // not be treated as the last one: PostgREST's own max-rows setting
     // can be lower than SYNC_PAGE_SIZE, in which case every page comes
     // back short and stopping early would hand the delete pass exactly
     // the truncated list this function exists to prevent.
-    if(!page.length) return {rows,complete:true};
+    if(!page.length) return {rows,complete:true,newestUpdatedAt};
     const lastId=page[page.length-1].id;
     if(lastId===undefined || lastId===null || lastId===after){
       // No usable cursor to advance on — bail out rather than loop forever.
       console.log(`Pull sync: ${remoteTable} returned no usable id cursor — skipping delete pass`);
-      return {rows,complete:false};
+      return {rows,complete:false,newestUpdatedAt};
     }
     after=lastId;
     if(rows.length>=SYNC_MAX_ROWS){
       console.log(`Pull sync: ${remoteTable} exceeded ${SYNC_MAX_ROWS} rows — merging what we have, skipping delete pass`);
-      return {rows,complete:false};
+      return {rows,complete:false,newestUpdatedAt};
     }
   }
 }
 
-async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
+async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
+  options=options||{};
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
   try{
     const token=await authHeader();
-    const {rows:remoteRows,complete}=await fetchRemoteTablePaged(remoteTable,token);
+
+    /* Full or incremental? Full when we have no cursor to start from, when
+       the last full pull has aged past FULL_PULL_INTERVAL_MS (that's the
+       delete-reconciliation gap closing), or when the caller insists.
+       Both timestamps compared here are this device's own clock reading its
+       own record of when it last did the work — no server value is involved,
+       so drift can't corrupt anything. */
+    const cursor=getSyncCursor(remoteTable);
+    const lastFullPullAt=parseSyncTime(cursor.lastFullPullAt);
+    const fullPull = options.forceFull===true
+      || !cursor.lastPullAt
+      || lastFullPullAt===null
+      || (Date.now()-lastFullPullAt)>FULL_PULL_INTERVAL_MS;
+
+    const {rows:remoteRows,complete,newestUpdatedAt}=await fetchRemoteTablePaged(remoteTable,token,{
+      since: fullPull?null:cursor.lastPullAt,
+      minCreatedAt: options.minCreatedAt
+    });
     if(!remoteRows.length && !complete) return; // nothing usable came back at all
     const localAll=await dbGetAll(storeName);
     const localById=new Map(localAll.map(r=>[r.id,r]));
@@ -2291,8 +2467,25 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
       }
     }
 
+    /* Advance the cursor only on a walk that provably reached the end.
+       A partial response means rows exist that we never saw, and moving the
+       cursor past them would skip them permanently — the one way an
+       incremental sync loses data for good. Backwards is refused for the
+       same reason. */
+    if(complete && newestUpdatedAt!==null){
+      const previous=parseSyncTime(cursor.lastPullAt);
+      const next=newestUpdatedAt-SYNC_CURSOR_OVERLAP_MS;
+      const patch={};
+      if(previous===null || next>previous) patch.lastPullAt=new Date(next).toISOString();
+      if(fullPull) patch.lastFullPullAt=new Date().toISOString();
+      if(Object.keys(patch).length) setSyncCursor(remoteTable,patch);
+    }
+
     // Reconciliation (remote deletes → local deletes) is only sound
-    // against a provably complete remote list — see the note above.
+    // against a provably complete remote list — see the note above. An
+    // incremental response is a list of what changed, not a list of what
+    // exists, so absence from it means nothing at all.
+    if(!fullPull) return;
     if(!complete){
       console.log(`Pull sync: ${storeName} merged from a partial remote list — local records left untouched`);
       return;
@@ -2367,14 +2560,21 @@ function mapRemoteStatement(row){
   };
 }
 
-async function pullAllAndMerge(){
-  await pullAndMerge('properties','properties',mapRemoteProperty);
-  await pullAndMerge('tenants','tenants',mapRemoteTenant);
-  await pullAndMerge('maintenance','maintenance',mapRemoteMaintenance);
-  await pullAndMerge('inspections','inspections',mapRemoteInspection);
-  await pullAndMerge('invoices','invoices',mapRemoteInvoice);
-  await pullAndMerge('statements','statements',mapRemoteStatement);
-  await pullAndMerge('activityLog','activity_log',mapRemoteActivityLog);
+async function pullAllAndMerge(options){
+  options=options||{};
+  await pullAndMerge('properties','properties',mapRemoteProperty,options);
+  await pullAndMerge('tenants','tenants',mapRemoteTenant,options);
+  await pullAndMerge('maintenance','maintenance',mapRemoteMaintenance,options);
+  await pullAndMerge('inspections','inspections',mapRemoteInspection,options);
+  await pullAndMerge('invoices','invoices',mapRemoteInvoice,options);
+  await pullAndMerge('statements','statements',mapRemoteStatement,options);
+  // The activity log is the one table pulled through a retention window. The
+  // filter has to match pruneLocalActivityLog() exactly: if the pull reached
+  // further back than the local prune does, a full pull would re-download the
+  // rows the prune had just removed and the two would undo each other on
+  // every sync, forever.
+  await pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
+    {...options,minCreatedAt:activityLogCutoffISO()});
   await renderPropertiesList();  updatePropSyncBanner();
   await renderTenantsList();     updateTenantSyncBanner();
   await renderMaintenanceList(); updateMaintSyncBanner();
@@ -2406,6 +2606,9 @@ async function fullSyncNow(){
   await syncPendingInvoices();
   await syncPendingStatements();
   await syncPendingActivityLog();
+  // After the push (so nothing pending is dropped before it lands) and before
+  // the pull (so the pull can't re-fetch what was just dropped).
+  await pruneActivityLogIfDue();
   await pullAllAndMerge();
 }
 
@@ -2413,7 +2616,103 @@ async function fullSyncNow(){
    ACTIVITY LOG — every create/update/delete across all modules
    is written here with a timestamp, then synced to Supabase the
    same offline-first way as every other entity (see fullSyncNow).
+
+   RETENTION. This is the only table in the app that grows on its
+   own: a row per write, in both directions, re-read and
+   re-rendered on every write after that. Six properties will
+   never notice. What it eventually reaches is the row ceiling
+   that fetchRemoteTablePaged() was built to survive — at which
+   point the pull starts coming back truncated and the delete
+   reconciliation switches itself off to avoid wiping good
+   records. So the log is capped by age at both ends:
+
+     - pruneLocalActivityLog() drops old rows from IndexedDB
+     - prune_activity_log() (supabase/schema.sql) drops them
+       server-side, scoped to the caller by RLS
+     - pullAllAndMerge() asks for the same window, so old rows
+       are never pulled back in
+
+   All three read ACTIVITY_LOG_RETENTION_DAYS. The SQL function
+   takes it as an argument rather than using its own default,
+   precisely so this constant stays the only place it's set.
    ============================================================ */
+const ACTIVITY_LOG_RETENTION_DAYS=365;
+const ACTIVITY_LOG_PRUNE_INTERVAL_MS=24*60*60*1000;
+const ACTIVITY_LOG_PRUNED_KEY='promanage_activity_pruned_at';
+
+function activityLogCutoffISO(){
+  return new Date(Date.now()-ACTIVITY_LOG_RETENTION_DAYS*24*60*60*1000).toISOString();
+}
+
+/* Drops synced local rows that have fallen out of the window.
+   `synced` is the whole safety condition: an unsynced row has never
+   reached the server, so pruning it would destroy the only copy —
+   which is exactly what would happen to a device that spent longer
+   than the retention window offline. */
+async function pruneLocalActivityLog(){
+  const cutoff=Date.parse(activityLogCutoffISO());
+  const all=await dbGetAll('activityLog').catch(()=>[]);
+  let pruned=0;
+  for(const record of all){
+    if(!record.synced || record.pendingDelete) continue;
+    const written=parseSyncTime(record.createdAt)??parseSyncTime(record.timestamp);
+    if(written===null) continue; // can't place it in time — leave it alone
+    if(written<cutoff){
+      await dbDelete('activityLog',record.id);
+      pruned++;
+    }
+  }
+  return pruned;
+}
+
+/* Asks the server to drop its own rows outside the window. Throttled to
+   once a day per device: the table only grows when this client writes to
+   it, so there is nothing to prune on a day nobody opened the app. RLS
+   keeps the delete inside the caller's own rows. */
+async function pruneRemoteActivityLog(){
+  if(!CONFIG.SUPABASE_URL || !navigator.onLine) return null;
+  const token=await authHeader();
+  try{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/prune_activity_log`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`
+      },
+      body:JSON.stringify({retain_days:ACTIVITY_LOG_RETENTION_DAYS})
+    });
+    if(!res.ok){
+      console.log(`Activity log prune skipped (${res.status}) — will retry on the next sync`);
+      return null;
+    }
+    return await res.json().catch(()=>null); // row count, or null if the body surprises us
+  }catch(err){
+    console.log('Activity log prune failed, will retry later:',err);
+    return null;
+  }
+}
+
+/* Runs both halves. The local pass runs every time — it's cheap, works
+   offline, and is what keeps the rendered list bounded. The remote call is
+   the throttled one. Remote first so the pull that follows can't re-fetch
+   what's about to be dropped. */
+async function pruneActivityLogIfDue(){
+  let lastPrunedAt=null;
+  try{ lastPrunedAt=parseSyncTime(localStorage.getItem(ACTIVITY_LOG_PRUNED_KEY)); }catch(e){}
+  const due=lastPrunedAt===null || (Date.now()-lastPrunedAt)>ACTIVITY_LOG_PRUNE_INTERVAL_MS;
+  if(due && navigator.onLine){
+    const removed=await pruneRemoteActivityLog();
+    if(removed!==null){
+      if(removed>0) console.log(`Activity log: pruned ${removed} row(s) older than ${ACTIVITY_LOG_RETENTION_DAYS} days server-side`);
+      try{ localStorage.setItem(ACTIVITY_LOG_PRUNED_KEY,new Date().toISOString()); }catch(e){}
+    }
+  }
+  const prunedLocally=await pruneLocalActivityLog();
+  if(prunedLocally>0) console.log(`Activity log: pruned ${prunedLocally} row(s) from this device`);
+  return prunedLocally;
+}
+
 function formatLogTime(iso){
   const d=new Date(iso);
   if(isNaN(d)) return iso;
@@ -3506,12 +3805,64 @@ async function renderPropertiesList(){
     </tr>`).join('');
 }
 
+/* ============================================================
+   PROPERTY DELETE — blocked while anything still points at it.
+
+   The database is the one enforcing this: tenants, maintenance,
+   inspections and invoices carry a foreign key to properties
+   with ON DELETE NO ACTION, and a trigger covers the property
+   blocks inside statements.properties, which is jsonb and so
+   can't carry a key. See section 5 of supabase/schema.sql for
+   why blocking beat cascading and SET NULL.
+
+   This half exists so the user finds out before the request is
+   sent, and in words rather than as a 409. The server stays the
+   authority — the check below reads the local copy, which can
+   be behind — so the 409 path is still handled properly further
+   down instead of being treated as a network failure.
+   ============================================================ */
+const PROPERTY_LINK_SOURCES=[
+  {store:'tenants',     one:'tenant',          many:'tenants',          refers:(r,id)=>r.propertyId===id},
+  {store:'maintenance', one:'maintenance job', many:'maintenance jobs', refers:(r,id)=>r.propertyId===id},
+  {store:'inspections', one:'inspection',      many:'inspections',      refers:(r,id)=>r.propertyId===id},
+  {store:'invoices',    one:'invoice',         many:'invoices',         refers:(r,id)=>r.propertyId===id},
+  {store:'statements',  one:'owner statement', many:'owner statements',
+   refers:(r,id)=>Array.isArray(r.properties)&&r.properties.some(b=>b&&b.propertyId===id)}
+];
+
+async function findPropertyLinks(propertyId){
+  const links=[];
+  for(const source of PROPERTY_LINK_SOURCES){
+    const all=await dbGetAll(source.store).catch(()=>[]);
+    const count=all.filter(r=>!r.pendingDelete && source.refers(r,propertyId)).length;
+    if(count) links.push(count+' '+(count===1?source.one:source.many));
+  }
+  return links;
+}
+
+function formatPropertyLinks(links){
+  if(links.length<2) return links.join('');
+  return links.slice(0,-1).join(', ')+' and '+links[links.length-1];
+}
+
+const PROPERTY_DELETE_BLOCKED_NOTE=
+  'Delete or re-assign those first.\n\n'+
+  'Removing the property while they point at it would strand them on a saved copy of '+
+  'the address, and Financials — which groups by property — would go on reporting a '+
+  'property that no longer exists.';
+
 async function deleteProperty(id){
-  if(!confirm('Delete this property? This cannot be undone.'))return;
   const all=await dbGetAll('properties');
   const record=all.find(p=>p.id===id);
   if(!record)return;
-  await logActivity('Property','Deleted',record.address);
+
+  const links=await findPropertyLinks(id);
+  if(links.length){
+    alert('Can\u2019t delete '+record.address+' yet \u2014 '+formatPropertyLinks(links)+' still link to it.\n\n'+PROPERTY_DELETE_BLOCKED_NOTE);
+    return;
+  }
+
+  if(!confirm('Delete this property? This cannot be undone.'))return;
   if(record.synced && navigator.onLine){
     // Already in Supabase — delete remotely now
     const token=await authHeader();
@@ -3521,6 +3872,16 @@ async function deleteProperty(id){
     }).catch(()=>null);
     if(res && res.ok){
       await dbDelete('properties',id);
+    }else if(res && res.status===409){
+      /* Refused, not failed. Queueing a retry would be the wrong move twice
+         over: it would bounce identically every sync from now on, and
+         pendingDelete hides the row from the list — so the property would
+         vanish from the app while still sitting in the database. Leave the
+         record exactly as it was and say what happened. */
+      alert('Can\u2019t delete '+record.address+' \u2014 records on the server still link to it.\n\n'+
+            'This device may not have them all yet. Sync, check the property\u2019s tenants, '+
+            'maintenance jobs, inspections, invoices and owner statements, then try again.');
+      return;
     }else{
       record.pendingDelete=true;
       record.synced=false;
@@ -3535,6 +3896,7 @@ async function deleteProperty(id){
     // Never synced yet — safe to just remove locally
     await dbDelete('properties',id);
   }
+  await logActivity('Property','Deleted',record.address);
   await renderPropertiesList();
   updatePropSyncBanner();
 }
@@ -3548,7 +3910,12 @@ async function pushPropertyToBackend(record){
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      if(res.ok) return 'deleted';
+      // 409 = something still references it. Unlike a network failure this
+      // will not come right on its own, so it must not stay queued: the row
+      // is hidden by pendingDelete, and retrying forever would leave a
+      // property invisible in the app and present in the database.
+      return res.status===409 ? 'blocked' : false;
     }
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties`,{
       method:'POST',
@@ -3577,10 +3944,17 @@ async function syncPendingProperties(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('properties');
   const pending=all.filter(p=>!p.synced);
+  const blocked=[];
   for(const record of pending){
     const result=await pushPropertyToBackend(record);
     if(result==='deleted'){
       await dbDelete('properties',record.id);
+    }else if(result==='blocked'){
+      // Put it back the way it was so it reappears in the list, still synced.
+      record.pendingDelete=false;
+      record.synced=true;
+      await dbPut('properties',record);
+      blocked.push(record.address);
     }else if(result){
       record.synced=true;
       await dbPut('properties',record);
@@ -3588,6 +3962,13 @@ async function syncPendingProperties(){
   }
   await renderPropertiesList();
   updatePropSyncBanner();
+  // One notice for the batch — fullSyncNow() calls seven of these in a row and
+  // alerting per record was how you ended up with a stack of dialogs.
+  if(blocked.length){
+    alert('Kept '+(blocked.length===1?'a property that could not be deleted':blocked.length+' properties that could not be deleted')+':\n\n'+
+          blocked.join('\n')+'\n\n'+
+          'Records on the server still link to '+(blocked.length===1?'it':'them')+'. '+PROPERTY_DELETE_BLOCKED_NOTE);
+  }
 }
 
 async function updatePropSyncBanner(){

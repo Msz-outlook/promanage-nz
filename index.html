@@ -1939,6 +1939,12 @@ function toggleSidebar(force){
         own changes outward.
      3. CONFIG below is already pointed at a live Supabase project —
         pushXToBackend()/pullAndMerge() talk to it directly.
+     4. Photos live in a PRIVATE Storage bucket. Records only ever
+        hold "storage:<path>" references, and a short-lived signed
+        URL is minted at display time — see resolvePhotoRefs().
+        Don't make the bucket public again: the paths are derived
+        from the property address and inspection id, so they're
+        guessable, and a public bucket also allows listing.
    ============================================================ */
 
 const CONFIG = {
@@ -2163,6 +2169,20 @@ function resolvePropertyAddress(properties){
    updated_at is stamped server-side (see the set_updated_at trigger
    in supabase/schema.sql), so a conflict is arbitrated by Postgres'
    clock rather than by whichever device happens to run fastest.
+
+   PAGINATION + THE DELETE GUARD (important, don't "simplify" this):
+   the fetch below is paginated, and the "missing remotely → delete
+   it locally" pass only runs when the fetch is KNOWN to have been
+   complete. Those two facts are load-bearing together. PostgREST
+   caps every response at its own max-rows setting, so an unbounded
+   `select=*` silently returns a truncated list once a table gets
+   big enough — and activity_log gains a row on every single write,
+   on a timer. Feeding a truncated list to the reconciliation pass
+   would read "not in the response" as "deleted elsewhere" and wipe
+   good local records. So: page until the end is proven, and if any
+   page fails, comes back malformed, or the row ceiling is hit,
+   merge what we did get (safe — merging only ever adds/updates)
+   and skip the delete pass entirely (unsafe without a full list).
    ============================================================ */
 
 // Parse a timestamp for comparison. Returns null for missing/unparseable
@@ -2181,15 +2201,71 @@ function parseSyncTime(value){
   const ms=Date.parse(value);
   return isNaN(ms)?null:ms;
 }
+
+const SYNC_PAGE_SIZE=500;      // rows per request; keep <= PostgREST max-rows
+const SYNC_MAX_ROWS=50000;     // ceiling per table, so one huge table can't hang the sync
+
+/* Pages through a remote table using keyset pagination on the text
+   primary key (id), which — unlike limit/offset — can't skip or
+   duplicate rows when something is inserted mid-walk.
+   Returns {rows, complete}: `complete` true ONLY when the walk
+   reached a genuine last page. Callers must treat complete:false as
+   "this list may be partial" and skip any delete reconciliation. */
+async function fetchRemoteTablePaged(remoteTable,token){
+  const rows=[];
+  let after=null;
+  while(true){
+    const params=[`select=*`,`order=id.asc`,`limit=${SYNC_PAGE_SIZE}`];
+    if(after!==null){
+      // Double-quoted so a comma or paren inside an id can't be read as
+      // PostgREST filter syntax; encoded so it survives the query string.
+      const cursor=`"${String(after).replace(/(["\\])/g,'\\$1')}"`;
+      params.push(`id=gt.${encodeURIComponent(cursor)}`);
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${remoteTable}?${params.join('&')}`,{
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    });
+    if(!res.ok){
+      console.log(`Pull sync: ${remoteTable} page failed (${res.status}) — merging ${rows.length} row(s), skipping delete pass`);
+      return {rows,complete:false};
+    }
+    let page;
+    try{ page=await res.json(); }
+    catch(err){
+      console.log(`Pull sync: ${remoteTable} page was not valid JSON — skipping delete pass`,err);
+      return {rows,complete:false};
+    }
+    if(!Array.isArray(page)){
+      console.log(`Pull sync: ${remoteTable} page was not an array — skipping delete pass`,page);
+      return {rows,complete:false};
+    }
+    rows.push(...page);
+    // Only an EMPTY page proves we reached the end. A short page must
+    // not be treated as the last one: PostgREST's own max-rows setting
+    // can be lower than SYNC_PAGE_SIZE, in which case every page comes
+    // back short and stopping early would hand the delete pass exactly
+    // the truncated list this function exists to prevent.
+    if(!page.length) return {rows,complete:true};
+    const lastId=page[page.length-1].id;
+    if(lastId===undefined || lastId===null || lastId===after){
+      // No usable cursor to advance on — bail out rather than loop forever.
+      console.log(`Pull sync: ${remoteTable} returned no usable id cursor — skipping delete pass`);
+      return {rows,complete:false};
+    }
+    after=lastId;
+    if(rows.length>=SYNC_MAX_ROWS){
+      console.log(`Pull sync: ${remoteTable} exceeded ${SYNC_MAX_ROWS} rows — merging what we have, skipping delete pass`);
+      return {rows,complete:false};
+    }
+  }
+}
+
 async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
   try{
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${remoteTable}?select=*`,{
-      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    });
-    if(!res.ok) return;
-    const remoteRows=await res.json();
+    const {rows:remoteRows,complete}=await fetchRemoteTablePaged(remoteTable,token);
+    if(!remoteRows.length && !complete) return; // nothing usable came back at all
     const localAll=await dbGetAll(storeName);
     const localById=new Map(localAll.map(r=>[r.id,r]));
     const remoteIds=new Set();
@@ -2215,6 +2291,12 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
       }
     }
 
+    // Reconciliation (remote deletes → local deletes) is only sound
+    // against a provably complete remote list — see the note above.
+    if(!complete){
+      console.log(`Pull sync: ${storeName} merged from a partial remote list — local records left untouched`);
+      return;
+    }
     for(const local of localAll){
       if(local.synced && !local.pendingDelete && !remoteIds.has(local.id)){
         await dbDelete(storeName,local.id);
@@ -2497,7 +2579,6 @@ function addInspectionArea(name,opts){
   const statusOptions=['Good','Fair','Poor','N/A'];
   const statusSelectHtml=statusOptions.map(s=>`<option${opts.status===s?' selected':''}>${s}</option>`).join('');
   const escapedNotes=escapeHtml(opts.notes);
-  const photosHtml=(opts.photos||[]).map(src=>`<img class="photo-thumb" src="${src}">`).join('');
   wrap.innerHTML=`
     <div class="insp-area-head">
       <span class="insp-area-name">${escapeHtml(name)||'New area'}</span>
@@ -2505,13 +2586,40 @@ function addInspectionArea(name,opts){
     </div>
     <textarea class="area-notes" placeholder="Notes for this area...">${escapedNotes}</textarea>
     <div class="photo-strip">
-      ${photosHtml}
       <div class="photo-add" onclick="openCameraModal('${id}')" title="Take multiple photos">
         📷
         <input type="file" id="fallback-input-${id}" accept="image/*" capture="environment" multiple style="display:none" onchange="handlePhotoCapture(event,'${id}')">
       </div>
     </div>`;
   document.getElementById('insp-areas').appendChild(wrap);
+  renderAreaPhotos(wrap,opts.photos||[]);
+}
+
+/* Puts the already-saved photos of an area into its strip. Each thumb
+   carries the stored reference in data-photo-ref (that's what gets read
+   back on save — never the src, which is a temporary signed URL), and
+   the signed URL is filled in once it comes back. Built with DOM calls
+   rather than an HTML string so a stored value can't break out of the
+   src/attribute it lands in. */
+function renderAreaPhotos(wrap,photos){
+  const strip=wrap.querySelector('.photo-strip');
+  const addBtn=strip.querySelector('.photo-add');
+  const imgs=photos.map(ref=>{
+    const img=document.createElement('img');
+    img.className='photo-thumb';
+    if(typeof ref==='string' && ref.startsWith('data:')) img.src=ref; // not uploaded yet
+    else img.dataset.photoRef=ref;
+    strip.insertBefore(img,addBtn);
+    return img;
+  });
+  resolvePhotoRefs(photos).then(urls=>{
+    urls.forEach((url,i)=>{
+      const img=imgs[i];
+      if(!img || !img.dataset.photoRef) return;   // data-URL thumbs already have their src
+      if(url) img.src=url;
+      else{ img.alt='Photo unavailable'; img.title='Photo could not be loaded'; }
+    });
+  });
 }
 
 function handlePhotoCapture(event,areaId){
@@ -2710,7 +2818,11 @@ async function saveInspection(){
       name: el.querySelector('.insp-area-name').textContent,
       status: el.querySelector('.area-status').value,
       notes: el.querySelector('.area-notes').value,
-      photos: Array.from(el.querySelectorAll('.photo-thumb')).map(img=>img.src)
+      // data-photo-ref first: for an already-uploaded photo that's the durable
+      // "storage:<path>" reference, while img.src is only a signed URL that
+      // would expire if it were saved. Freshly captured thumbs have no ref
+      // and fall back to their base64 src, which is what gets uploaded.
+      photos: Array.from(el.querySelectorAll('.photo-thumb')).map(img=>img.dataset.photoRef||img.src)
     });
   });
   const isEdit=!!editingInspectionId;
@@ -2764,23 +2876,27 @@ async function renderInspectionList(){
 }
 
 async function generateInspectionPDF(id){
+  // Captured before the first await — window.event is only reliable while the
+  // click handler is still on the stack.
+  const btn=(typeof event!=='undefined' && event) ? event.target : null;
   const all=await dbGetAll('inspections');
   const insp=all.find(i=>i.id===id);
   if(!insp) return;
   const properties=await dbGetAll('properties').catch(()=>[]);
   const siteAddress=resolvePropertyAddress(properties)(insp);
 
-  const findings=(insp.areas||[]).map(a=>({
+  // Stored photos are local base64 data URLs (not yet synced) or private
+  // storage references — resolvePhotoRefs() passes the former through and
+  // signs the latter so FindingsReport.generate() can fetch them. Anything
+  // that fails to sign is dropped rather than breaking the whole report.
+  const findings=await Promise.all((insp.areas||[]).map(async a=>({
     item: a.name,
     description: 'Status: '+a.status+(a.notes?' — '+a.notes:''),
-    // Photos are already either local base64 data URLs or (post-sync) public
-    // Supabase Storage URLs — FindingsReport.generate() fetches either directly.
-    photos: a.photos||[]
-  }));
+    photos: (await resolvePhotoRefs(a.photos||[])).filter(Boolean)
+  })));
 
   if(!findings.length){ alert('This inspection has no areas to report.'); return; }
 
-  const btn=event && event.target;
   const original=btn?btn.textContent:null;
   if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
 
@@ -2802,11 +2918,94 @@ async function generateInspectionPDF(id){
   }
 }
 
-function extractStoragePath(url){
-  // Turns a public Storage URL back into the bucket-relative path needed for deletion
-  const marker=`/storage/v1/object/public/${CONFIG.STORAGE_BUCKET}/`;
-  const idx=url.indexOf(marker);
-  return idx===-1 ? null : url.slice(idx+marker.length);
+/* ============================================================
+   INSPECTION PHOTO REFERENCES — the bucket is PRIVATE, so a photo
+   is never stored as a fetchable URL. What gets saved on the record
+   (locally and in Supabase) is a reference of the form
+   "storage:<bucket-relative-path>", and a short-lived signed URL is
+   minted at display time by resolvePhotoRefs() below.
+
+   Why a reference and not a URL: a signed URL expires, so persisting
+   one produces records that quietly rot, and anything holding it can
+   read the photo until it lapses. The "storage:" prefix is also
+   deliberately NOT loadable by <img src>, which means a resolver step
+   can't be forgotten — a missed one shows a broken image immediately
+   rather than silently leaking a public link.
+
+   Legacy: records created while the bucket was public still hold
+   .../object/public/<bucket>/<path> URLs. extractStoragePath()
+   recognises those (and signed URLs) so old records keep working and
+   get re-signed like any other.
+   ============================================================ */
+const PHOTO_REF_PREFIX='storage:';
+const SIGNED_URL_TTL_SECONDS=3600;      // how long Storage is asked to honour the link
+const SIGNED_URL_REUSE_MS=(SIGNED_URL_TTL_SECONDS-300)*1000; // re-sign 5 min early
+const signedUrlCache=new Map();         // path -> {url, expiresAt}
+
+function extractStoragePath(ref){
+  if(!ref || typeof ref!=='string') return null;
+  if(ref.startsWith('data:')) return null;                       // not uploaded yet
+  if(ref.startsWith(PHOTO_REF_PREFIX)) return ref.slice(PHOTO_REF_PREFIX.length);
+  // Legacy shapes: public URL (bucket used to be public) and signed URL.
+  for(const kind of ['public','sign']){
+    const marker=`/storage/v1/object/${kind}/${CONFIG.STORAGE_BUCKET}/`;
+    const idx=ref.indexOf(marker);
+    if(idx!==-1) return ref.slice(idx+marker.length).split('?')[0];
+  }
+  return null;
+}
+
+function photoRefFor(path){
+  return PHOTO_REF_PREFIX+path;
+}
+
+/* Signs a batch of bucket-relative paths in one request, reusing any
+   still-valid URL from the cache. Returns a Map of path -> signed URL;
+   a path that couldn't be signed is simply absent from the Map. */
+async function signStoragePaths(paths){
+  const out=new Map();
+  const now=Date.now();
+  const needed=[];
+  for(const path of new Set(paths)){
+    const hit=signedUrlCache.get(path);
+    if(hit && hit.expiresAt>now) out.set(path,hit.url);
+    else needed.push(path);
+  }
+  if(!needed.length || !CONFIG.SUPABASE_URL) return out;
+  try{
+    // Signing goes through supabase-js rather than a hand-rolled fetch so the
+    // absolute URL is assembled by the SDK. Requires a logged-in session — the
+    // bucket's SELECT policy is granted to `authenticated`, not `anon`.
+    const {data,error}=await sb.storage
+      .from(CONFIG.STORAGE_BUCKET)
+      .createSignedUrls(needed,SIGNED_URL_TTL_SECONDS);
+    if(error){ console.log('Could not sign photo URLs:',error.message); return out; }
+    for(const entry of (data||[])){
+      const url=entry && (entry.signedUrl||entry.signedURL);
+      if(!url || entry.error || !entry.path) continue;
+      signedUrlCache.set(entry.path,{url,expiresAt:Date.now()+SIGNED_URL_REUSE_MS});
+      out.set(entry.path,url);
+    }
+  }catch(err){
+    console.log('Could not sign photo URLs:',err);
+  }
+  return out;
+}
+
+/* Turns stored photo values into things an <img> or the PDF generator
+   can actually load. Local base64 captures pass straight through;
+   storage refs (and legacy URLs) come back as fresh signed URLs.
+   A photo that can't be signed resolves to null — callers drop it
+   rather than render a broken image. */
+async function resolvePhotoRefs(refs){
+  const list=refs||[];
+  const paths=list.map(extractStoragePath).filter(Boolean);
+  const signed=paths.length?await signStoragePaths(paths):new Map();
+  return list.map(ref=>{
+    if(typeof ref==='string' && ref.startsWith('data:')) return ref;
+    const path=extractStoragePath(ref);
+    return path ? (signed.get(path)||null) : null;
+  });
 }
 
 async function deletePhotosFromStorage(record){
@@ -2886,16 +3085,19 @@ async function uploadPhotoToStorage(dataUrl,path){
     body:blob
   });
   if(!res.ok) throw new Error('Photo upload failed: '+res.status);
-  return `${CONFIG.SUPABASE_URL}/storage/v1/object/public/${CONFIG.STORAGE_BUCKET}/${path}`;
+  // The bucket is private — hand back a storage reference, never a URL.
+  // resolvePhotoRefs() mints a short-lived signed URL when it's displayed.
+  return photoRefFor(path);
 }
 
 // Uploads any not-yet-uploaded photos (still local base64) to Storage,
-// swapping them for lightweight URLs — keeps the database row small
-// and avoids re-uploading the same photo on a later sync retry.
+// swapping them for "storage:<path>" references — keeps the database row
+// small, avoids re-uploading the same photo on a later sync retry, and
+// stores nothing that is fetchable on its own (see resolvePhotoRefs()).
 async function uploadRecordPhotos(record){
   const areas=await Promise.all(record.areas.map(async (area,ai)=>{
     const photos=await Promise.all(area.photos.map(async (photo,pi)=>{
-      if(!photo.startsWith('data:')) return photo; // already a URL from a previous sync
+      if(!photo.startsWith('data:')) return photo; // already a storage ref from a previous sync
       const path=`${sanitizeForPath(record.property)}/${record.id}/area${ai}-photo${pi}.jpg`;
       return await uploadPhotoToStorage(photo,path);
     }));

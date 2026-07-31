@@ -1,0 +1,26 @@
+# This repo IS the deploy root — anything committed here is served publicly
+# (GitHub Pages serves every file in the branch, and directory listings are
+# available for folders with no index). Local working files that contain real
+# owner/tenant data must therefore never be committed, even by accident.
+
+# Generated/exported owner statements and reports. The app builds these
+# client-side and hands them straight to the browser's download — none of them
+# belong in the repo.
+statement/
+statements/
+*.pdf
+
+# Local scratch and editor/OS noise
+.DS_Store
+Thumbs.db
+*.local
+*.log
+.vscode/
+.idea/
+
+# Secrets — CONFIG in index.html deliberately carries only the publishable
+# anon key; a service-role key must never land in a served file.
+.env
+.env.*
+*.key
+*.pem

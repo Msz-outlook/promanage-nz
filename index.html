@@ -2053,6 +2053,8 @@ async function doLogin(){
   updateMaintSyncBanner();
   await renderInvoicesList();
   updateInvoiceSyncBanner();
+  await renderStatementsList();
+  updateStatementSyncBanner();
   await renderDashboard();
   await renderActivityLog();
   await renderComplianceLive();
@@ -3169,15 +3171,15 @@ async function renderInspectionList(){
       <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}')">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
 
-async function generateInspectionPDF(id){
-  // Captured before the first await — window.event is only reliable while the
-  // click handler is still on the stack.
-  const btn=(typeof event!=='undefined' && event) ? event.target : null;
+/* `btn` is handed in as `this` from the onclick — the button can't be recovered
+   from the global `event` once the first await has yielded, and reading it that
+   way also breaks if this is ever called from anywhere but a click handler. */
+async function generateInspectionPDF(id,btn){
   const all=await dbGetAll('inspections');
   const insp=all.find(i=>i.id===id);
   if(!insp) return;
@@ -3477,8 +3479,10 @@ async function updateSyncBanner(){
   pendingText.textContent=pendingCount+' pending sync';
 }
 
-window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();fullSyncNow();});
-window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();});
+// Every module with a sync banner has to be refreshed here, or its banner keeps
+// showing the connectivity state from whenever its page was last rendered.
+window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();updateStatementSyncBanner();fullSyncNow();});
+window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();updateStatementSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
@@ -3496,6 +3500,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   updateMaintSyncBanner();
   renderInvoicesList();
   updateInvoiceSyncBanner();
+  renderStatementsList();
+  updateStatementSyncBanner();
   renderDashboard();
   renderActivityLog();
   renderComplianceLive();

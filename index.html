@@ -172,10 +172,18 @@ textarea:focus{border-color:var(--text)}
 }
 </style>
 </head>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+<!-- Third-party libraries are vendored into ./vendor/ rather than loaded from a
+     CDN. Two reasons: (1) the service worker can pre-cache them, so the app
+     actually opens with zero signal — a CDN script tag would fail on first
+     offline load and take jsPDF/HEIC/Supabase down with it; (2) no floating
+     version specifiers, so an upstream release can't change behaviour under us.
+     To upgrade: `npm pack <pkg>@<version>`, copy the dist file into ./vendor/
+     under its versioned name, update the src below AND the SHELL_FILES list in
+     sw.js, then bump CACHE_NAME in sw.js so clients pick the new files up. -->
+<script src="vendor/supabase-js-2.111.0.umd.js"></script>
+<script src="vendor/jspdf-2.5.2.umd.min.js"></script>
+<script src="vendor/jspdf-autotable-3.8.2.min.js"></script>
+<script src="vendor/heic2any-0.0.4.min.js"></script>
 <script>
 /* ---- Findings Report generator (embedded, single-file) ---- */
 /*
@@ -2151,7 +2159,28 @@ function resolvePropertyAddress(properties){
    push will resurrect it (upsert has no way to know it was deleted
    elsewhere). Rare in a single-manager setup; would need a proper
    tombstone/conflict system to close completely.
+
+   updated_at is stamped server-side (see the set_updated_at trigger
+   in supabase/schema.sql), so a conflict is arbitrated by Postgres'
+   clock rather than by whichever device happens to run fastest.
    ============================================================ */
+
+// Parse a timestamp for comparison. Returns null for missing/unparseable
+// values so callers can decide what to do rather than silently treating them
+// as the epoch.
+//
+// The comparison used to be a plain string > string on the ISO strings. That
+// happens to work for two UTC 'Z' timestamps of identical precision, and
+// nothing else. '2026-07-30T23:00:00+12:00' sorts after '2026-07-30T12:00:00Z'
+// lexically, but it is 11:00Z — an hour *earlier*. Postgres also trims
+// trailing zeros on fractional seconds, so widths aren't even consistent
+// between two rows of the same table. Parsing to epoch millis compares the
+// instants themselves.
+function parseSyncTime(value){
+  if(!value) return null;
+  const ms=Date.parse(value);
+  return isNaN(ms)?null:ms;
+}
 async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
   try{
@@ -2174,9 +2203,14 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal){
         continue;
       }
       if(!local.synced) continue; // unpushed local edit — local wins for now
-      const localTime=local.updatedAt||local.createdAt||'';
-      const remoteTime=mapped.updatedAt||mapped.createdAt||'';
-      if(remoteTime>localTime){
+      const localTime=parseSyncTime(local.updatedAt)??parseSyncTime(local.createdAt);
+      const remoteTime=parseSyncTime(mapped.updatedAt)??parseSyncTime(mapped.createdAt);
+      // Remote wins on a strictly newer instant. When only one side has a
+      // usable timestamp, the side that has one wins; when neither does they
+      // can't be ordered at all, so keep what's already on the device. The
+      // local row is synced here either way, so nothing unpushed is at risk.
+      const remoteWins = localTime===null ? remoteTime!==null : (remoteTime!==null && remoteTime>localTime);
+      if(remoteWins){
         await dbPut(storeName,{...local,...mapped,synced:true,pendingDelete:false});
       }
     }
@@ -2274,6 +2308,11 @@ async function pullAllAndMerge(){
 // Push anything pending, then pull whatever changed elsewhere. Pushing first
 // means local edits win any race against a stale remote copy.
 async function fullSyncNow(){
+  // The only place that tells the user we're offline. The per-entity
+  // syncPending* helpers below stay silent: fullSyncNow() calls all seven in a
+  // row, so alerting in each one meant seven stacked dialogs if connectivity
+  // dropped mid-sync. The banners (updateSyncBanner et al) already show the
+  // offline state passively.
   if(!navigator.onLine){
     alert('Still offline — will sync automatically once connection returns.');
     return;
@@ -2384,14 +2423,14 @@ async function renderActivityLog(){
   const pageItems=getListPage('activity',all);
   const actionBadge=a=>{
     const map={Created:'bg',Updated:'bb',Deleted:'br'};
-    return `<span class="badge ${map[a]||'bgr'}">${a}</span>`;
+    return `<span class="badge ${map[a]||'bgr'}">${escapeHtml(a)}</span>`;
   };
   tbody.innerHTML=pageItems.map(l=>`
     <tr>
       <td style="white-space:nowrap">${formatLogTime(l.timestamp)}</td>
-      <td>${l.entity}</td>
+      <td>${escapeHtml(l.entity)}</td>
       <td>${actionBadge(l.action)}</td>
-      <td>${l.detail}</td>
+      <td>${escapeHtml(l.detail)}</td>
     </tr>`).join('');
 }
 async function pushActivityLogToBackend(record){
@@ -2444,7 +2483,8 @@ function todayStr(){
 // HTML (area notes, compliance item notes, etc) — prevents saved text like
 // "<script>" or "Tom & Jerry's place" from breaking the markup.
 function escapeHtml(str){
-  return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if(str===null||str===undefined||str==='') return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function addInspectionArea(name,opts){
@@ -2460,7 +2500,7 @@ function addInspectionArea(name,opts){
   const photosHtml=(opts.photos||[]).map(src=>`<img class="photo-thumb" src="${src}">`).join('');
   wrap.innerHTML=`
     <div class="insp-area-head">
-      <span class="insp-area-name">${name||'New area'}</span>
+      <span class="insp-area-name">${escapeHtml(name)||'New area'}</span>
       <select class="area-status" style="width:110px">${statusSelectHtml}</select>
     </div>
     <textarea class="area-notes" placeholder="Notes for this area...">${escapedNotes}</textarea>
@@ -2598,7 +2638,7 @@ async function populateInspectionPropertyDropdown(){
     select.innerHTML='<option value="">— Add a property first —</option>';
     return;
   }
-  select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+  select.innerHTML=props.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHtml(p.address)}</option>`).join('');
 }
 
 let editingInspectionId=null;
@@ -2713,9 +2753,9 @@ async function renderInspectionList(){
     const photoCount=insp.areas.reduce((n,a)=>n+a.photos.length,0);
     const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
     return `<tr>
-      <td>${addressOf(insp)}</td>
-      <td>${insp.date}</td>
-      <td style="font-size:12px;color:var(--text2)">${areaSummary}</td>
+      <td>${escapeHtml(addressOf(insp))}</td>
+      <td>${escapeHtml(insp.date)}</td>
+      <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
       <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}')">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
@@ -2907,10 +2947,7 @@ async function pushInspectionToBackend(record){
 }
 
 async function syncPendingInspections(){
-  if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
-    return;
-  }
+  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('inspections');
   const pending=all.filter(i=>!i.synced);
   for(const record of pending){
@@ -3143,7 +3180,7 @@ async function renderComplianceLive(){
     banner.innerHTML='ℹ️ <div>Add properties to start tracking Healthy Homes and regulatory compliance per-property.</div>';
   }else if(overdueTotal>0){
     banner.className='alert alert-red';
-    banner.innerHTML=`⚠️ <div><strong>${overdueTotal} compliance item${overdueTotal>1?'s':''} overdue</strong> across ${overdueProps.size} propert${overdueProps.size>1?'ies':'y'} — ${[...overdueProps].slice(0,3).join(', ')}${overdueProps.size>3?'…':''}. Penalties up to $7,200 per breach apply.</div>`;
+    banner.innerHTML=`⚠️ <div><strong>${overdueTotal} compliance item${overdueTotal>1?'s':''} overdue</strong> across ${overdueProps.size} propert${overdueProps.size>1?'ies':'y'} — ${escapeHtml([...overdueProps].slice(0,3).join(', '))}${overdueProps.size>3?'…':''}. Penalties up to $7,200 per breach apply.</div>`;
   }else if(dueSoonTotal>0){
     banner.className='alert alert-amber';
     banner.innerHTML=`⚠️ <div><strong>${dueSoonTotal} item${dueSoonTotal>1?'s':''} due for re-check</strong> within 30 days.</div>`;
@@ -3159,7 +3196,7 @@ async function renderComplianceLive(){
       const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
       propList.innerHTML=properties.map(p=>`
         <tr>
-          <td style="cursor:pointer" ondblclick="openComplianceModal('${p.id}')" title="Double-click to update compliance"><strong>${p.address}</strong></td>
+          <td style="cursor:pointer" ondblclick="openComplianceModal('${escapeAttr(p.id)}')" title="Double-click to update compliance"><strong>${escapeHtml(p.address)}</strong></td>
           <td>${tenancyBadge(p.tenancy)}</td>
           <td>${complianceSummaryBadge(p)}</td>
         </tr>`).join('');
@@ -3258,7 +3295,7 @@ async function renderPropertiesList(){
   };
   tbody.innerHTML=pageItems.map(p=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editProperty('${p.id}')" title="Double-click to edit"><strong>${p.address}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m² · ${p.parking||0} parking</span></td>
+      <td style="cursor:pointer" ondblclick="editProperty('${escapeAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m² · ${p.parking||0} parking</span></td>
       <td>${tenancyBadge(p.tenancy)}</td>
       <td>$${p.rentPerWeek}</td>
       <td>${statusBadge(p.status)}</td>
@@ -3335,10 +3372,7 @@ async function pushPropertyToBackend(record){
 }
 
 async function syncPendingProperties(){
-  if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
-    return;
-  }
+  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('properties');
   const pending=all.filter(p=>!p.synced);
   for(const record of pending){
@@ -3381,7 +3415,7 @@ async function populateTenantPropertyDropdown(){
     select.innerHTML='<option value="">— Add a property first —</option>';
     return;
   }
-  select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+  select.innerHTML=props.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHtml(p.address)}</option>`).join('');
 }
 
 let editingTenantId=null;
@@ -3481,8 +3515,8 @@ async function renderTenantsList(){
   };
   tbody.innerHTML=pageItems.map(t=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editTenant('${t.id}')" title="Double-click to edit"><strong>${t.tenantName}</strong></td>
-      <td>${addressOf(t)}</td>
+      <td style="cursor:pointer" ondblclick="editTenant('${escapeAttr(t.id)}')" title="Double-click to edit"><strong>${escapeHtml(t.tenantName)}</strong></td>
+      <td>${escapeHtml(addressOf(t))}</td>
       <td>${t.leaseStart||'—'}</td>
       <td>${t.leaseEnd||'—'}</td>
       <td>${t.bondLodged?'<span class="badge bg">✓ TS</span>':'<span class="badge ba">Not lodged</span>'}</td>
@@ -3557,10 +3591,7 @@ async function pushTenantToBackend(record){
 }
 
 async function syncPendingTenants(){
-  if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
-    return;
-  }
+  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('tenants');
   const pending=all.filter(t=>!t.synced);
   for(const record of pending){
@@ -3600,7 +3631,7 @@ async function populateMaintenancePropertyDropdown(){
     select.innerHTML='<option value="">— Add a property first —</option>';
     return;
   }
-  select.innerHTML=props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+  select.innerHTML=props.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHtml(p.address)}</option>`).join('');
 }
 
 let editingMaintenanceId=null;
@@ -3692,11 +3723,11 @@ async function renderMaintenanceList(){
   };
   tbody.innerHTML=pageItems.map(m=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editMaintenance('${m.id}')" title="Double-click to edit"><strong>${m.issue}</strong></td>
-      <td>${addressOf(m)}</td>
-      <td>${m.reportedDate}</td>
+      <td style="cursor:pointer" ondblclick="editMaintenance('${escapeAttr(m.id)}')" title="Double-click to edit"><strong>${escapeHtml(m.issue)}</strong></td>
+      <td>${escapeHtml(addressOf(m))}</td>
+      <td>${escapeHtml(m.reportedDate)}</td>
       <td>${priorityDot(m.priority)}</td>
-      <td>${m.assignedTo}</td>
+      <td>${escapeHtml(m.assignedTo)}</td>
       <td>${statusBadge(m.status)}</td>
       <td>${m.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
     </tr>`).join('');
@@ -3766,10 +3797,7 @@ async function pushMaintenanceToBackend(record){
 }
 
 async function syncPendingMaintenance(){
-  if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
-    return;
-  }
+  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('maintenance');
   const pending=all.filter(m=>!m.synced);
   for(const record of pending){
@@ -4050,9 +4078,9 @@ async function renderEmailTriageList(){
     const received=new Date(rec.receivedAt).toLocaleString('en-NZ',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
     return `<tr>
       <td>${received}</td>
-      <td>${rec.from}</td>
-      <td><strong>${rec.subject}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${rec.body.slice(0,80)}${rec.body.length>80?'…':''}</div></td>
-      <td>${rec.matchedPropertyAddress}</td>
+      <td>${escapeHtml(rec.from)}</td>
+      <td><strong>${escapeHtml(rec.subject)}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${escapeHtml(rec.body.slice(0,80))}${rec.body.length>80?'…':''}</div></td>
+      <td>${escapeHtml(rec.matchedPropertyAddress)}</td>
       <td>${priorityDot(rec.suggestedPriority)}</td>
       <td>${sc.badge}</td>
       <td style="white-space:nowrap">${sc.action}</td>
@@ -4116,7 +4144,7 @@ function autoFillInvoiceDueDate(){
 async function populateInvoicePropertyDropdown(selectedId){
   const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
   const select=document.getElementById('invoice-property');
-  select.innerHTML='<option value="">— None / external —</option>'+props.map(p=>`<option value="${p.id}">${p.address}</option>`).join('');
+  select.innerHTML='<option value="">— None / external —</option>'+props.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHtml(p.address)}</option>`).join('');
   if(selectedId) select.value=selectedId;
 }
 
@@ -4131,8 +4159,12 @@ function invoiceItemRowHtml(rowId,item){
     </tr>`;
 }
 
+// For values dropped into an HTML attribute. Single quotes matter as much as
+// double: several handlers here are written as onclick="fn('${id}')", so an
+// apostrophe would close the JS string and everything after it becomes code.
 function escapeAttr(str){
-  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  if(str===null||str===undefined) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
 }
 
 function addInvoiceItemRow(item){
@@ -4296,8 +4328,8 @@ async function renderInvoicesList(){
   tbody.innerHTML=pageItems.map(inv=>`
     <tr>
       <td style="cursor:pointer" ondblclick="editInvoice('${inv.id}')" title="Double-click to edit"><strong>${inv.invoiceNumber}</strong></td>
-      <td>${inv.billToName}</td>
-      <td>${inv.propertyAddress||'—'}</td>
+      <td>${escapeHtml(inv.billToName)}</td>
+      <td>${escapeHtml(inv.propertyAddress||'—')}</td>
       <td>${inv.issueDate||'—'}</td>
       <td>${inv.dueDate||'—'}</td>
       <td class="tr">$${(inv.total||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -4376,10 +4408,7 @@ async function pushInvoiceToBackend(record){
 }
 
 async function syncPendingInvoices(){
-  if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
-    return;
-  }
+  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('invoices');
   const pending=all.filter(i=>!i.synced);
   for(const record of pending){
@@ -4546,7 +4575,7 @@ let statementBlockCounter=0;
 
 async function statementPropertyOptionsHtml(selectedId){
   const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
-  return '<option value="">— None / external —</option>'+props.map(p=>`<option value="${p.id}"${p.id===selectedId?' selected':''}>${p.address}</option>`).join('');
+  return '<option value="">— None / external —</option>'+props.map(p=>`<option value="${escapeAttr(p.id)}"${p.id===selectedId?' selected':''}>${escapeHtml(p.address)}</option>`).join('');
 }
 
 function statementPropertyBlockHtml(blockId,optionsHtml,propBlock){
@@ -4899,7 +4928,7 @@ async function renderStatementsList(){
   tbody.innerHTML=pageItems.map(s=>`
     <tr>
       <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
-      <td>${(s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', ')||'—'}</td>
+      <td>${escapeHtml((s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', '))||'—'}</td>
       <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
       <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(s.status)}</td>
@@ -4974,10 +5003,7 @@ async function pushStatementToBackend(record){
 }
 
 async function syncPendingStatements(){
-  if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
-    return;
-  }
+  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('statements');
   const pending=all.filter(s=>!s.synced);
   for(const record of pending){
@@ -5508,7 +5534,7 @@ async function renderDashboard(){
   let alertsHtml='';
   if(overdueProps.length){
     const names=overdueProps.map(p=>p.address).join(', ');
-    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${names}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
+    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${escapeHtml(names)}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
   }
   alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.<span style="display:block;font-size:11px;opacity:.7;margin-top:2px">Last verified ${LAW_UPDATES_LAST_VERIFIED}</span></div></div>`;
   alertsEl.innerHTML=alertsHtml;
@@ -5532,7 +5558,7 @@ async function renderDashboard(){
   document.getElementById('dm-inspections-sub').textContent=inspDueCount?'Due within 30 days':(properties.length?'None due soon':'No properties yet');
 
   document.getElementById('dash-inspections').innerHTML=inspRows.length
-    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',document.querySelectorAll('.nav-item')[4])" title="Double-click to open Inspections"><td>${r.address}</td><td>${r.lastStr}</td><td>${r.nextStr}</td><td>${r.statusBadge}</td></tr>`).join('')
+    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',document.querySelectorAll('.nav-item')[4])" title="Double-click to open Inspections"><td>${escapeHtml(r.address)}</td><td>${escapeHtml(r.lastStr)}</td><td>${escapeHtml(r.nextStr)}</td><td>${r.statusBadge}</td></tr>`).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr>';
 
   // Properties not compliant
@@ -5540,7 +5566,7 @@ async function renderDashboard(){
     ? overdueProps.map(p=>{
         const items=getPropertyCompliance(p).filter(it=>isItemOverdue(it,today));
         const labels=items.map(it=>it.label).slice(0,2).join(', ')+(items.length>2?'…':'');
-        return `<tr style="cursor:pointer" ondblclick="nav('compliance',document.querySelectorAll('.nav-item')[8])" title="Double-click to open Compliance"><td>${p.address}</td><td style="font-size:12px;color:var(--text2)">${labels}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('compliance',document.querySelectorAll('.nav-item')[8])" title="Double-click to open Compliance"><td>${escapeHtml(p.address)}</td><td style="font-size:12px;color:var(--text2)">${escapeHtml(labels)}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
       }).join('')
     : `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">${properties.length?'All properties compliant':'No properties yet'}</td></tr>`;
 
@@ -5553,14 +5579,14 @@ async function renderDashboard(){
   // Lease renewals due
   const renewals=tenants.filter(t=>t.status==='Renewal due');
   document.getElementById('dash-renewals').innerHTML=renewals.length
-    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${addressOf(t)}</td><td>${t.tenantName}</td><td><span class="badge ba">${t.leaseEnd||'—'}</span></td></tr>`).join('')
+    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${escapeHtml(addressOf(t))}</td><td>${escapeHtml(t.tenantName)}</td><td><span class="badge ba">${escapeHtml(t.leaseEnd||'—')}</span></td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
 
   // Urgent maintenance
   document.getElementById('dash-maint').innerHTML=urgentMaint.length
     ? urgentMaint.map(m=>{
         const statusMap={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])" title="Double-click to open Maintenance"><td>${addressOf(m)}</td><td>${m.issue}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${m.status}</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])" title="Double-click to open Maintenance"><td>${escapeHtml(addressOf(m))}</td><td>${escapeHtml(m.issue)}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${escapeHtml(m.status)}</span></td></tr>`;
       }).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr>';
 }

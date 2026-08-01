@@ -156,6 +156,7 @@ textarea:focus{border-color:var(--text)}
 /* Mobile layout — sidebar becomes a slide-out drawer instead of a fixed column */
 .hamburger{display:none;background:transparent;border:none;font-size:20px;cursor:pointer;padding:4px 8px;color:var(--text);line-height:1}
 .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:19}
+#local-storage-alert{position:fixed;top:0;left:0;right:0;z-index:40;padding:10px 16px;font-size:12.5px;line-height:1.45;background:var(--red-bg);color:var(--red-text);border-bottom:1px solid #E24B4A}
 @media (max-width:768px){
   .hamburger{display:inline-flex}
   .sidebar{
@@ -1242,6 +1243,7 @@ textarea:focus{border-color:var(--text)}
 </div>
 
 <div class="app" id="main-app" style="display:none">
+<div id="local-storage-alert" style="display:none"></div>
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
 
 <!-- SIDEBAR -->
@@ -2218,6 +2220,42 @@ function dbClear(storeName){
   }));
 }
 
+/* Reads a store, and says so out loud when it can't.
+
+   Renderers used to do `dbGetAll(store).catch(()=>[])` in about forty places.
+   That turns "IndexedDB is unavailable" — private browsing, quota exhausted, a
+   blocked upgrade, a corrupt store — into an empty array, which every renderer
+   then presents as "No properties added yet". A property manager opening the
+   app to an empty portfolio has no way to tell a storage fault from actual
+   data loss, and the difference matters enormously.
+
+   The rows still come back empty so nothing throws mid-render, but the failure
+   is recorded and shown once, prominently, instead of being swallowed. */
+let localReadFailed=false;
+
+async function readStore(store){
+  try{
+    const rows=await dbGetAll(store);
+    return rows;
+  }catch(err){
+    console.log('Could not read local store "'+store+'":',err);
+    flagLocalReadFailure(store,err);
+    return [];
+  }
+}
+
+function flagLocalReadFailure(store,err){
+  if(localReadFailed) return; // one notice, not one per store per render
+  localReadFailed=true;
+  const bar=document.getElementById('local-storage-alert');
+  if(bar){
+    bar.textContent='⚠️ This device’s local database could not be read ('+store+
+      '). What you see below may be incomplete — do NOT assume records are missing. '+
+      'Try reloading; if that fails, sign in on another device before changing anything here.';
+    bar.style.display='block';
+  }
+}
+
 /* Record ids.
 
    These were `prefix_ + Date.now()` — millisecond resolution and nothing
@@ -3032,7 +3070,7 @@ function activityLogCutoffISO(){
    than the retention window offline. */
 async function pruneLocalActivityLog(){
   const cutoff=Date.parse(activityLogCutoffISO());
-  const all=await dbGetAll('activityLog').catch(()=>[]);
+  const all=await readStore('activityLog');
   let pruned=0;
   for(const record of all){
     if(!record.synced || record.pendingDelete) continue;
@@ -3185,6 +3223,10 @@ function renderSearchCount(key,shown,total){
    portfolio is empty when they've simply mistyped an address is exactly the
    kind of scare this app should not deliver. */
 function emptyListMessage(key,defaultMsg){
+  // An unreadable database outranks both other cases: telling someone they
+  // have no properties when the truth is "this device can't read them" is the
+  // one wrong answer here that looks like data loss.
+  if(localReadFailed) return 'Could not read this device’s local database — this list may be incomplete. Reload before making changes.';
   const q=listSearch[key];
   return q ? 'No matches for “'+escapeHtml(q)+'”' : defaultMsg;
 }
@@ -3233,7 +3275,7 @@ function changeListPage(key,page){
 async function renderActivityLog(){
   const tbody=document.getElementById('activity-log-list');
   if(!tbody) return;
-  const all=await dbGetAll('activityLog').catch(()=>[]);
+  const all=await readStore('activityLog');
   all.sort((a,b)=>(b.timestamp||'').localeCompare(a.timestamp||''));
   const countEl=document.getElementById('activity-log-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
@@ -3490,7 +3532,7 @@ function finishCameraCapture(){
 }
 
 async function populateInspectionPropertyDropdown(){
-  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const props=(await readStore('properties')).filter(p=>!p.pendingDelete);
   const select=document.getElementById('insp-property');
   if(!props.length){
     select.innerHTML='<option value="">— Add a property first —</option>';
@@ -3526,7 +3568,7 @@ async function editInspection(id){
   if(!targetId&&record.property){
     // Legacy inspection saved before propertyId tracking — try to match by
     // the address text it was saved with, so old records still pre-select.
-    const properties=await dbGetAll('properties').catch(()=>[]);
+    const properties=await readStore('properties');
     const match=properties.find(p=>p.address===record.property);
     targetId=match?match.id:'';
   }
@@ -3599,8 +3641,8 @@ async function saveInspection(){
 }
 
 async function renderInspectionList(){
-  const all=(await dbGetAll('inspections')).filter(i=>!i.pendingDelete);
-  const properties=await dbGetAll('properties').catch(()=>[]);
+  const all=(await readStore('inspections')).filter(i=>!i.pendingDelete);
+  const properties=await readStore('properties');
   const addressOf=resolvePropertyAddress(properties);
   all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('insp-list');
@@ -3646,7 +3688,7 @@ async function renderInspectionList(){
    produce one WITHOUT them, so the archive has to bake the report while the
    images are still reachable. */
 async function buildInspectionReport(insp,properties){
-  const props=properties||await dbGetAll('properties').catch(()=>[]);
+  const props=properties||await readStore('properties');
   const siteAddress=resolvePropertyAddress(props)(insp);
 
   // Stored photos are local base64 data URLs (not yet synced) or private
@@ -3944,7 +3986,7 @@ async function buildPhotoArchive(records,onProgress){
   const jobs=records.map(r=>({record:r,items:collectInspectionPhotos(r)}));
   jobs.forEach(j=>{ total+=j.items.length; });
 
-  const properties=await dbGetAll('properties').catch(()=>[]);
+  const properties=await readStore('properties');
 
   for(const job of jobs){
     const r=job.record;
@@ -4114,7 +4156,7 @@ async function archiveOldInspectionPhotos(){
   }else{
     cutoff=new Date(); cutoff.setFullYear(cutoff.getFullYear()-1);
   }
-  const all=(await dbGetAll('inspections').catch(()=>[])).filter(i=>!i.pendingDelete);
+  const all=(await readStore('inspections')).filter(i=>!i.pendingDelete);
   const due=all.filter(i=>{
     const d=parseFlexibleDate(i.date);
     return d && d<cutoff;
@@ -4556,7 +4598,7 @@ async function renderComplianceLive(){
   const regList=document.getElementById('regulatory-checklist-list');
   const propList=document.getElementById('compliance-properties-list');
   if(!banner||!hhList||!regList) return;
-  const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
+  const properties=(await readStore('properties')).filter(p=>!p.pendingDelete);
   const today=new Date(); today.setHours(0,0,0,0);
   const in30=new Date(today.getTime()+30*86400000);
 
@@ -4705,7 +4747,7 @@ async function saveProperty(){
 }
 
 async function renderPropertiesList(){
-  const all=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const all=(await readStore('properties')).filter(p=>!p.pendingDelete);
   all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('prop-list');
   document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
@@ -4864,7 +4906,7 @@ function updatePropSyncBanner(){ return renderSyncBanner('-prop','properties'); 
    ============================================================ */
 
 async function populateTenantPropertyDropdown(){
-  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const props=(await readStore('properties')).filter(p=>!p.pendingDelete);
   const select=document.getElementById('tenant-property');
   if(!props.length){
     select.innerHTML='<option value="">— Add a property first —</option>';
@@ -4950,8 +4992,8 @@ async function saveTenant(){
 }
 
 async function renderTenantsList(){
-  const all=(await dbGetAll('tenants')).filter(t=>!t.pendingDelete);
-  const properties=await dbGetAll('properties').catch(()=>[]);
+  const all=(await readStore('tenants')).filter(t=>!t.pendingDelete);
+  const properties=await readStore('properties');
   const addressOf=resolvePropertyAddress(properties);
   all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('tenant-list');
@@ -5036,7 +5078,7 @@ function updateTenantSyncBanner(){ return renderSyncBanner('-tenant','tenants');
    ============================================================ */
 
 async function populateMaintenancePropertyDropdown(){
-  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const props=(await readStore('properties')).filter(p=>!p.pendingDelete);
   const select=document.getElementById('maint-property');
   if(!props.length){
     select.innerHTML='<option value="">— Add a property first —</option>';
@@ -5112,8 +5154,8 @@ async function saveMaintenance(){
 }
 
 async function renderMaintenanceList(){
-  const all=(await dbGetAll('maintenance')).filter(m=>!m.pendingDelete);
-  const properties=await dbGetAll('properties').catch(()=>[]);
+  const all=(await readStore('maintenance')).filter(m=>!m.pendingDelete);
+  const properties=await readStore('properties');
   const addressOf=resolvePropertyAddress(properties);
   all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('maint-list');
@@ -5336,7 +5378,7 @@ function updateEmailTriageModeBanner(){
    them from Supabase too, matching how deletes work everywhere else. */
 async function purgeDemoTriageData(){
   const mockIds=new Set(MOCK_INBOX.map(m=>m.id));
-  const maint=await dbGetAll('maintenance').catch(()=>[]);
+  const maint=await readStore('maintenance');
   let removed=0;
   for(const m of maint){
     if(m.source!=='email-triage' || !mockIds.has(m.triageEmailId)) continue;
@@ -5351,7 +5393,7 @@ async function purgeDemoTriageData(){
     }
     removed++;
   }
-  const triage=await dbGetAll('emailTriage').catch(()=>[]);
+  const triage=await readStore('emailTriage');
   for(const t of triage){ if(mockIds.has(t.id)) await dbDelete('emailTriage',t.id); }
   await renderMaintenanceList();
   updateMaintSyncBanner();
@@ -5362,8 +5404,8 @@ async function purgeDemoTriageData(){
 }
 
 async function processEmailTriageInbox(){
-  const properties=await dbGetAll('properties').catch(()=>[]);
-  const existing=await dbGetAll('emailTriage').catch(()=>[]);
+  const properties=await readStore('properties');
+  const existing=await readStore('emailTriage');
   const existingIds=new Set(existing.map(e=>e.id));
   const incoming=fetchIncomingEmails();
 
@@ -5418,7 +5460,7 @@ async function actionDismissEmail(id){
 async function renderEmailTriageList(){
   const tbody=document.getElementById('triage-list');
   if(!tbody) return;
-  const all=await dbGetAll('emailTriage').catch(()=>[]);
+  const all=await readStore('emailTriage');
   all.sort((a,b)=>(b.receivedAt||'').localeCompare(a.receivedAt||''));
   const countEl=document.getElementById('triage-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
@@ -5511,7 +5553,7 @@ function autoFillInvoiceDueDate(){
 }
 
 async function populateInvoicePropertyDropdown(selectedId){
-  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const props=(await readStore('properties')).filter(p=>!p.pendingDelete);
   const select=document.getElementById('invoice-property');
   select.innerHTML='<option value="">— None / external —</option>'+props.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHtml(p.address)}</option>`).join('');
   if(selectedId) select.value=selectedId;
@@ -5566,7 +5608,7 @@ function recalcInvoiceTotals(){
 }
 
 async function nextInvoiceNumber(){
-  const all=await dbGetAll('invoices').catch(()=>[]);
+  const all=await readStore('invoices');
   const nums=all.map(inv=>{
     const m=/(\d+)\s*$/.exec(inv.invoiceNumber||'');
     return m?parseInt(m[1],10):0;
@@ -5675,7 +5717,7 @@ async function saveInvoice(){
 }
 
 async function renderInvoicesList(){
-  const all=(await dbGetAll('invoices').catch(()=>[])).filter(i=>!i.pendingDelete);
+  const all=(await readStore('invoices')).filter(i=>!i.pendingDelete);
   all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('invoice-list');
   if(!tbody) return;
@@ -5927,7 +5969,7 @@ let statementRowCounter=0;
 let statementBlockCounter=0;
 
 async function statementPropertyOptionsHtml(selectedId){
-  const props=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
+  const props=(await readStore('properties')).filter(p=>!p.pendingDelete);
   return '<option value="">— None / external —</option>'+props.map(p=>`<option value="${escapeAttr(p.id)}"${p.id===selectedId?' selected':''}>${escapeHtml(p.address)}</option>`).join('');
 }
 
@@ -6050,7 +6092,7 @@ function recalcStatementTotals(){
 }
 
 async function nextStatementNumber(){
-  const all=await dbGetAll('statements').catch(()=>[]);
+  const all=await readStore('statements');
   const now=new Date();
   const prefix='STMT-'+now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   const nums=all.filter(s=>(s.statementNumber||'').startsWith(prefix)).map(s=>{
@@ -6234,7 +6276,7 @@ function clearStatementDateFilter(){
 }
 
 async function renderStatementsList(){
-  const everything=(await dbGetAll('statements').catch(()=>[])).filter(s=>!s.pendingDelete);
+  const everything=(await readStore('statements')).filter(s=>!s.pendingDelete);
   const selectedPeriod=refreshStatementPeriodOptions(everything);
   const filter=readDateRangeFilter('statement-filter-from','statement-filter-to');
   const badInput=badDateRangeInputs(filter);
@@ -6568,8 +6610,8 @@ function clearFinancialsFilter(){
 }
 
 async function renderFinancials(){
-  const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
-  const statements=(await dbGetAll('statements').catch(()=>[])).filter(s=>!s.pendingDelete);
+  const properties=(await readStore('properties')).filter(p=>!p.pendingDelete);
+  const statements=(await readStore('statements')).filter(s=>!s.pendingDelete);
   const addressOf=resolvePropertyAddress(properties);
 
   const emptyEl=document.getElementById('fin-empty');
@@ -6835,10 +6877,10 @@ function daysUntilNextStatementCycle(){
 }
 
 async function renderDashboard(){
-  const properties=(await dbGetAll('properties').catch(()=>[])).filter(p=>!p.pendingDelete);
-  const tenants=(await dbGetAll('tenants').catch(()=>[])).filter(t=>!t.pendingDelete);
-  const maintenance=(await dbGetAll('maintenance').catch(()=>[])).filter(m=>!m.pendingDelete);
-  const inspections=(await dbGetAll('inspections').catch(()=>[])).filter(i=>!i.pendingDelete);
+  const properties=(await readStore('properties')).filter(p=>!p.pendingDelete);
+  const tenants=(await readStore('tenants')).filter(t=>!t.pendingDelete);
+  const maintenance=(await readStore('maintenance')).filter(m=>!m.pendingDelete);
+  const inspections=(await readStore('inspections')).filter(i=>!i.pendingDelete);
   const addressOf=resolvePropertyAddress(properties);
 
   // Open / urgent maintenance

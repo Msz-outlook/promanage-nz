@@ -2013,6 +2013,7 @@ async function checkSession(){
   const {data:{session}} = await sb.auth.getSession();
   if(session){
     showApp();
+    clearSyncSessionExpired();
     // Before anything reads or pushes IndexedDB: make sure what's on this
     // device belongs to the account that just opened it.
     await enforceLocalDataOwner(session.user && session.user.id);
@@ -2040,6 +2041,7 @@ async function doLogin(){
     return;
   }
   showApp();
+  clearSyncSessionExpired(); // a fresh sign-in is exactly the fix for it
   // Has to happen before the renders below — they read straight out of
   // IndexedDB, so a stale account's records would be on screen otherwise.
   await enforceLocalDataOwner(data && data.user && data.user.id);
@@ -2155,6 +2157,18 @@ function dbClear(storeName){
     tx.objectStore(storeName).clear();
     tx.oncomplete=()=>resolve();
     tx.onerror=(e)=>reject(e.target.error);
+  }));
+}
+
+/* Single record by primary key. Every by-id lookup in this file used to be
+   `(await dbGetAll(store)).find(r=>r.id===id)` — a full-store read, which for
+   `inspections` means deserialising every base64 photo of every inspection to
+   find one row. */
+function dbGet(storeName,id){
+  return openDB().then(db=>new Promise((resolve,reject)=>{
+    const req=db.transaction(storeName,'readonly').objectStore(storeName).get(id);
+    req.onsuccess=()=>resolve(req.result||null);
+    req.onerror=(e)=>reject(e.target.error);
   }));
 }
 
@@ -2424,7 +2438,11 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
   options=options||{};
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
   try{
-    const token=await authHeader();
+    // Throws (and is caught below) when the session has gone. navigator.onLine
+    // says nothing about whether we are still authenticated, and the delete
+    // pass at the bottom of this function must never run on an unauthenticated
+    // read — see the note on authHeader().
+    const token=await requireAuthHeader();
 
     /* Full or incremental? Full when we have no cursor to start from, when
        the last full pull has aged past FULL_PULL_INTERVAL_MS (that's the
@@ -2492,12 +2510,27 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
       console.log(`Pull sync: ${storeName} merged from a partial remote list — local records left untouched`);
       return;
     }
+    /* Belt and braces. A complete remote list that is empty, against a device
+       that holds synced records, is far more likely to be a permissions or
+       backend problem than a genuine "the user deleted everything elsewhere".
+       Wiping the device on that reading is unrecoverable-looking to the user,
+       whereas declining to is merely stale. Emptying a table deliberately is
+       still possible — it just takes one more sync, once at least one row
+       exists again, or an explicit reset. */
+    if(!remoteRows.length && localAll.some(r=>r.synced && !r.pendingDelete)){
+      console.log(`Pull sync: ${storeName} came back empty while local synced records exist — refusing the delete pass`);
+      return;
+    }
     for(const local of localAll){
       if(local.synced && !local.pendingDelete && !remoteIds.has(local.id)){
         await dbDelete(storeName,local.id);
       }
     }
   }catch(err){
+    if(err && err.sessionExpired){
+      console.log('Pull sync skipped for '+storeName+' — no active session');
+      throw err; // let fullSyncNow() surface this once, rather than per table
+    }
     console.log('Pull sync failed for '+storeName+':',err);
   }
 }
@@ -2589,6 +2622,12 @@ async function pullAllAndMerge(options){
   await renderFinancials();
 }
 
+/* Only one sync may be in flight at a time. Without this, a double-tapped
+   "Sync now" — or an `online` event landing while a sync is already running —
+   runs two passes concurrently over the same stores, which is what turns the
+   read-modify-write in syncPendingX() from theoretical into reachable. */
+let syncInFlight=false;
+
 // Push anything pending, then pull whatever changed elsewhere. Pushing first
 // means local edits win any race against a stale remote copy.
 async function fullSyncNow(){
@@ -2601,17 +2640,249 @@ async function fullSyncNow(){
     alert('Still offline — will sync automatically once connection returns.');
     return;
   }
-  await syncPendingProperties();
-  await syncPendingTenants();
-  await syncPendingMaintenance();
-  await syncPendingInspections();
-  await syncPendingInvoices();
-  await syncPendingStatements();
-  await syncPendingActivityLog();
-  // After the push (so nothing pending is dropped before it lands) and before
-  // the pull (so the pull can't re-fetch what was just dropped).
-  await pruneActivityLogIfDue();
-  await pullAllAndMerge();
+  if(syncInFlight) return;
+  syncInFlight=true;
+  try{
+    /* Being online is not the same as being signed in. A refresh token can
+       expire while the tab sits open, and every request after that would go
+       out unauthenticated — so check once here rather than letting seven
+       pushes and seven pulls each discover it separately. */
+    if(!await authHeader()){
+      markSyncSessionExpired();
+      return;
+    }
+    await syncPendingProperties();
+    await syncPendingTenants();
+    await syncPendingMaintenance();
+    await syncPendingInspections();
+    await syncPendingInvoices();
+    await syncPendingStatements();
+    await syncPendingActivityLog();
+    // After the push (so nothing pending is dropped before it lands) and before
+    // the pull (so the pull can't re-fetch what was just dropped).
+    await pruneActivityLogIfDue();
+    await pullAllAndMerge();
+  }catch(err){
+    // fullSyncNow() is called un-awaited from checkSession(), doLogin(), the
+    // `online` listener and six buttons, so anything thrown here used to
+    // surface only as an unhandled rejection in the console.
+    if(err && err.sessionExpired) markSyncSessionExpired();
+    else console.log('Sync failed:',err);
+  }finally{
+    syncInFlight=false;
+  }
+}
+
+/* The session went away mid-session. Nothing local is lost — pending records
+   stay pending and synced ones stay put — but the user has to sign in again
+   before anything will move, and until this existed the only symptom was a
+   "pending sync" count that never went down. */
+let syncSessionExpired=false;
+function markSyncSessionExpired(){
+  syncSessionExpired=true;
+  refreshAllSyncBanners();
+}
+function clearSyncSessionExpired(){
+  if(!syncSessionExpired) return;
+  syncSessionExpired=false;
+  refreshAllSyncBanners();
+}
+
+/* One implementation, six banners. These were six copies of the same eleven
+   lines differing only in an element id and a store name, which is how three
+   of them ended up with a null guard on `banner` and three without.
+
+   The banner is also the only always-visible place to say WHY nothing is
+   moving. "3 pending sync" that never goes down looks identical whether the
+   backend is down, the session expired, or a record is being rejected on every
+   attempt — so all three now get their own wording. */
+// How many consecutive rejections before a record is called out by name rather
+// than just counted. One failure is a blip; three is a record that is never
+// going to land on its own.
+const SYNC_ATTEMPTS_BEFORE_WARNING=3;
+
+const SYNC_BANNERS=[
+  {suffix:'',           store:'inspections'},
+  {suffix:'-prop',      store:'properties'},
+  {suffix:'-tenant',    store:'tenants'},
+  {suffix:'-maint',     store:'maintenance'},
+  {suffix:'-invoice',   store:'invoices'},
+  {suffix:'-statement', store:'statements'}
+];
+
+async function renderSyncBanner(suffix,store){
+  const banner=document.getElementById('sync-banner'+suffix);
+  if(!banner) return;
+  const statusText=document.getElementById('sync-status-text'+suffix);
+  const pendingText=document.getElementById('sync-pending-text'+suffix);
+
+  let pending=[], unreadable=false;
+  try{
+    pending=(await dbGetAll(store)).filter(r=>!r.synced);
+  }catch(err){
+    // Distinct from "no records". A failed IndexedDB read used to be swallowed
+    // into an empty array, so a storage problem was indistinguishable from an
+    // empty portfolio.
+    unreadable=true;
+    console.log('Sync banner: could not read '+store,err);
+  }
+
+  const online=navigator.onLine;
+  const stuck=pending.filter(r=>(r.syncAttempts||0)>=SYNC_ATTEMPTS_BEFORE_WARNING);
+  const healthy=online && !syncSessionExpired && !unreadable && !stuck.length;
+
+  banner.classList.toggle('sync-online',healthy);
+  banner.classList.toggle('sync-offline',!healthy);
+
+  if(statusText){
+    statusText.textContent =
+      unreadable          ? 'Local storage unavailable' :
+      !online             ? 'Offline' :
+      syncSessionExpired  ? 'Session expired' :
+      stuck.length        ? 'Sync blocked' :
+                            'Online';
+  }
+  if(pendingText){
+    if(unreadable){
+      pendingText.textContent='Could not read records on this device';
+    }else if(syncSessionExpired){
+      pendingText.textContent='Sign in again to sync'+(pending.length?' ('+pending.length+' pending)':'');
+    }else if(stuck.length){
+      const reason=stuck[0].lastSyncError;
+      pendingText.textContent=stuck.length+' rejected by the server'+(reason?' — '+reason:'')+
+        (pending.length>stuck.length?', '+(pending.length-stuck.length)+' still pending':'');
+    }else{
+      pendingText.textContent=pending.length+' pending sync';
+    }
+  }
+}
+
+function refreshAllSyncBanners(){
+  return Promise.all(SYNC_BANNERS.map(b=>renderSyncBanner(b.suffix,b.store)));
+}
+
+/* PostgREST puts the useful part in a JSON body — "column X does not exist",
+   "violates not-null constraint". Without reading it, a record that will never
+   be accepted looks exactly like a network blip, forever. That is not
+   hypothetical here: schema.sql §2 records a release where compliance_items
+   was pushed at a column that did not exist, so every property push failed
+   silently and the banner just sat there. */
+async function describeRestError(res){
+  let detail='';
+  try{
+    const body=await res.json();
+    detail=(body && (body.message||body.hint||body.details))||'';
+  }catch(e){/* not JSON — the status is all we have */}
+  return detail ? res.status+': '+detail : 'HTTP '+res.status;
+}
+
+/* Shared REST push. The six pushXToBackend functions were the same 35 lines
+   with a different table name and field map — which is how 409 handling ended
+   up in exactly one of them. They now own only the field map.
+
+   Returns {ok, deleted?, blocked?, sessionExpired?, status?, error?} rather
+   than a bare boolean, so syncPendingStore() can tell "retry this" from
+   "this will never work" from "you are signed out". */
+async function pushViaRest(remoteTable,record,buildBody){
+  if(!CONFIG.SUPABASE_URL) return {ok:true,deleted:!!record.pendingDelete};
+  try{
+    // Inside the try, deliberately. It used to be fetched before it, so a
+    // token-refresh failure threw straight out of the caller, out of the
+    // un-awaited fullSyncNow(), and aborted every remaining push and the
+    // entire pull as an unhandled rejection.
+    const token=await requireAuthHeader();
+    if(record.pendingDelete){
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${remoteTable}?id=eq.${encodeURIComponent(record.id)}`,{
+        method:'DELETE',
+        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+      });
+      if(res.ok) return {ok:true,deleted:true};
+      // 409 = something still references it. Unlike a network failure this
+      // will not come right on its own, so it must not stay queued: the row
+      // is hidden by pendingDelete, and retrying forever would leave a
+      // record invisible in the app and present in the database.
+      if(res.status===409) return {ok:false,blocked:true,status:409,error:await describeRestError(res)};
+      return {ok:false,status:res.status,error:await describeRestError(res)};
+    }
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${remoteTable}`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':CONFIG.SUPABASE_KEY,
+        'Authorization':`Bearer ${token}`,
+        'Prefer':'resolution=merge-duplicates'
+      },
+      body:JSON.stringify(buildBody(record))
+    });
+    if(res.ok) return {ok:true};
+    return {ok:false,status:res.status,error:await describeRestError(res)};
+  }catch(err){
+    if(err && err.sessionExpired) return {ok:false,sessionExpired:true,error:'Session expired'};
+    return {ok:false,error:(err && err.message)||'Network error'};
+  }
+}
+
+/* Shared pending-push loop.
+
+   The old version snapshotted every pending record, then wrote each one back
+   with synced=true AFTER a network round-trip lasting seconds. An edit saved
+   in that window was overwritten by the stale snapshot *and* marked synced —
+   so it was lost locally and never pushed, with no pending count left to show
+   for it. Re-reading the record and comparing updatedAt before marking it is
+   what closes that; a record that moved under us simply stays pending and goes
+   out on the next pass.
+
+   opts.label(record) — how to name a delete-blocked record to the user. */
+async function syncPendingStore(store,pushFn,opts){
+  opts=opts||{};
+  const blocked=[];
+  if(!navigator.onLine) return {blocked}; // fullSyncNow() owns the offline notice
+  let all;
+  try{ all=await dbGetAll(store); }
+  catch(err){ console.log('Sync: could not read '+store,err); return {blocked}; }
+
+  for(const snapshot of all.filter(r=>!r.synced)){
+    const result=await pushFn(snapshot);
+
+    let current;
+    try{ current=await dbGet(store,snapshot.id); }
+    catch(err){ continue; }
+    if(!current) continue; // removed while the push was in flight
+    const movedUnderUs = current.updatedAt!==snapshot.updatedAt;
+
+    if(result.sessionExpired){ markSyncSessionExpired(); break; }
+
+    if(result.blocked){
+      // Put it back the way it was so it reappears in the list, still synced.
+      current.pendingDelete=false;
+      current.synced=true;
+      current.syncAttempts=0;
+      delete current.lastSyncError;
+      await dbPut(store,current);
+      blocked.push(opts.label?opts.label(current):current.id);
+      continue;
+    }
+
+    if(result.ok){
+      if(movedUnderUs) continue; // newer local edit — leave it pending
+      if(result.deleted){ await dbDelete(store,snapshot.id); continue; }
+      current.synced=true;
+      current.syncAttempts=0;
+      delete current.lastSyncError;
+      if(result.patch) Object.assign(current,result.patch);
+      await dbPut(store,current);
+      continue;
+    }
+
+    // Rejected or unreachable. Record why so the banner can say so, instead of
+    // showing a count that never moves and never explains itself.
+    current.syncAttempts=(current.syncAttempts||0)+1;
+    current.lastSyncError=result.error||'Unknown error';
+    await dbPut(store,current);
+    console.log('Sync: '+store+'/'+snapshot.id+' not accepted (attempt '+
+      current.syncAttempts+') — '+current.lastSyncError);
+  }
+  return {blocked};
 }
 
 /* ============================================================
@@ -2816,40 +3087,16 @@ async function renderActivityLog(){
       <td>${escapeHtml(l.detail)}</td>
     </tr>`).join('');
 }
-async function pushActivityLogToBackend(record){
-  if(!CONFIG.SUPABASE_URL) return true;
-  const token=await authHeader();
-  try{
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/activity_log`,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${token}`,
-        'Prefer':'resolution=merge-duplicates'
-      },
-      body:JSON.stringify({
-        id:record.id,entity:record.entity,action:record.action,detail:record.detail,
-        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
-      })
-    });
-    return res.ok;
-  }catch(err){
-    console.log('Activity log sync failed, will retry later:',err);
-    return false;
-  }
+// The activity log is append-only — logActivity() never sets pendingDelete, and
+// old rows leave via the retention prune rather than a per-record delete.
+function pushActivityLogToBackend(record){
+  return pushViaRest('activity_log',record,r=>({
+    id:r.id,entity:r.entity,action:r.action,detail:r.detail,
+    created_at:r.createdAt,updated_at:r.updatedAt||r.createdAt
+  }));
 }
 async function syncPendingActivityLog(){
-  if(!navigator.onLine) return;
-  const all=await dbGetAll('activityLog');
-  const pending=all.filter(l=>!l.synced);
-  for(const record of pending){
-    const result=await pushActivityLogToBackend(record);
-    if(result){
-      record.synced=true;
-      await dbPut('activityLog',record);
-    }
-  }
+  await syncPendingStore('activityLog',pushActivityLogToBackend);
   await renderActivityLog();
 }
 
@@ -3327,13 +3574,16 @@ async function deleteInspection(id){
   if(!record)return;
   await logActivity('Inspection','Deleted',record.property+' — '+record.date);
   if(record.synced && navigator.onLine){
-    await deletePhotosFromStorage(record);
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
+    // Row first, photos second — same reasoning as pushInspectionToBackend().
+    // Deleting the photos up front meant a failed row DELETE left the record
+    // queued for retry with its images already destroyed.
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${encodeURIComponent(id)}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
     }).catch(()=>null);
     if(res && res.ok){
+      await deletePhotosFromStorage(record);
       await dbDelete('inspections',id);
     }else{
       record.pendingDelete=true;
@@ -3367,14 +3617,44 @@ function sanitizeForPath(str){
   return String(str).replace(/[^a-zA-Z0-9]+/g,'_');
 }
 
+/* Returns the signed-in user's access token, or null when there is no live
+   session.
+
+   It used to fall back to CONFIG.SUPABASE_KEY (the anon publishable key), and
+   that was the most dangerous line in the file. Every RLS policy is granted
+   `to authenticated`, so an anon-key read is FILTERED, not rejected —
+   PostgREST answers `200 []`. An empty authorised response and an empty
+   unauthorised one then look identical to pullAndMerge(), whose delete pass
+   reads "synced locally, absent from a complete remote list" as "deleted on
+   the server". A refresh token expiring overnight was therefore enough to
+   silently erase every synced record on the device.
+
+   Returning null instead makes the failure loud in exactly the right way: the
+   request goes out unauthenticated, PostgREST answers 401, fetchRemoteTablePaged
+   reports complete:false, and every caller already treats that as "don't trust
+   this list". Nothing is deleted and nothing is marked synced. */
 async function authHeader(){
-  const {data:{session}} = await sb.auth.getSession();
-  return session ? session.access_token : CONFIG.SUPABASE_KEY;
+  const {data:{session}} = await sb.auth.getSession().catch(()=>({data:{session:null}}));
+  return session ? session.access_token : null;
+}
+
+// Same thing for the paths that must not proceed at all without a session,
+// rather than proceed and fail on a 401.
+async function requireAuthHeader(){
+  const token=await authHeader();
+  if(!token){
+    const err=new Error('No active session');
+    err.sessionExpired=true;
+    throw err;
+  }
+  return token;
 }
 
 async function uploadPhotoToStorage(dataUrl,path){
   const blob=dataUrlToBlob(dataUrl);
-  const token=await authHeader();
+  // requireAuthHeader, so a signed-out upload reports "Session expired"
+  // instead of a bare 401 the caller has to guess at.
+  const token=await requireAuthHeader();
   const res=await fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
     method:'POST',
     headers:{
@@ -3407,20 +3687,32 @@ async function uploadRecordPhotos(record){
   return {...record,areas};
 }
 
+/* Inspections don't go through pushViaRest: the photos have to be uploaded to
+   Storage first, and the record that comes back carries `storage:` references
+   in place of the base64 payloads — which is what stops the local copy holding
+   megabytes per inspection forever. That swapped record is returned as
+   `patch` so syncPendingStore() can persist it. */
 async function pushInspectionToBackend(record){
   if(!CONFIG.SUPABASE_URL){
     console.log('No backend configured — would sync:',record.id);
-    return record;
+    return {ok:true,deleted:!!record.pendingDelete};
   }
-  const token=await authHeader();
   try{
+    const token=await requireAuthHeader();
     if(record.pendingDelete){
-      await deletePhotosFromStorage(record);
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${record.id}`,{
+      /* Row first, photos second. The other way round — which is what this
+         did — meant a failed row DELETE left the photos already gone from
+         Storage while the record stayed pending and still on screen, and no
+         later sync could put them back. This order can orphan objects in the
+         bucket if the photo cleanup fails, which the archive tool can mop up;
+         the other order destroys evidence. */
+      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${encodeURIComponent(record.id)}`,{
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      if(!res.ok) return {ok:false,status:res.status,error:await describeRestError(res)};
+      await deletePhotosFromStorage(record);
+      return {ok:true,deleted:true};
     }
     const uploadedRecord=await uploadRecordPhotos(record);
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
@@ -3442,42 +3734,23 @@ async function pushInspectionToBackend(record){
         updated_at: uploadedRecord.updatedAt||uploadedRecord.createdAt
       })
     });
-    return res.ok ? uploadedRecord : false;
+    if(!res.ok) return {ok:false,status:res.status,error:await describeRestError(res)};
+    // Photo refs only — merging the whole record would undo the compare-and-set
+    // in syncPendingStore().
+    return {ok:true,patch:{areas:uploadedRecord.areas}};
   }catch(err){
-    console.log('Sync failed, will retry later:',err);
-    return false;
+    if(err && err.sessionExpired) return {ok:false,sessionExpired:true,error:'Session expired'};
+    return {ok:false,error:(err && err.message)||'Network error'};
   }
 }
 
 async function syncPendingInspections(){
-  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
-  const all=await dbGetAll('inspections');
-  const pending=all.filter(i=>!i.synced);
-  for(const record of pending){
-    const result=await pushInspectionToBackend(record);
-    if(result==='deleted'){
-      await dbDelete('inspections',record.id);
-    }else if(result){
-      result.synced=true;
-      await dbPut('inspections',result); // saves back with photo URLs instead of base64 — shrinks local storage too
-    }
-  }
+  await syncPendingStore('inspections',pushInspectionToBackend);
   await renderInspectionList();
   updateSyncBanner();
 }
 
-async function updateSyncBanner(){
-  const banner=document.getElementById('sync-banner');
-  const statusText=document.getElementById('sync-status-text');
-  const pendingText=document.getElementById('sync-pending-text');
-  const all=await dbGetAll('inspections').catch(()=>[]);
-  const pendingCount=all.filter(i=>!i.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
-}
+function updateSyncBanner(){ return renderSyncBanner('','inspections'); }
 
 // Every module with a sync banner has to be refreshed here, or its banner keeps
 // showing the connectivity state from whenever its page was last rendered.
@@ -3485,10 +3758,15 @@ window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();
 window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();updateStatementSyncBanner();});
 
 // Initialise the inspection page once the DOM is ready
-document.addEventListener('DOMContentLoaded',()=>{
+document.addEventListener('DOMContentLoaded',async ()=>{
   const lawVerifiedEl=document.getElementById('law-last-verified');
   if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
-  checkSession();
+  /* Awaited, deliberately. checkSession() yields at getSession() before it
+     reaches enforceLocalDataOwner(), so firing the renders below without
+     waiting painted the PREVIOUS account's properties, tenants and financials
+     for as long as that round-trip took. doLogin() already gets this ordering
+     right and says so; the boot path had it inverted. */
+  await checkSession();
   resetInspectionForm();
   renderInspectionList();
   updateSyncBanner();
@@ -3907,65 +4185,20 @@ async function deleteProperty(id){
   updatePropSyncBanner();
 }
 
-async function pushPropertyToBackend(record){
-  if(!CONFIG.SUPABASE_URL) return true;
-  const token=await authHeader();
-  try{
-    if(record.pendingDelete){
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${record.id}`,{
-        method:'DELETE',
-        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-      });
-      if(res.ok) return 'deleted';
-      // 409 = something still references it. Unlike a network failure this
-      // will not come right on its own, so it must not stay queued: the row
-      // is hidden by pendingDelete, and retrying forever would leave a
-      // property invisible in the app and present in the database.
-      return res.status===409 ? 'blocked' : false;
-    }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties`,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${token}`,
-        'Prefer':'resolution=merge-duplicates'
-      },
-      body:JSON.stringify({
-        id:record.id,address:record.address,bedrooms:record.bedrooms,bathrooms:record.bathrooms,
-        floor_area:record.floorArea,parking:record.parking||0,tenancy:record.tenancy,rent_per_week:record.rentPerWeek,
-        status:record.status,compliance_items:record.complianceItems||{},
-        compliance_status:overallComplianceStatus(record),notes:record.notes,
-        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
-      })
-    });
-    return res.ok;
-  }catch(err){
-    console.log('Property sync failed, will retry later:',err);
-    return false;
-  }
+function pushPropertyToBackend(record){
+  return pushViaRest('properties',record,r=>({
+    id:r.id,address:r.address,bedrooms:r.bedrooms,bathrooms:r.bathrooms,
+    floor_area:r.floorArea,parking:r.parking||0,tenancy:r.tenancy,rent_per_week:r.rentPerWeek,
+    status:r.status,compliance_items:r.complianceItems||{},
+    compliance_status:overallComplianceStatus(r),notes:r.notes,
+    created_at:r.createdAt,updated_at:r.updatedAt||r.createdAt
+  }));
 }
 
 async function syncPendingProperties(){
-  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
-  const all=await dbGetAll('properties');
-  const pending=all.filter(p=>!p.synced);
-  const blocked=[];
-  for(const record of pending){
-    const result=await pushPropertyToBackend(record);
-    if(result==='deleted'){
-      await dbDelete('properties',record.id);
-    }else if(result==='blocked'){
-      // Put it back the way it was so it reappears in the list, still synced.
-      record.pendingDelete=false;
-      record.synced=true;
-      await dbPut('properties',record);
-      blocked.push(record.address);
-    }else if(result){
-      record.synced=true;
-      await dbPut('properties',record);
-    }
-  }
+  const {blocked}=await syncPendingStore('properties',pushPropertyToBackend,{
+    label:r=>r.address
+  });
   await renderPropertiesList();
   updatePropSyncBanner();
   // One notice for the batch — fullSyncNow() calls seven of these in a row and
@@ -3977,18 +4210,7 @@ async function syncPendingProperties(){
   }
 }
 
-async function updatePropSyncBanner(){
-  const banner=document.getElementById('sync-banner-prop');
-  const statusText=document.getElementById('sync-status-text-prop');
-  const pendingText=document.getElementById('sync-pending-text-prop');
-  const all=await dbGetAll('properties').catch(()=>[]);
-  const pendingCount=all.filter(p=>!p.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
-}
+function updatePropSyncBanner(){ return renderSyncBanner('-prop','properties'); }
 
 /* ============================================================
    TENANTS MODULE — same offline-first pattern as Properties.
@@ -4145,69 +4367,23 @@ async function deleteTenant(id){
   updateTenantSyncBanner();
 }
 
-async function pushTenantToBackend(record){
-  if(!CONFIG.SUPABASE_URL) return true;
-  const token=await authHeader();
-  try{
-    if(record.pendingDelete){
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${record.id}`,{
-        method:'DELETE',
-        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-      });
-      return res.ok ? 'deleted' : false;
-    }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants`,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${token}`,
-        'Prefer':'resolution=merge-duplicates'
-      },
-      body:JSON.stringify({
-        id:record.id,tenant_name:record.tenantName,property_id:record.propertyId,
-        property_address:record.propertyAddress,lease_start:record.leaseStart,lease_end:record.leaseEnd,
-        bond_lodged:record.bondLodged,bond_reference:record.bondReference,rent_per_week:record.rentPerWeek,
-        status:record.status,arrears_amount:record.arrearsAmount,notes:record.notes,
-        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
-      })
-    });
-    return res.ok;
-  }catch(err){
-    console.log('Tenant sync failed, will retry later:',err);
-    return false;
-  }
+function pushTenantToBackend(record){
+  return pushViaRest('tenants',record,r=>({
+    id:r.id,tenant_name:r.tenantName,property_id:r.propertyId,
+    property_address:r.propertyAddress,lease_start:r.leaseStart,lease_end:r.leaseEnd,
+    bond_lodged:r.bondLodged,bond_reference:r.bondReference,rent_per_week:r.rentPerWeek,
+    status:r.status,arrears_amount:r.arrearsAmount,notes:r.notes,
+    created_at:r.createdAt,updated_at:r.updatedAt||r.createdAt
+  }));
 }
 
 async function syncPendingTenants(){
-  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
-  const all=await dbGetAll('tenants');
-  const pending=all.filter(t=>!t.synced);
-  for(const record of pending){
-    const result=await pushTenantToBackend(record);
-    if(result==='deleted'){
-      await dbDelete('tenants',record.id);
-    }else if(result){
-      record.synced=true;
-      await dbPut('tenants',record);
-    }
-  }
+  await syncPendingStore('tenants',pushTenantToBackend);
   await renderTenantsList();
   updateTenantSyncBanner();
 }
 
-async function updateTenantSyncBanner(){
-  const banner=document.getElementById('sync-banner-tenant');
-  const statusText=document.getElementById('sync-status-text-tenant');
-  const pendingText=document.getElementById('sync-pending-text-tenant');
-  const all=await dbGetAll('tenants').catch(()=>[]);
-  const pendingCount=all.filter(t=>!t.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
-}
+function updateTenantSyncBanner(){ return renderSyncBanner('-tenant','tenants'); }
 
 /* ============================================================
    MAINTENANCE MODULE — same offline-first pattern as the others.
@@ -4352,68 +4528,22 @@ async function deleteMaintenance(id){
   updateMaintSyncBanner();
 }
 
-async function pushMaintenanceToBackend(record){
-  if(!CONFIG.SUPABASE_URL) return true;
-  const token=await authHeader();
-  try{
-    if(record.pendingDelete){
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${record.id}`,{
-        method:'DELETE',
-        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-      });
-      return res.ok ? 'deleted' : false;
-    }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance`,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${token}`,
-        'Prefer':'resolution=merge-duplicates'
-      },
-      body:JSON.stringify({
-        id:record.id,property_id:record.propertyId,property_address:record.propertyAddress,
-        issue:record.issue,reported_date:record.reportedDate,priority:record.priority,
-        assigned_to:record.assignedTo,status:record.status,created_at:record.createdAt,
-        updated_at:record.updatedAt||record.createdAt
-      })
-    });
-    return res.ok;
-  }catch(err){
-    console.log('Maintenance sync failed, will retry later:',err);
-    return false;
-  }
+function pushMaintenanceToBackend(record){
+  return pushViaRest('maintenance',record,r=>({
+    id:r.id,property_id:r.propertyId,property_address:r.propertyAddress,
+    issue:r.issue,reported_date:r.reportedDate,priority:r.priority,
+    assigned_to:r.assignedTo,status:r.status,created_at:r.createdAt,
+    updated_at:r.updatedAt||r.createdAt
+  }));
 }
 
 async function syncPendingMaintenance(){
-  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
-  const all=await dbGetAll('maintenance');
-  const pending=all.filter(m=>!m.synced);
-  for(const record of pending){
-    const result=await pushMaintenanceToBackend(record);
-    if(result==='deleted'){
-      await dbDelete('maintenance',record.id);
-    }else if(result){
-      record.synced=true;
-      await dbPut('maintenance',record);
-    }
-  }
+  await syncPendingStore('maintenance',pushMaintenanceToBackend);
   await renderMaintenanceList();
   updateMaintSyncBanner();
 }
 
-async function updateMaintSyncBanner(){
-  const banner=document.getElementById('sync-banner-maint');
-  const statusText=document.getElementById('sync-status-text-maint');
-  const pendingText=document.getElementById('sync-pending-text-maint');
-  const all=await dbGetAll('maintenance').catch(()=>[]);
-  const pendingCount=all.filter(m=>!m.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
-}
+function updateMaintSyncBanner(){ return renderSyncBanner('-maint','maintenance'); }
 
 /* ============================================================
    EMAIL TRIAGE MODULE — test/mock mode, no mailbox connected.
@@ -4958,74 +5088,27 @@ async function deleteInvoice(id){
   updateInvoiceSyncBanner();
 }
 
-async function pushInvoiceToBackend(record){
-  if(!CONFIG.SUPABASE_URL) return true;
-  const token=await authHeader();
-  try{
-    if(record.pendingDelete){
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${record.id}`,{
-        method:'DELETE',
-        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-      });
-      return res.ok ? 'deleted' : false;
-    }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices`,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${token}`,
-        'Prefer':'resolution=merge-duplicates'
-      },
-      body:JSON.stringify({
-        id:record.id,invoice_number:record.invoiceNumber,reference:record.reference,
-        bill_to_name:record.billToName,bill_to_attention:record.billToAttention,
-        bill_to_email:record.billToEmail,bill_to_address:record.billToAddress,
-        property_id:record.propertyId||null,property_address:record.propertyAddress,
-        issue_date:record.issueDate,due_date:record.dueDate,payment_terms_days:record.paymentTermsDays,
-        gst_mode:record.gstMode,
-        items:record.items,notes:record.notes,status:record.status,
-        subtotal:record.subtotal,gst:record.gst,total:record.total,
-        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
-      })
-    });
-    return res.ok;
-  }catch(err){
-    console.log('Invoice sync failed, will retry later:',err);
-    return false;
-  }
+function pushInvoiceToBackend(record){
+  return pushViaRest('invoices',record,r=>({
+    id:r.id,invoice_number:r.invoiceNumber,reference:r.reference,
+    bill_to_name:r.billToName,bill_to_attention:r.billToAttention,
+    bill_to_email:r.billToEmail,bill_to_address:r.billToAddress,
+    property_id:r.propertyId||null,property_address:r.propertyAddress,
+    issue_date:r.issueDate,due_date:r.dueDate,payment_terms_days:r.paymentTermsDays,
+    gst_mode:r.gstMode,
+    items:r.items,notes:r.notes,status:r.status,
+    subtotal:r.subtotal,gst:r.gst,total:r.total,
+    created_at:r.createdAt,updated_at:r.updatedAt||r.createdAt
+  }));
 }
 
 async function syncPendingInvoices(){
-  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
-  const all=await dbGetAll('invoices');
-  const pending=all.filter(i=>!i.synced);
-  for(const record of pending){
-    const result=await pushInvoiceToBackend(record);
-    if(result==='deleted'){
-      await dbDelete('invoices',record.id);
-    }else if(result){
-      record.synced=true;
-      await dbPut('invoices',record);
-    }
-  }
+  await syncPendingStore('invoices',pushInvoiceToBackend);
   await renderInvoicesList();
   updateInvoiceSyncBanner();
 }
 
-async function updateInvoiceSyncBanner(){
-  const banner=document.getElementById('sync-banner-invoice');
-  if(!banner) return;
-  const statusText=document.getElementById('sync-status-text-invoice');
-  const pendingText=document.getElementById('sync-pending-text-invoice');
-  const all=await dbGetAll('invoices').catch(()=>[]);
-  const pendingCount=all.filter(i=>!i.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
-}
+function updateInvoiceSyncBanner(){ return renderSyncBanner('-invoice','invoices'); }
 
 async function generateInvoicePDF(id){
   const all=await dbGetAll('invoices');
@@ -5545,82 +5628,46 @@ async function deleteStatement(id){
       record.synced=false;
       await dbPut('statements',record);
     }
-  }else{
+  }else if(record.synced){
+    /* Synced but offline. `synced` MUST go false as well as pendingDelete —
+       syncPendingStore() only ever looks at !synced records, so leaving it
+       true meant the server row was never deleted, the statement vanished from
+       the list (which filters on pendingDelete), and the next pull could merge
+       the still-present server row straight back over the top and resurrect
+       it. Every other delete in this file splits these two cases; this one
+       collapsed them. */
     record.pendingDelete=true;
+    record.synced=false;
     await dbPut('statements',record);
+  }else{
+    // Never reached the server — nothing to delete remotely.
+    await dbDelete('statements',id);
   }
   await renderStatementsList();
   updateStatementSyncBanner();
 }
 
-async function pushStatementToBackend(record){
-  if(!CONFIG.SUPABASE_URL) return true;
-  const token=await authHeader();
-  try{
-    if(record.pendingDelete){
-      const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${record.id}`,{
-        method:'DELETE',
-        headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-      });
-      return res.ok ? 'deleted' : false;
-    }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements`,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':CONFIG.SUPABASE_KEY,
-        'Authorization':`Bearer ${token}`,
-        'Prefer':'resolution=merge-duplicates'
-      },
-      body:JSON.stringify({
-        id:record.id,statement_number:record.statementNumber,
-        owner_name:record.ownerName,owner_email:record.ownerEmail,
-        period_start:record.periodStart,period_end:record.periodEnd,
-        status:record.status,opening_balance:record.openingBalance,
-        properties:record.properties,
-        total_income:record.totalIncome,total_expenses:record.totalExpenses,
-        net_amount:record.netAmount,closing_balance:record.closingBalance,
-        notes:record.notes,
-        created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
-      })
-    });
-    return res.ok;
-  }catch(err){
-    console.log('Statement sync failed, will retry later:',err);
-    return false;
-  }
+function pushStatementToBackend(record){
+  return pushViaRest('statements',record,r=>({
+    id:r.id,statement_number:r.statementNumber,
+    owner_name:r.ownerName,owner_email:r.ownerEmail,
+    period_start:r.periodStart,period_end:r.periodEnd,
+    status:r.status,opening_balance:r.openingBalance,
+    properties:r.properties,
+    total_income:r.totalIncome,total_expenses:r.totalExpenses,
+    net_amount:r.netAmount,closing_balance:r.closingBalance,
+    notes:r.notes,
+    created_at:r.createdAt,updated_at:r.updatedAt||r.createdAt
+  }));
 }
 
 async function syncPendingStatements(){
-  if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
-  const all=await dbGetAll('statements');
-  const pending=all.filter(s=>!s.synced);
-  for(const record of pending){
-    const result=await pushStatementToBackend(record);
-    if(result==='deleted'){
-      await dbDelete('statements',record.id);
-    }else if(result){
-      record.synced=true;
-      await dbPut('statements',record);
-    }
-  }
+  await syncPendingStore('statements',pushStatementToBackend);
   await renderStatementsList();
   updateStatementSyncBanner();
 }
 
-async function updateStatementSyncBanner(){
-  const banner=document.getElementById('sync-banner-statement');
-  if(!banner) return;
-  const statusText=document.getElementById('sync-status-text-statement');
-  const pendingText=document.getElementById('sync-pending-text-statement');
-  const all=await dbGetAll('statements').catch(()=>[]);
-  const pendingCount=all.filter(s=>!s.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
-}
+function updateStatementSyncBanner(){ return renderSyncBanner('-statement','statements'); }
 
 async function generateStatementPDF(id){
   const all=await dbGetAll('statements');

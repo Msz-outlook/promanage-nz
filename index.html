@@ -1995,6 +1995,21 @@ const BUSINESS_INFO = {
   LOGO: { PATH: '' }
 };
 
+/* The values above, before any imported JSON has had a chance to overwrite
+   them. importInvoiceJSON() can rewrite BUSINESS_INFO — including the bank
+   account number printed on every invoice — and used to do it silently and
+   irreversibly for the rest of the session. resetBusinessInfo() puts them
+   back without a reload. */
+const BUSINESS_INFO_DEFAULTS=JSON.parse(JSON.stringify(BUSINESS_INFO));
+function resetBusinessInfo(){
+  const clean=JSON.parse(JSON.stringify(BUSINESS_INFO_DEFAULTS));
+  Object.assign(BUSINESS_INFO,clean);
+  Object.assign(BUSINESS_INFO.BANK,clean.BANK);
+  Object.assign(BUSINESS_INFO.LOGO,clean.LOGO);
+  return BUSINESS_INFO;
+}
+window.resetBusinessInfo=resetBusinessInfo;
+
 // The NZ law/compliance content in this app (dashboard alert + Compliance
 // page "law changes" card) is static text, not a live feed. This date is
 // the single source of truth for when it was last checked against current
@@ -3112,10 +3127,29 @@ function todayStr(){
 // Shared helper for safely dropping free-text values into template-literal
 // HTML (area notes, compliance item notes, etc) — prevents saved text like
 // "<script>" or "Tom & Jerry's place" from breaking the markup.
+/* Escapes for interpolation into HTML — text content OR an attribute value.
+
+   It used to escape only & < >, which is text-node-safe but not
+   attribute-safe, and a second helper (escapeAttr, defined ~1700 lines further
+   down) covered quotes instead. Two helpers with disjoint coverage and nothing
+   enforcing which belonged where meant roughly half the call sites used the
+   wrong one. Quotes are escaped here now, so one helper is correct everywhere
+   and escapeAttr is kept only as an alias for the existing call sites. */
 function escapeHtml(str){
   if(str===null||str===undefined||str==='') return '';
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
 }
+
+/* Same function. Kept because the existing call sites read better where an
+   attribute is clearly what's meant — and declared here rather than beside the
+   invoice code where it used to live, since it is called from renderers
+   defined well above that point. */
+function escapeAttr(str){ return escapeHtml(str); }
 
 function addInspectionArea(name,opts){
   opts=opts||{};
@@ -3418,7 +3452,7 @@ async function renderInspectionList(){
       <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${escapeAttr(insp.id)}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${escapeAttr(insp.id)}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${escapeAttr(insp.id)}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
@@ -3872,8 +3906,8 @@ async function openComplianceModal(id){
         <div><label>Status</label><select class="ci-status" data-key="${it.key}">
           ${['Compliant','Overdue','Not assessed','N/A'].map(s=>`<option${s===it.status?' selected':''}>${s}</option>`).join('')}
         </select></div>
-        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${it.lastChecked}"></div>
-        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${it.nextDue}"></div>
+        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${escapeAttr(it.lastChecked)}"></div>
+        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${escapeAttr(it.nextDue)}"></div>
       </div>
       <label style="margin-top:8px">Notes / comments</label>
       <textarea class="ci-notes" data-key="${it.key}" placeholder="Optional notes for this item..." style="min-height:36px">${escapeHtml(it.notes)}</textarea>
@@ -3942,7 +3976,8 @@ async function renderComplianceLive(){
       const iconClass=s.overdue>0?'ci-r':(s.notAssessed>0?'ci-a':'ci-g');
       let desc;
       if(!s.total) desc='No properties track this item yet.';
-      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${s.overdueAddrs.slice(0,2).join(', ')}${s.overdueAddrs.length>2?'…':''}`;
+      // Addresses are free text typed by the user and land in innerHTML below.
+      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${escapeHtml(s.overdueAddrs.slice(0,2).join(', '))}${s.overdueAddrs.length>2?'…':''}`;
       else if(s.notAssessed>0) desc=`${s.notAssessed} of ${s.total} not yet assessed.`;
       else desc=`All ${s.total-s.na} compliant.`+(s.dueSoon?` ${s.dueSoon} due for re-check within 30 days.`:'');
       return `<div class="comp-item"><div class="comp-icon ${iconClass}">${def.icon}</div><div><div class="comp-name">${def.label}</div><div class="comp-desc">${desc}</div><div class="prog"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>`;
@@ -4076,13 +4111,13 @@ async function renderPropertiesList(){
   const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
   const statusBadge=s=>{
     const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(p=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editProperty('${escapeAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m² · ${p.parking||0} parking</span></td>
+      <td style="cursor:pointer" ondblclick="editProperty('${escapeAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${escapeHtml(p.bedrooms)} bed · ${escapeHtml(p.bathrooms)} bath · ${escapeHtml(p.floorArea)}m² · ${escapeHtml(p.parking||0)} parking</span></td>
       <td>${tenancyBadge(p.tenancy)}</td>
-      <td>$${p.rentPerWeek}</td>
+      <td>$${escapeHtml(p.rentPerWeek)}</td>
       <td>${statusBadge(p.status)}</td>
       <td>${complianceSummaryBadge(p)}</td>
       <td>${p.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
@@ -4150,7 +4185,7 @@ async function deleteProperty(id){
   if(record.synced && navigator.onLine){
     // Already in Supabase — delete remotely now
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${encodeURIComponent(id)}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
     }).catch(()=>null);
@@ -4319,7 +4354,7 @@ async function renderTenantsList(){
   }
   const pageItems=getListPage('tenants',all);
   const statusBadge=(t)=>{
-    if(t.status==='Arrears') return `<span class="badge br">Arrears $${t.arrearsAmount}</span>`;
+    if(t.status==='Arrears') return `<span class="badge br">Arrears $${escapeHtml(t.arrearsAmount)}</span>`;
     if(t.status==='Renewal due') return '<span class="badge ba">Renewal due</span>';
     if(t.status==='Vacated') return '<span class="badge bgr">Vacated</span>';
     return '<span class="badge bg">Current</span>';
@@ -4328,10 +4363,10 @@ async function renderTenantsList(){
     <tr>
       <td style="cursor:pointer" ondblclick="editTenant('${escapeAttr(t.id)}')" title="Double-click to edit"><strong>${escapeHtml(t.tenantName)}</strong></td>
       <td>${escapeHtml(addressOf(t))}</td>
-      <td>${t.leaseStart||'—'}</td>
-      <td>${t.leaseEnd||'—'}</td>
+      <td>${escapeHtml(t.leaseStart||'—')}</td>
+      <td>${escapeHtml(t.leaseEnd||'—')}</td>
       <td>${t.bondLodged?'<span class="badge bg">✓ TS</span>':'<span class="badge ba">Not lodged</span>'}</td>
-      <td>$${t.rentPerWeek}</td>
+      <td>$${escapeHtml(t.rentPerWeek)}</td>
       <td>${statusBadge(t)}</td>
       <td>${t.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
     </tr>`).join('');
@@ -4345,7 +4380,7 @@ async function deleteTenant(id){
   await logActivity('Tenant','Deleted',record.tenantName+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
     }).catch(()=>null);
@@ -4480,11 +4515,11 @@ async function renderMaintenanceList(){
   const pageItems=getListPage('maintenance',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
-    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
   };
   const statusBadge=s=>{
     const map={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(m=>`
     <tr>
@@ -4506,7 +4541,7 @@ async function deleteMaintenance(id){
   await logActivity('Maintenance','Deleted',record.issue+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${encodeURIComponent(id)}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
     }).catch(()=>null);
@@ -4782,15 +4817,15 @@ async function renderEmailTriageList(){
   const pageItems=getListPage('triage',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
-    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
   };
   const statusCell=rec=>{
     if(rec.status==='auto-created') return {badge:'<span class="badge bg">✓ Auto-created</span>',action:'—'};
     if(rec.status==='created') return {badge:'<span class="badge bg">✓ Created</span>',action:'—'};
-    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
-    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
+    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${escapeAttr(rec.id)}')">Create request</button>`};
+    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${escapeAttr(rec.id)}')">Create request</button>`};
     return {badge:'<span class="badge ba">Needs review</span>',
-      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${rec.id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${rec.id}')">Dismiss</button>`};
+      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${escapeAttr(rec.id)}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${escapeAttr(rec.id)}')">Dismiss</button>`};
   };
   tbody.innerHTML=pageItems.map(rec=>{
     const sc=statusCell(rec);
@@ -4881,10 +4916,6 @@ function invoiceItemRowHtml(rowId,item){
 // For values dropped into an HTML attribute. Single quotes matter as much as
 // double: several handlers here are written as onclick="fn('${id}')", so an
 // apostrophe would close the JS string and everything after it becomes code.
-function escapeAttr(str){
-  if(str===null||str===undefined) return '';
-  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
-}
 
 function addInvoiceItemRow(item){
   invoiceItemRowCounter++;
@@ -5042,19 +5073,19 @@ async function renderInvoicesList(){
   const pageItems=getListPage('invoices',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg',Overdue:'br'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(inv=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editInvoice('${inv.id}')" title="Double-click to edit"><strong>${inv.invoiceNumber}</strong></td>
+      <td style="cursor:pointer" ondblclick="editInvoice('${escapeAttr(inv.id)}')" title="Double-click to edit"><strong>${escapeHtml(inv.invoiceNumber)}</strong></td>
       <td>${escapeHtml(inv.billToName)}</td>
       <td>${escapeHtml(inv.propertyAddress||'—')}</td>
-      <td>${inv.issueDate||'—'}</td>
-      <td>${inv.dueDate||'—'}</td>
+      <td>${escapeHtml(inv.issueDate||'—')}</td>
+      <td>${escapeHtml(inv.dueDate||'—')}</td>
       <td class="tr">$${(inv.total||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(inv.status)}</td>
       <td>${inv.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${inv.id}')">📄 PDF</button></td>
+      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${escapeAttr(inv.id)}')">📄 PDF</button></td>
     </tr>`).join('');
 }
 
@@ -5066,7 +5097,7 @@ async function deleteInvoice(id){
   await logActivity('Invoice','Deleted',record.invoiceNumber+' — '+record.billToName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${encodeURIComponent(id)}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
     }).catch(()=>null);
@@ -5168,24 +5199,56 @@ function loadInvoiceJSON(){
 
 async function importInvoiceJSON(data){
   data=data||{};
+
+  /* "sender"/"bank"/"logo" in an imported file rewrite YOUR business details —
+     the From block, the GST number and the bank account number printed on
+     every invoice PDF generated afterwards, not just this one. That used to
+     happen silently and could only be undone by reloading the page, which is
+     an unpleasant surprise when the JSON came from somebody else. Ask first,
+     name the account number, and leave a way back. */
+  const overrides=[];
   if(data.sender){
-    Object.assign(BUSINESS_INFO,{
-      NAME:data.sender.name||BUSINESS_INFO.NAME,
-      ADDRESS:Array.isArray(data.sender.address)?data.sender.address:BUSINESS_INFO.ADDRESS,
-      EMAIL:data.sender.email||BUSINESS_INFO.EMAIL,
-      PHONE:data.sender.phone||BUSINESS_INFO.PHONE,
-      GST_NUMBER:data.sender.gst_number||BUSINESS_INFO.GST_NUMBER
-    });
+    if(data.sender.name)       overrides.push('Business name → '+data.sender.name);
+    if(data.sender.gst_number) overrides.push('GST number → '+data.sender.gst_number);
+    if(data.sender.email)      overrides.push('Email → '+data.sender.email);
+    if(data.sender.phone)      overrides.push('Phone → '+data.sender.phone);
   }
   if(data.bank){
-    Object.assign(BUSINESS_INFO.BANK,{
-      ACCOUNT_NAME:data.bank.account_name||BUSINESS_INFO.BANK.ACCOUNT_NAME,
-      BANK_NAME:data.bank.bank||BUSINESS_INFO.BANK.BANK_NAME,
-      ACCOUNT_NUMBER:data.bank.account_number||BUSINESS_INFO.BANK.ACCOUNT_NUMBER,
-      REFERENCE_NOTE:data.bank.reference_note||BUSINESS_INFO.BANK.REFERENCE_NOTE
-    });
+    if(data.bank.account_number) overrides.push('Bank account → '+data.bank.account_number);
+    if(data.bank.account_name)   overrides.push('Account name → '+data.bank.account_name);
+    if(data.bank.bank)           overrides.push('Bank → '+data.bank.bank);
   }
-  if(data.logo && data.logo.path) BUSINESS_INFO.LOGO.PATH=data.logo.path;
+  if(data.logo && data.logo.path) overrides.push('Logo → '+data.logo.path);
+
+  let applyBusinessInfo=false;
+  if(overrides.length){
+    applyBusinessInfo=confirm(
+      'This file also carries your own business details, which print on EVERY invoice you generate from now on — not just this one:\n\n'+
+      overrides.join('\n')+'\n\n'+
+      'OK to use them for this session, or Cancel to import only the invoice and keep your current details.\n\n'+
+      '(Run resetBusinessInfo() in the console to undo this later.)');
+  }
+
+  if(applyBusinessInfo){
+    if(data.sender){
+      Object.assign(BUSINESS_INFO,{
+        NAME:data.sender.name||BUSINESS_INFO.NAME,
+        ADDRESS:Array.isArray(data.sender.address)?data.sender.address:BUSINESS_INFO.ADDRESS,
+        EMAIL:data.sender.email||BUSINESS_INFO.EMAIL,
+        PHONE:data.sender.phone||BUSINESS_INFO.PHONE,
+        GST_NUMBER:data.sender.gst_number||BUSINESS_INFO.GST_NUMBER
+      });
+    }
+    if(data.bank){
+      Object.assign(BUSINESS_INFO.BANK,{
+        ACCOUNT_NAME:data.bank.account_name||BUSINESS_INFO.BANK.ACCOUNT_NAME,
+        BANK_NAME:data.bank.bank||BUSINESS_INFO.BANK.BANK_NAME,
+        ACCOUNT_NUMBER:data.bank.account_number||BUSINESS_INFO.BANK.ACCOUNT_NUMBER,
+        REFERENCE_NOTE:data.bank.reference_note||BUSINESS_INFO.BANK.REFERENCE_NOTE
+      });
+    }
+    if(data.logo && data.logo.path) BUSINESS_INFO.LOGO.PATH=data.logo.path;
+  }
 
   const inv=data.invoice||{};
   const client=data.client||{};
@@ -5259,7 +5322,7 @@ function statementPropertyBlockHtml(blockId,optionsHtml,propBlock){
           <select class="stmt-prop-select" style="width:100%" onchange="if(this.value)this.closest('.stmt-property-block').querySelector('.stmt-prop-address').value=this.options[this.selectedIndex].textContent">${optionsHtml}</select>
         </div>
         <div style="flex:1;min-width:220px"><label>Property address</label><input type="text" class="stmt-prop-address" value="${escapeAttr(propBlock.propertyAddress||'')}" placeholder="e.g. 12 Example St" style="width:100%"></div>
-        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${propBlock.openingBalance||0}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
+        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${escapeAttr(propBlock.openingBalance||0)}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
         <button type="button" class="btn btn-sm btn-danger" onclick="removeStatementPropertyBlock('${blockId}')">✕ Remove property</button>
       </div>
 
@@ -5595,17 +5658,17 @@ async function renderStatementsList(){
   const pageItems=getListPage('statements',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(s=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
+      <td style="cursor:pointer" ondblclick="editStatement('${escapeAttr(s.id)}')" title="Double-click to edit"><strong>${escapeHtml(s.statementNumber)}</strong></td>
       <td>${escapeHtml((s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', '))||'—'}</td>
-      <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
+      <td>${escapeHtml(s.periodStart||'—')} – ${escapeHtml(s.periodEnd||'—')}</td>
       <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(s.status)}</td>
       <td>${s.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateStatementPDF('${s.id}')">📄 PDF</button></td>
+      <td><button class="btn btn-sm" onclick="generateStatementPDF('${escapeAttr(s.id)}')">📄 PDF</button></td>
     </tr>`).join('');
 }
 
@@ -5617,7 +5680,7 @@ async function deleteStatement(id){
   await logActivity('Statement','Deleted',record.statementNumber+' — '+record.ownerName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${encodeURIComponent(id)}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
     }).catch(()=>null);

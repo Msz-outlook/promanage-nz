@@ -87,6 +87,9 @@ tbody tr:hover td{background:var(--bg2)}
 .btn-sm{padding:4px 10px;font-size:12px}
 .btn:disabled{opacity:.4;cursor:default;pointer-events:none}
 .pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:.6rem 1.25rem;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)}
+.list-search{display:flex;align-items:center;gap:8px;padding:.6rem 1.25rem;border-bottom:0.5px solid var(--border)}
+.list-search input{flex:1;max-width:340px;font-size:12.5px}
+.list-search .ls-count{font-size:11.5px;color:var(--text3);margin-left:auto}
 .pagination:empty{display:none;padding:0;border-top:none}
 
 /* Alerts */
@@ -1386,7 +1389,11 @@ textarea:focus{border-color:var(--text)}
       <div style="display:flex;justify-content:space-between;align-items:center"><span>All properties <span id="prop-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="togglePropForm(true)">+ Add property</button></div>
       <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an address to edit.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-properties" placeholder="Search address, tenancy, status or notes…" oninput="setListSearch('properties',this.value)" aria-label="Search address, tenancy, status or notes…">
+      <span class="ls-count" id="search-count-properties"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Address</th><th>Tenancy</th><th>Rent/wk</th><th>Status</th><th>Compliance</th><th>Sync</th></tr></thead>
       <tbody id="prop-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="prop-pagination"></div>
@@ -1436,7 +1443,11 @@ textarea:focus{border-color:var(--text)}
       <div style="display:flex;justify-content:space-between;align-items:center"><span>Active tenancies <span id="tenant-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="toggleTenantForm(true)">+ Add tenant</button></div>
       <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click a tenant to edit.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-tenants" placeholder="Search tenant, property, status or bond ref…" oninput="setListSearch('tenants',this.value)" aria-label="Search tenant, property, status or bond ref…">
+      <span class="ls-count" id="search-count-tenants"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Property</th><th>Lease start</th><th>Lease end</th><th>Bond lodged</th><th>Rent/wk</th><th>Status</th><th>Sync</th></tr></thead>
       <tbody id="tenant-list"><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="tenant-pagination"></div>
@@ -1486,7 +1497,11 @@ textarea:focus{border-color:var(--text)}
       <div style="display:flex;justify-content:space-between;align-items:center"><span>Maintenance requests <span id="maint-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="toggleMaintForm(true)">+ New request</button></div>
       <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an issue to edit.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Issue</th><th>Property</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-maintenance" placeholder="Search issue, property, assignee or status…" oninput="setListSearch('maintenance',this.value)" aria-label="Search issue, property, assignee or status…">
+      <span class="ls-count" id="search-count-maintenance"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Issue</th><th>Property</th><th>Reported</th><th>Priority</th><th>Assigned to</th><th>Status</th><th>Sync</th></tr></thead>
       <tbody id="maint-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="maint-pagination"></div>
@@ -1551,7 +1566,11 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head" style="justify-content:flex-start">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-inspections" placeholder="Search property or date…" oninput="setListSearch('inspections',this.value)" aria-label="Search property or date…">
+      <span class="ls-count" id="search-count-inspections"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
       <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="insp-pagination"></div>
@@ -1711,7 +1730,11 @@ textarea:focus{border-color:var(--text)}
       <div style="display:flex;justify-content:space-between;align-items:center"><span>All invoices <span id="invoice-count" style="font-weight:400;color:var(--text3)"></span></span><button class="btn btn-sm btn-primary" onclick="toggleInvoiceForm(true)">+ New invoice</button></div>
       <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:0px">Double-click an invoice to edit.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Bill to</th><th>Property</th><th>Issue date</th><th>Due date</th><th class="tr">Total</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-invoices" placeholder="Search number, bill-to, property or reference…" oninput="setListSearch('invoices',this.value)" aria-label="Search number, bill-to, property or reference…">
+      <span class="ls-count" id="search-count-invoices"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Bill to</th><th>Property</th><th>Issue date</th><th>Due date</th><th class="tr">Total</th><th>Status</th><th>Sync</th><th></th></tr></thead>
       <tbody id="invoice-list"><tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No invoices yet — click "+ New invoice" to create your first one</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="invoice-pagination"></div>
@@ -1798,7 +1821,11 @@ textarea:focus{border-color:var(--text)}
       </div>
       <div id="statement-filter-hint" style="font-size:11px;color:var(--text3);margin-bottom:1rem">Pick a single period from the dropdown, or type a date range — whichever you use clears the other.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Statement #</th><th>Property</th><th>Period</th><th class="tr">Net to owner</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-statements" placeholder="Search number, owner or property…" oninput="setListSearch('statements',this.value)" aria-label="Search number, owner or property…">
+      <span class="ls-count" id="search-count-statements"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Statement #</th><th>Property</th><th>Period</th><th class="tr">Net to owner</th><th>Status</th><th>Sync</th><th></th></tr></thead>
       <tbody id="statement-list"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="statement-pagination"></div>
@@ -1845,7 +1872,11 @@ textarea:focus{border-color:var(--text)}
       <div>Activity log <span id="activity-log-count" style="font-weight:400;color:var(--text3)"></span></div>
       <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:4px">Every property, tenant, maintenance and inspection record created, edited or deleted, newest first.</div>
     </div>
-    <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>When</th><th>Type</th><th>Action</th><th>Details</th></tr></thead>
+        <div class="list-search">
+      <input type="search" id="search-activity" placeholder="Search entity, action or detail…" oninput="setListSearch('activity',this.value)" aria-label="Search entity, action or detail…">
+      <span class="ls-count" id="search-count-activity"></span>
+    </div>
+<div class="table-outer"><div class="table-wrap"><table><thead><tr><th>When</th><th>Type</th><th>Action</th><th>Details</th></tr></thead>
       <tbody id="activity-log-list"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="activity-log-pagination"></div>
@@ -2173,6 +2204,56 @@ function dbClear(storeName){
     tx.oncomplete=()=>resolve();
     tx.onerror=(e)=>reject(e.target.error);
   }));
+}
+
+/* Record ids.
+
+   These were `prefix_ + Date.now()` — millisecond resolution and nothing
+   else. Two devices on the same account creating the same kind of record in
+   the same millisecond produce the same primary key, and every push uses
+   `Prefer: resolution=merge-duplicates`, so the second one MERGES OVER the
+   first rather than erroring. One property silently becomes another, and
+   nothing anywhere reports it.
+
+   Unlikely with one manager and two devices; silent and unrecoverable when it
+   happens, and free to prevent. The prefix stays because it makes ids
+   readable in logs and in the Supabase table editor.
+
+   crypto.randomUUID needs a secure context (https, or localhost). The
+   fallback is the pattern logActivity() already used, widened. */
+/* Warns — but does not block — when a value the user treats as unique already
+   exists on another record. Nothing in the schema enforces uniqueness on an
+   address, an invoice number or a statement number, and nextInvoiceNumber()
+   only ever *suggests* the next one into an editable field. Two invoices
+   carrying the same number both sync happily and only diverge when somebody
+   tries to reconcile a payment.
+
+   A warning rather than a hard stop, because there are legitimate duplicates:
+   two units at one street address, or a credit note reusing a number on
+   purpose. Returns true if the save should go ahead. */
+async function confirmNoDuplicate(store,field,value,currentId,noun){
+  const normalised=String(value||'').trim().toLowerCase();
+  if(!normalised) return true;
+  let all;
+  try{ all=await dbGetAll(store); }
+  catch(err){ return true; } // can't check — don't block the save on it
+  const clash=all.filter(r=>!r.pendingDelete && r.id!==currentId &&
+    String(r[field]||'').trim().toLowerCase()===normalised);
+  if(!clash.length) return true;
+  return confirm('Another '+noun+' already uses "'+String(value).trim()+'".\n\n'+
+    (clash.length===1?'There is 1 other record':'There are '+clash.length+' other records')+
+    ' with that value. Save anyway?');
+}
+
+function newId(prefix){
+  let unique;
+  if(typeof crypto!=='undefined' && crypto.randomUUID){
+    unique=crypto.randomUUID();
+  }else{
+    unique=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10)+
+           Math.random().toString(36).slice(2,10);
+  }
+  return prefix+'_'+unique;
 }
 
 /* Single record by primary key. Every by-id lookup in this file used to be
@@ -3009,7 +3090,7 @@ function formatLogTime(iso){
 async function logActivity(entity,action,detail){
   const now=new Date().toISOString();
   const record={
-    id:'log_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    id:newId('log'),
     timestamp:now,
     entity,
     action,
@@ -3035,6 +3116,66 @@ const PAGINATION_CONFIG={
   statements:{pageSize:10,containerId:'statement-pagination'}
 };
 const pageState={};
+
+/* Free-text search over the fields that identify a record.
+
+   Until now the only way to find anything was to page through it ten rows at a
+   time in fixed creation order — Statements was the one list with any filter
+   at all. That is survivable at six properties and miserable at sixty, and
+   it's the first thing that gets in the way every day.
+
+   An entry is either a field name or a function, for the records that keep
+   what you'd search on inside a nested structure. */
+const SEARCH_FIELDS={
+  activity:    ['entity','action','detail'],
+  properties:  ['address','tenancy','status','notes'],
+  tenants:     ['tenantName','propertyAddress','status','bondReference','notes'],
+  maintenance: ['issue','propertyAddress','priority','assignedTo','status'],
+  triage:      ['subject','from','propertyAddress','status'],
+  inspections: ['property','date'],
+  invoices:    ['invoiceNumber','billToName','propertyAddress','reference','status','issueDate'],
+  statements:  ['statementNumber','ownerName','status','periodStart','periodEnd',
+                s=>(s.properties||[]).map(p=>p&&p.propertyAddress).filter(Boolean).join(' ')]
+};
+const listSearch={};
+
+function setListSearch(key,value){
+  listSearch[key]=String(value||'').trim().toLowerCase();
+  pageState[key]=1; // a new query starts at the first page, not wherever you were
+  const render=LIST_RENDERERS[key];
+  if(render) render();
+}
+
+// Applied by each renderer before pagination, so the page count and the
+// "N of M" footer describe the filtered list rather than the whole store.
+function applyListSearch(key,all){
+  // Lowercased here as well as in setListSearch, so case-folding is a property
+  // of the comparison rather than of whoever last wrote to listSearch.
+  const q=String(listSearch[key]||'').trim().toLowerCase();
+  if(!q) return all;
+  const fields=SEARCH_FIELDS[key]||[];
+  return all.filter(r=>fields.some(f=>{
+    const v=typeof f==='function'?f(r):r[f];
+    return String(v==null?'':v).toLowerCase().includes(q);
+  }));
+}
+
+// Shows "3 of 27 match" next to the box, so a search that hides everything
+// reads as a filter rather than as missing data.
+function renderSearchCount(key,shown,total){
+  const el=document.getElementById('search-count-'+key);
+  if(!el) return;
+  el.textContent=listSearch[key] ? shown+' of '+total+' match'+(shown===1?'':'es') : '';
+}
+
+/* An empty list means two very different things — "you haven't added any yet"
+   and "your search matched none of them". Telling a property manager their
+   portfolio is empty when they've simply mistyped an address is exactly the
+   kind of scare this app should not deliver. */
+function emptyListMessage(key,defaultMsg){
+  const q=listSearch[key];
+  return q ? 'No matches for “'+escapeHtml(q)+'”' : defaultMsg;
+}
 // Slices `all` to the current page for `key`, clamping the stored page to the
 // valid range (list can shrink/grow between renders), and refreshes the footer controls.
 function getListPage(key,all){
@@ -3081,15 +3222,17 @@ async function renderActivityLog(){
   const tbody=document.getElementById('activity-log-list');
   if(!tbody) return;
   const all=await dbGetAll('activityLog').catch(()=>[]);
-  all.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+  all.sort((a,b)=>(b.timestamp||'').localeCompare(a.timestamp||''));
   const countEl=document.getElementById('activity-log-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">No activity yet</td></tr>';
+  const matches=applyListSearch('activity',all);
+  renderSearchCount('activity',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('activity','No activity yet')+'</td></tr>';
     renderPaginationControls('activity',0);
     return;
   }
-  const pageItems=getListPage('activity',all);
+  const pageItems=getListPage('activity',matches);
   const actionBadge=a=>{
     const map={Created:'bg',Updated:'bb',Deleted:'br'};
     return `<span class="badge ${map[a]||'bgr'}">${escapeHtml(a)}</span>`;
@@ -3410,7 +3553,7 @@ async function saveInspection(){
   const isEdit=!!editingInspectionId;
   const existing=isEdit?(await dbGetAll('inspections')).find(i=>i.id===editingInspectionId):null;
   const record={
-    id: isEdit?editingInspectionId:'insp_'+Date.now(),
+    id: isEdit?editingInspectionId:newId('insp'),
     propertyId,
     property: propertyAddress, // display/PDF/backend snapshot — resolvePropertyAddress() prefers the live address wherever it's shown
     date: document.getElementById('insp-date').value,
@@ -3434,17 +3577,19 @@ async function renderInspectionList(){
   const all=(await dbGetAll('inspections')).filter(i=>!i.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('insp-list');
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr>';
+  const matches=applyListSearch('inspections',all);
+  renderSearchCount('inspections',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('inspections','No inspections saved on this device yet')+'</td></tr>';
     renderPaginationControls('inspections',0);
     return;
   }
-  const pageItems=getListPage('inspections',all);
+  const pageItems=getListPage('inspections',matches);
   tbody.innerHTML=pageItems.map(insp=>{
-    const photoCount=insp.areas.reduce((n,a)=>n+a.photos.length,0);
+    const photoCount=(insp.areas||[]).reduce((n,a)=>n+((a&&a.photos)?a.photos.length:0),0);
     const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
     return `<tr>
       <td>${escapeHtml(addressOf(insp))}</td>
@@ -4070,10 +4215,11 @@ async function editProperty(id){
 async function saveProperty(){
   const address=document.getElementById('prop-address').value.trim();
   if(!address){ alert('Address is required.'); return; }
+  if(!await confirmNoDuplicate('properties','address',address,editingPropertyId,'property')) return;
   const isEdit=!!editingPropertyId;
   const existing=isEdit?(await dbGetAll('properties')).find(p=>p.id===editingPropertyId):null;
   const record={
-    id:isEdit?editingPropertyId:'prop_'+Date.now(),
+    id:isEdit?editingPropertyId:newId('prop'),
     address,
     bedrooms:Number(document.getElementById('prop-bed').value)||0,
     bathrooms:Number(document.getElementById('prop-bath').value)||0,
@@ -4099,15 +4245,17 @@ async function saveProperty(){
 
 async function renderPropertiesList(){
   const all=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('prop-list');
   document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No properties added yet — click "+ Add property" to add your first one</td></tr>';
+  const matches=applyListSearch('properties',all);
+  renderSearchCount('properties',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('properties','No properties added yet — click "+ Add property" to add your first one')+'</td></tr>';
     renderPaginationControls('properties',0);
     return;
   }
-  const pageItems=getListPage('properties',all);
+  const pageItems=getListPage('properties',matches);
   const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
   const statusBadge=s=>{
     const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
@@ -4315,7 +4463,7 @@ async function saveTenant(){
   const isEdit=!!editingTenantId;
   const existing=isEdit?(await dbGetAll('tenants')).find(t=>t.id===editingTenantId):null;
   const record={
-    id:isEdit?editingTenantId:'tenant_'+Date.now(),
+    id:isEdit?editingTenantId:newId('tenant'),
     tenantName:name,
     propertyId,
     propertyAddress,
@@ -4344,15 +4492,17 @@ async function renderTenantsList(){
   const all=(await dbGetAll('tenants')).filter(t=>!t.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('tenant-list');
   document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">No tenants added yet</td></tr>';
+  const matches=applyListSearch('tenants',all);
+  renderSearchCount('tenants',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('tenants','No tenants added yet')+'</td></tr>';
     renderPaginationControls('tenants',0);
     return;
   }
-  const pageItems=getListPage('tenants',all);
+  const pageItems=getListPage('tenants',matches);
   const statusBadge=(t)=>{
     if(t.status==='Arrears') return `<span class="badge br">Arrears $${escapeHtml(t.arrearsAmount)}</span>`;
     if(t.status==='Renewal due') return '<span class="badge ba">Renewal due</span>';
@@ -4479,7 +4629,7 @@ async function saveMaintenance(){
   const isEdit=!!editingMaintenanceId;
   const existing=isEdit?(await dbGetAll('maintenance')).find(m=>m.id===editingMaintenanceId):null;
   const record={
-    id:isEdit?editingMaintenanceId:'maint_'+Date.now(),
+    id:isEdit?editingMaintenanceId:newId('maint'),
     propertyId,
     propertyAddress,
     issue,
@@ -4504,15 +4654,17 @@ async function renderMaintenanceList(){
   const all=(await dbGetAll('maintenance')).filter(m=>!m.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('maint-list');
   document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No maintenance requests yet</td></tr>';
+  const matches=applyListSearch('maintenance',all);
+  renderSearchCount('maintenance',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('maintenance','No maintenance requests yet')+'</td></tr>';
     renderPaginationControls('maintenance',0);
     return;
   }
-  const pageItems=getListPage('maintenance',all);
+  const pageItems=getListPage('maintenance',matches);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
     return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
@@ -4687,7 +4839,7 @@ function classifyEmail(email,properties){
 
 async function createMaintenanceFromTriage(triage){
   const record={
-    id:'maint_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    id:newId('maint'),
     propertyId:triage.matchedPropertyId||'',
     propertyAddress:triage.matchedPropertyAddress||'Unmatched — from email',
     issue:triage.suggestedIssue,
@@ -4806,15 +4958,17 @@ async function renderEmailTriageList(){
   const tbody=document.getElementById('triage-list');
   if(!tbody) return;
   const all=await dbGetAll('emailTriage').catch(()=>[]);
-  all.sort((a,b)=>b.receivedAt.localeCompare(a.receivedAt));
+  all.sort((a,b)=>(b.receivedAt||'').localeCompare(a.receivedAt||''));
   const countEl=document.getElementById('triage-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No emails checked yet</td></tr>';
+  const matches=applyListSearch('triage',all);
+  renderSearchCount('triage',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('triage','No emails checked yet')+'</td></tr>';
     renderPaginationControls('triage',0);
     return;
   }
-  const pageItems=getListPage('triage',all);
+  const pageItems=getListPage('triage',matches);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
     return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
@@ -5013,6 +5167,7 @@ async function saveInvoice(){
   const billToName=document.getElementById('invoice-bill-name').value.trim();
   if(!invoiceNumber){ alert('Invoice number is required.'); return; }
   if(!billToName){ alert('"Bill to" name is required.'); return; }
+  if(!await confirmNoDuplicate('invoices','invoiceNumber',invoiceNumber,editingInvoiceId,'invoice')) return;
   const items=Array.from(document.querySelectorAll('#invoice-items-body tr')).map(row=>{
     const quantity=Number(row.querySelector('.item-qty').value)||0;
     const unitPrice=Number(row.querySelector('.item-price').value)||0;
@@ -5029,7 +5184,7 @@ async function saveInvoice(){
   const isEdit=!!editingInvoiceId;
   const existing=isEdit?(await dbGetAll('invoices')).find(i=>i.id===editingInvoiceId):null;
   const record={
-    id:isEdit?editingInvoiceId:'inv_'+Date.now(),
+    id:isEdit?editingInvoiceId:newId('inv'),
     invoiceNumber,
     reference:document.getElementById('invoice-reference').value.trim(),
     billToName,
@@ -5060,17 +5215,19 @@ async function saveInvoice(){
 
 async function renderInvoicesList(){
   const all=(await dbGetAll('invoices').catch(()=>[])).filter(i=>!i.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('invoice-list');
   if(!tbody) return;
   const countEl=document.getElementById('invoice-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
-  if(!all.length){
-    tbody.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">No invoices yet — click "+ New invoice" to create your first one</td></tr>';
+  const matches=applyListSearch('invoices',all);
+  renderSearchCount('invoices',matches.length,all.length);
+  if(!matches.length){
+    tbody.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:14px">'+emptyListMessage('invoices','No invoices yet — click "+ New invoice" to create your first one')+'</td></tr>';
     renderPaginationControls('invoices',0);
     return;
   }
-  const pageItems=getListPage('invoices',all);
+  const pageItems=getListPage('invoices',matches);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg',Overdue:'br'};
     return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
@@ -5486,6 +5643,7 @@ async function saveStatement(){
   const ownerName=document.getElementById('statement-owner-name').value.trim();
   if(!statementNumber){ alert('Statement number is required.'); return; }
   if(!ownerName){ alert('Owner name is required.'); return; }
+  if(!await confirmNoDuplicate('statements','statementNumber',statementNumber,editingStatementId,'statement')) return;
   const blocks=Array.from(document.querySelectorAll('.stmt-property-block'));
   if(!blocks.length){ alert('Add at least one property.'); return; }
   const readRows=(block,section)=>Array.from(block.querySelectorAll('.stmt-'+section+'-body tr')).map(row=>({
@@ -5510,7 +5668,7 @@ async function saveStatement(){
   const isEdit=!!editingStatementId;
   const existing=isEdit?(await dbGetAll('statements')).find(s=>s.id===editingStatementId):null;
   const record={
-    id:isEdit?editingStatementId:'stmt_'+Date.now(),
+    id:isEdit?editingStatementId:newId('stmt'),
     statementNumber,
     ownerName,
     ownerEmail:document.getElementById('statement-owner-email').value.trim(),
@@ -5646,16 +5804,21 @@ async function renderStatementsList(){
   const tbody=document.getElementById('statement-list');
   if(!tbody) return;
   const countEl=document.getElementById('statement-count');
-  const filtering=all.length!==everything.length;
-  if(countEl) countEl.textContent=everything.length?(filtering?`(${all.length} of ${everything.length})`:`(${all.length})`):'';
-  if(!all.length){
-    tbody.innerHTML=everything.length
-      ? '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No statements in that date range — widen it or click Clear</td></tr>'
-      : '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">No statements yet — click "+ New statement" or import one from JSON</td></tr>';
+  // Text search stacks on top of the date-range filter this list already had.
+  const matches=applyListSearch('statements',all);
+  renderSearchCount('statements',matches.length,all.length);
+  const filtering=matches.length!==everything.length;
+  if(countEl) countEl.textContent=everything.length?(filtering?`(${matches.length} of ${everything.length})`:`(${matches.length})`):'';
+  if(!matches.length){
+    const msg=everything.length
+      ? 'No statements in that date range — widen it or click Clear'
+      : 'No statements yet — click "+ New statement" or import one from JSON';
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px">'+
+      emptyListMessage('statements',msg)+'</td></tr>';
     renderPaginationControls('statements',0);
     return;
   }
-  const pageItems=getListPage('statements',all);
+  const pageItems=getListPage('statements',matches);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg'};
     return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;

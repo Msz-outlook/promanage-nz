@@ -143,6 +143,7 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .insp-area-name{font-weight:600;font-size:13.5px}
 .photo-strip{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .photo-thumb{width:56px;height:56px;border-radius:6px;object-fit:cover;border:0.5px solid var(--border2)}
+.photo-archived{display:inline-flex;align-items:center;justify-content:center;font-size:20px;background:var(--bg2);color:var(--text3);flex-shrink:0;cursor:help}
 .photo-add{width:56px;height:56px;border-radius:6px;border:1px dashed var(--border2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;color:var(--text2);background:var(--bg2)}
 textarea{width:100%;padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;resize:vertical;min-height:44px;outline:none}
 textarea:focus{border-color:var(--text)}
@@ -1565,7 +1566,18 @@ textarea:focus{border-color:var(--text)}
   </div>
 
   <div class="card">
-    <div class="card-head" style="justify-content:flex-start">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
+    <div class="card-head" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <span>Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm" onclick="archiveOldInspectionPhotos()" title="Download old inspection photos as a zip, then free the Storage they use">📦 Archive photos</button>
+          <button class="btn btn-sm" onclick="exportAllData()" title="Download every record on this device as a JSON backup">⬇️ Back up data</button>
+          <button class="btn btn-sm" onclick="document.getElementById('backup-restore-input').click()" title="Add records from a backup file — existing records are kept">⬆️ Restore</button>
+          <input type="file" id="backup-restore-input" accept="application/json,.json" style="display:none" onchange="handleBackupFile(event)">
+        </span>
+      </div>
+      <div style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text3);margin-top:4px">Archiving keeps the inspection, its findings and its PDF — only the image files leave Supabase.</div>
+    </div>
         <div class="list-search">
       <input type="search" id="search-inspections" placeholder="Search property or date…" oninput="setListSearch('inspections',this.value)" aria-label="Search property or date…">
       <span class="ls-count" id="search-count-inspections"></span>
@@ -3330,6 +3342,19 @@ function renderAreaPhotos(wrap,photos){
   const strip=wrap.querySelector('.photo-strip');
   const addBtn=strip.querySelector('.photo-add');
   const imgs=photos.map(ref=>{
+    /* An archived photo is not a failed one. Rendering both as an empty box
+       would make "I deliberately moved this off Supabase last year" look
+       exactly like "this image is broken", which is the difference between a
+       tidy archive and a panic. */
+    if(isArchivedRef(ref)){
+      const chip=document.createElement('span');
+      chip.className='photo-thumb photo-archived';
+      chip.textContent='📦';
+      chip.title='Archived — the original was exported to a zip and removed from Storage.\n'+archivedRefPath(ref);
+      chip.dataset.archivedRef=ref;
+      strip.insertBefore(chip,addBtn);
+      return null; // nothing to resolve
+    }
     const img=document.createElement('img');
     img.className='photo-thumb';
     if(typeof ref==='string' && ref.startsWith('data:')) img.src=ref; // not uploaded yet
@@ -3589,15 +3614,25 @@ async function renderInspectionList(){
   }
   const pageItems=getListPage('inspections',matches);
   tbody.innerHTML=pageItems.map(insp=>{
-    const photoCount=(insp.areas||[]).reduce((n,a)=>n+((a&&a.photos)?a.photos.length:0),0);
-    const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
+    const allPhotos=(insp.areas||[]).flatMap(a=>(a&&a.photos)||[]);
+    const photoCount=allPhotos.length;
+    const archivedCount=allPhotos.filter(isArchivedRef).length;
+    // Split the count so the Storage cost of an inspection is legible at a
+    // glance — "12" and "12 (12 archived)" have very different implications.
+    const photoCell=archivedCount
+      ? `${photoCount} <span style="font-size:11px;color:var(--text3)">(${archivedCount} archived)</span>`
+      : String(photoCount);
+    const areas=insp.areas||[];
+    const areaSummary=areas.map(a=>(a&&a.name)+': '+(a&&a.status)).slice(0,2).join(', ')+(areas.length>2?'…':'');
     return `<tr>
       <td>${escapeHtml(addressOf(insp))}</td>
       <td>${escapeHtml(insp.date)}</td>
       <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
-      <td>${photoCount}</td>
+      <td>${photoCell}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editInspection('${escapeAttr(insp.id)}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${escapeAttr(insp.id)}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${escapeAttr(insp.id)}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${escapeAttr(insp.id)}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${escapeAttr(insp.id)}',this)">📄 PDF</button>${
+        photoCount>archivedCount?` <button class="btn btn-sm" onclick="archiveInspectionPhotos('${escapeAttr(insp.id)}')" title="Download these photos as a zip and free the Storage">📦</button>`:''
+      } <button class="btn btn-sm" onclick="deleteInspection('${escapeAttr(insp.id)}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
@@ -3605,30 +3640,31 @@ async function renderInspectionList(){
 /* `btn` is handed in as `this` from the onclick — the button can't be recovered
    from the global `event` once the first await has yielded, and reading it that
    way also breaks if this is ever called from anywhere but a click handler. */
-async function generateInspectionPDF(id,btn){
-  const all=await dbGetAll('inspections');
-  const insp=all.find(i=>i.id===id);
-  if(!insp) return;
-  const properties=await dbGetAll('properties').catch(()=>[]);
-  const siteAddress=resolvePropertyAddress(properties)(insp);
+/* Report data + filename for one inspection. Split out of
+   generateInspectionPDF() because the archive needs the identical report:
+   once the photos are released from Storage, regenerating the PDF would
+   produce one WITHOUT them, so the archive has to bake the report while the
+   images are still reachable. */
+async function buildInspectionReport(insp,properties){
+  const props=properties||await dbGetAll('properties').catch(()=>[]);
+  const siteAddress=resolvePropertyAddress(props)(insp);
 
   // Stored photos are local base64 data URLs (not yet synced) or private
   // storage references — resolvePhotoRefs() passes the former through and
   // signs the latter so FindingsReport.generate() can fetch them. Anything
-  // that fails to sign is dropped rather than breaking the whole report.
+  // that fails to sign (or has already been archived) is dropped rather than
+  // breaking the whole report.
   const findings=await Promise.all((insp.areas||[]).map(async a=>({
     item: a.name,
     description: 'Status: '+a.status+(a.notes?' — '+a.notes:''),
     photos: (await resolvePhotoRefs(a.photos||[])).filter(Boolean)
   })));
 
-  if(!findings.length){ alert('This inspection has no areas to report.'); return; }
-
-  const original=btn?btn.textContent:null;
-  if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
-
-  try{
-    await FindingsReport.generate({
+  return {
+    siteAddress,
+    findings,
+    fileName:`inspection-${sanitizeForPath(siteAddress||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`,
+    data:{
       title:'Property Inspection Report',
       meta:{
         Site: siteAddress||'—',
@@ -3637,7 +3673,21 @@ async function generateInspectionPDF(id,btn){
         'Prepared by':'ProManage NZ'
       },
       findings
-    },{ fileName:`inspection-${sanitizeForPath(siteAddress||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`, download:true });
+    }
+  };
+}
+
+async function generateInspectionPDF(id,btn){
+  const insp=await dbGet('inspections',id).catch(()=>null);
+  if(!insp) return;
+  const report=await buildInspectionReport(insp);
+  if(!report.findings.length){ alert('This inspection has no areas to report.'); return; }
+
+  const original=btn?btn.textContent:null;
+  if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
+
+  try{
+    await FindingsReport.generate(report.data,{ fileName:report.fileName, download:true });
   }catch(err){
     alert('Could not generate report: '+(err && err.message));
   }finally{
@@ -3745,6 +3795,417 @@ async function deletePhotosFromStorage(record){
     }).catch(()=>{})
   ));
 }
+
+/* ============================================================
+   PHOTO ARCHIVE + DATA BACKUP
+
+   Inspection photos are by far the largest thing this app stores.
+   Nothing here compresses them on the way in — the camera modal
+   captures at whatever resolution the device negotiates (it asks
+   for 12MP) and encodes at JPEG 0.92 — so a routine inspection
+   runs to tens of megabytes, against a Supabase Free tier that
+   allows 1GB of Storage and 5GB of egress a month.
+
+   The plan is to move photos off Supabase periodically rather
+   than upgrade, so this is the tooling for that: pull the
+   originals down as a zip, then release the bucket objects while
+   KEEPING the inspection record, its findings text and its PDF.
+   An archived photo becomes an "archived:" reference, which is
+   deliberately not signable and not loadable — the same reasoning
+   as the "storage:" prefix — so a missed step shows a labelled
+   placeholder rather than a broken image or a silent blank.
+
+   Worth knowing when planning the cadence: the archive download
+   is itself egress. Pulling a year of photos to archive them
+   spends roughly that year's storage against the monthly 5GB.
+   Downscaling at capture would cut both by ~10x; see PHOTO_NOTE
+   in the README of this section's commit.
+   ============================================================ */
+const ARCHIVED_REF_PREFIX='archived:';
+
+function archivedRefFor(path){ return ARCHIVED_REF_PREFIX+path; }
+function isArchivedRef(ref){
+  return typeof ref==='string' && ref.startsWith(ARCHIVED_REF_PREFIX);
+}
+function archivedRefPath(ref){
+  return isArchivedRef(ref) ? ref.slice(ARCHIVED_REF_PREFIX.length) : null;
+}
+
+/* --- Minimal store-only ZIP writer ---------------------------
+   No zip library is vendored and this does not justify adding
+   one: the payload is JPEG, which is already compressed, so
+   DEFLATE would spend CPU to save nothing. "Stored" entries are
+   a well-supported part of the format — every OS unzipper opens
+   these natively. */
+const CRC32_TABLE=(()=>{
+  const t=new Uint32Array(256);
+  for(let i=0;i<256;i++){
+    let c=i;
+    for(let k=0;k<8;k++) c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);
+    t[i]=c>>>0;
+  }
+  return t;
+})();
+
+function crc32(bytes){
+  let c=0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++) c=CRC32_TABLE[(c^bytes[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;
+}
+
+function buildZip(files){
+  const enc=new TextEncoder();
+  const parts=[], central=[];
+  let offset=0;
+  const u16=n=>[n&0xFF,(n>>>8)&0xFF];
+  const u32=n=>[n&0xFF,(n>>>8)&0xFF,(n>>>16)&0xFF,(n>>>24)&0xFF];
+
+  // One timestamp for the whole archive — it's a point-in-time export, not a
+  // filesystem copy, so per-file mtimes would be noise.
+  const d=new Date();
+  const dosTime=((d.getHours()&31)<<11)|((d.getMinutes()&63)<<5)|(Math.floor(d.getSeconds()/2)&31);
+  const dosDate=(((d.getFullYear()-1980)&127)<<9)|(((d.getMonth()+1)&15)<<5)|(d.getDate()&31);
+
+  for(const f of files){
+    const name=enc.encode(f.name);
+    const crc=crc32(f.bytes), size=f.bytes.length;
+    // 0x0800 = names are UTF-8, so addresses with macrons survive the trip.
+    const local=[].concat(u32(0x04034b50),u16(20),u16(0x0800),u16(0),
+      u16(dosTime),u16(dosDate),u32(crc),u32(size),u32(size),
+      u16(name.length),u16(0));
+    parts.push(new Uint8Array(local),name,f.bytes);
+    central.push({name,crc,size,offset});
+    offset+=local.length+name.length+size;
+  }
+
+  const cdStart=offset;
+  for(const e of central){
+    const h=[].concat(u32(0x02014b50),u16(20),u16(20),u16(0x0800),u16(0),
+      u16(dosTime),u16(dosDate),u32(e.crc),u32(e.size),u32(e.size),
+      u16(e.name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(e.offset));
+    parts.push(new Uint8Array(h),e.name);
+    offset+=h.length+e.name.length;
+  }
+  parts.push(new Uint8Array([].concat(u32(0x06054b50),u16(0),u16(0),
+    u16(central.length),u16(central.length),
+    u32(offset-cdStart),u32(cdStart),u16(0))));
+
+  return new Blob(parts,{type:'application/zip'});
+}
+
+function downloadBlob(blob,filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked late — Safari has been known to cancel the download if the object
+  // URL disappears in the same tick.
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
+
+// Every still-live photo on a record, with the area it belongs to, so the zip
+// can be laid out the way somebody would actually browse it.
+function collectInspectionPhotos(record){
+  const out=[];
+  (record.areas||[]).forEach((area,ai)=>{
+    const name=(area&&area.name)||('Area '+(ai+1));
+    ((area&&area.photos)||[]).forEach((ref,pi)=>{
+      if(isArchivedRef(ref)) return;                 // already off Supabase
+      const path=extractStoragePath(ref);
+      if(path) out.push({areaIndex:ai,photoIndex:pi,areaName:name,path});
+      else if(typeof ref==='string' && ref.startsWith('data:'))
+        out.push({areaIndex:ai,photoIndex:pi,areaName:name,dataUrl:ref});
+    });
+  });
+  return out;
+}
+
+async function photoBytes(item){
+  if(item.dataUrl){
+    const blob=dataUrlToBlob(item.dataUrl);
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  const signed=await signStoragePaths([item.path]);
+  const url=signed.get(item.path);
+  if(!url) throw new Error('could not sign '+item.path);
+  const res=await fetch(url);
+  if(!res.ok) throw new Error('HTTP '+res.status+' fetching '+item.path);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/* Builds the zip for a set of inspections. Returns what went in and what
+   didn't — a photo that can't be fetched must never be treated as archived,
+   because the next step deletes the original. */
+async function buildPhotoArchive(records,onProgress){
+  const files=[], archived=[], failed=[];
+  let done=0, total=0;
+  const jobs=records.map(r=>({record:r,items:collectInspectionPhotos(r)}));
+  jobs.forEach(j=>{ total+=j.items.length; });
+
+  const properties=await dbGetAll('properties').catch(()=>[]);
+
+  for(const job of jobs){
+    const r=job.record;
+    const folder=sanitizeForPath(r.property||'property')+'/'+
+                 sanitizeForPath(r.date||r.id);
+
+    /* Bake the findings report into the archive while the photos are still
+       reachable. After they're released, regenerating the PDF yields the same
+       report with the images stripped out — so if it isn't captured here, the
+       illustrated version of that inspection stops existing. */
+    try{
+      const report=await buildInspectionReport(r,properties);
+      if(report.findings.length){
+        const pdf=await FindingsReport.generate(report.data,{fileName:report.fileName,download:false});
+        if(pdf) files.push({name:folder+'/'+sanitizeForPath(report.fileName.replace(/\.pdf$/,''))+'.pdf',
+                            bytes:new Uint8Array(await pdf.arrayBuffer())});
+      }
+    }catch(err){
+      failed.push({recordId:r.id,areaName:'(findings report)',reason:(err&&err.message)||'PDF generation failed'});
+    }
+
+    for(const item of job.items){
+      try{
+        const bytes=await photoBytes(item);
+        const name=folder+'/'+sanitizeForPath(item.areaName)+
+                   '-'+(item.photoIndex+1)+'.jpg';
+        files.push({name,bytes});
+        archived.push({recordId:r.id,areaIndex:item.areaIndex,photoIndex:item.photoIndex,path:item.path||null});
+      }catch(err){
+        failed.push({recordId:r.id,areaName:item.areaName,reason:(err&&err.message)||'unknown'});
+      }
+      done++;
+      if(onProgress) onProgress(done,total);
+    }
+  }
+
+  // A manifest, so an archive found on a drive in three years explains itself.
+  if(files.length){
+    // The findings live on the area as `status` + `notes` — the whole point of
+    // the manifest is that the archive still means something once it is just a
+    // folder on a drive, so it has to carry the actual field names.
+    const manifest=records.map(r=>({
+      id:r.id, property:r.property, date:r.date,
+      areas:(r.areas||[]).map(a=>({
+        name:a&&a.name,
+        status:a&&a.status,
+        notes:a&&a.notes,
+        photos:((a&&a.photos)||[]).length
+      }))
+    }));
+    files.push({name:'manifest.json',
+      bytes:new TextEncoder().encode(JSON.stringify({
+        exportedAt:new Date().toISOString(),
+        app:'ProManage NZ',
+        note:'Inspection photos archived out of Supabase Storage. One folder per property/date, '+
+             'containing the illustrated findings report and one file per photo. The app still holds '+
+             'these inspections with their photos marked "archived".',
+        inspections:manifest
+      },null,2))});
+  }
+  return {blob:files.length?buildZip(files):null,files,archived,failed,total};
+}
+
+/* Marks the archived photos on the local records and, once the zip is safely
+   downloaded, releases the bucket objects. The record, its findings and its
+   PDF all survive — only the image bytes leave. */
+async function releaseArchivedPhotos(archived){
+  const byRecord=new Map();
+  for(const a of archived){
+    if(!byRecord.has(a.recordId)) byRecord.set(a.recordId,[]);
+    byRecord.get(a.recordId).push(a);
+  }
+  const token=await authHeader();
+  let released=0;
+
+  for(const [recordId,entries] of byRecord){
+    const record=await dbGet('inspections',recordId).catch(()=>null);
+    if(!record) continue;
+    const areas=(record.areas||[]).map(a=>({...a,photos:[...((a&&a.photos)||[])]}));
+    for(const e of entries){
+      const area=areas[e.areaIndex];
+      if(!area||!area.photos) continue;
+      if(e.path){
+        await fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${e.path}`,{
+          method:'DELETE',
+          headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+        }).catch(()=>{});
+      }
+      area.photos[e.photoIndex]=archivedRefFor(e.path||('local/'+recordId+'/'+e.areaIndex+'-'+e.photoIndex));
+      released++;
+    }
+    record.areas=areas;
+    record.updatedAt=new Date().toISOString();
+    record.synced=false; // the refs changed, so the server row has to follow
+    await dbPut('inspections',record);
+  }
+  return released;
+}
+
+async function runPhotoArchive(records,label){
+  if(!records.length){ alert('No inspections to archive.'); return; }
+  const counts=records.reduce((n,r)=>n+collectInspectionPhotos(r).length,0);
+  if(!counts){ alert('No photos left to archive in '+label+' — they have all been archived already.'); return; }
+  if(!confirm('Archive '+counts+' photo'+(counts===1?'':'s')+' from '+label+'?\n\n'+
+      'The zip contains the photos AND the illustrated findings report for each inspection, '+
+      'because once the photos are released a regenerated PDF has the text but not the images.\n\n'+
+      'The zip downloads first. Nothing is removed from Supabase until you confirm it saved.')) return;
+
+  let result;
+  try{
+    result=await buildPhotoArchive(records);
+  }catch(err){
+    alert('Could not build the archive: '+((err&&err.message)||err));
+    return;
+  }
+  if(!result.blob){
+    alert('Could not fetch any of the photos — nothing has been changed.\n\n'+
+      (result.failed[0]?('First error: '+result.failed[0].reason):''));
+    return;
+  }
+
+  const stamp=new Date().toISOString().slice(0,10);
+  downloadBlob(result.blob,'promanage-photos-'+sanitizeForPath(label)+'-'+stamp+'.zip');
+
+  if(!result.archived.length){
+    alert('The zip downloaded, but none of the photos could be fetched — so nothing has been '+
+      'removed from Supabase.\n\nFirst error: '+(result.failed[0]?result.failed[0].reason:'unknown'));
+    return;
+  }
+
+  const freed=confirm(
+    'Downloaded '+result.archived.length+' of '+result.total+' photo'+(result.total===1?'':'s')+'.\n\n'+
+    (result.failed.length?result.failed.length+' item(s) could not be fetched and have been left alone.\n\n':'')+
+    'Open the zip and check it before continuing — this is the point of no return.\n\n'+
+    'OK = remove the '+result.archived.length+' archived photo(s) from Supabase Storage. The inspection, '+
+    'its areas and its findings text all stay in the app.\n'+
+    'Cancel = change nothing; the zip is yours to file away.');
+
+  if(!freed) return;
+  const released=await releaseArchivedPhotos(result.archived);
+  await logActivity('Inspection','Archived',released+' photo'+(released===1?'':'s')+' from '+label);
+  await renderInspectionList();
+  updateSyncBanner();
+  if(navigator.onLine) syncPendingInspections();
+  alert('Freed '+released+' photo'+(released===1?'':'s')+' from Storage.\n\n'+
+    'They now show as 📦 archived on the inspection, so an archived photo never looks like a missing one.');
+}
+
+async function archiveInspectionPhotos(id){
+  const record=await dbGet('inspections',id).catch(()=>null);
+  if(!record){ alert('Inspection not found.'); return; }
+  await runPhotoArchive([record],(record.property||'inspection')+' '+(record.date||''));
+}
+window.archiveInspectionPhotos=archiveInspectionPhotos;
+
+/* Archive everything older than a cut-off. This is the one that matches the
+   actual routine — "clear out anything older than a year" — rather than
+   picking inspections off one at a time. */
+async function archiveOldInspectionPhotos(){
+  const raw=prompt('Archive photos from inspections completed BEFORE this date.\n\n'+
+    'Enter a date (dd/mm/yyyy), or leave blank for everything older than 12 months.');
+  if(raw===null) return;
+  let cutoff;
+  if(raw.trim()){
+    cutoff=parseFlexibleDate(raw.trim());
+    if(!cutoff){ alert('Could not read "'+raw+'" as a date. Try dd/mm/yyyy.'); return; }
+  }else{
+    cutoff=new Date(); cutoff.setFullYear(cutoff.getFullYear()-1);
+  }
+  const all=(await dbGetAll('inspections').catch(()=>[])).filter(i=>!i.pendingDelete);
+  const due=all.filter(i=>{
+    const d=parseFlexibleDate(i.date);
+    return d && d<cutoff;
+  });
+  if(!due.length){ alert('No inspections dated before '+formatDateNZ(cutoff)+'.'); return; }
+  await runPhotoArchive(due,'before '+formatDateNZ(cutoff));
+}
+window.archiveOldInspectionPhotos=archiveOldInspectionPhotos;
+
+/* --- Whole-dataset backup -----------------------------------
+   Until now the only way anything left this app was a generated
+   PDF. Every record lived in one Free-tier Supabase project
+   (no point-in-time recovery on Free) plus an IndexedDB the
+   browser is entitled to evict. This is the cheapest insurance
+   available and it belongs in the app rather than in a runbook. */
+const BACKUP_STORES=['properties','tenants','maintenance','inspections','invoices','statements','activityLog'];
+
+async function exportAllData(){
+  const data={
+    app:'ProManage NZ',
+    formatVersion:1,
+    exportedAt:new Date().toISOString(),
+    stores:{}
+  };
+  let total=0;
+  for(const store of BACKUP_STORES){
+    const rows=await dbGetAll(store).catch(()=>null);
+    if(rows===null){
+      alert('Could not read "'+store+'" from this device — backup aborted so you are not handed a partial file that looks complete.');
+      return;
+    }
+    data.stores[store]=rows;
+    total+=rows.length;
+  }
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  downloadBlob(blob,'promanage-backup-'+new Date().toISOString().slice(0,10)+'.json');
+  alert('Backed up '+total+' record'+(total===1?'':'s')+'.\n\n'+
+    'Inspection photos are NOT in this file — they live in Storage. Use "Archive photos" for those.');
+}
+window.exportAllData=exportAllData;
+
+/* Restore is additive and never destructive: existing records win, so a
+   backup can be used to recover what was lost without rolling back anything
+   that has moved on since. Restored rows come in unsynced so they push. */
+async function importBackupJSON(text){
+  let data;
+  try{ data=JSON.parse(text); }
+  catch(err){ alert('That is not valid JSON.'); return; }
+  if(!data || !data.stores){ alert('That file is not a ProManage backup.'); return; }
+
+  const summary=BACKUP_STORES
+    .map(s=>({store:s,rows:Array.isArray(data.stores[s])?data.stores[s]:[]}))
+    .filter(x=>x.rows.length);
+  if(!summary.length){ alert('That backup contains no records.'); return; }
+
+  if(!confirm('Restore from backup taken '+(data.exportedAt||'(unknown date)')+'?\n\n'+
+    summary.map(x=>'• '+x.rows.length+' '+x.store).join('\n')+'\n\n'+
+    'Records already on this device are kept as they are — only missing ones are added.')) return;
+
+  let added=0, skipped=0;
+  for(const {store,rows} of summary){
+    const existing=new Set((await dbGetAll(store).catch(()=>[])).map(r=>r.id));
+    for(const row of rows){
+      if(!row || !row.id){ skipped++; continue; }
+      if(existing.has(row.id)){ skipped++; continue; }
+      await dbPut(store,{...row,synced:false,pendingDelete:false});
+      added++;
+    }
+  }
+  await logActivity('Backup','Restored',added+' record'+(added===1?'':'s')+' added');
+  alert('Added '+added+' record'+(added===1?'':'s')+'.'+
+    (skipped?'\n'+skipped+' already present or unusable and left alone.':'')+
+    '\n\nThey will push to Supabase on the next sync.');
+  await refreshAllSyncBanners();
+  await renderPropertiesList(); await renderTenantsList(); await renderMaintenanceList();
+  await renderInspectionList(); await renderInvoicesList(); await renderStatementsList();
+  await renderActivityLog(); await renderDashboard(); await renderComplianceLive();
+  if(navigator.onLine) fullSyncNow();
+}
+window.importBackupJSON=importBackupJSON;
+
+function handleBackupFile(event){
+  const file=event.target.files && event.target.files[0];
+  event.target.value='';
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>importBackupJSON(String(e.target.result||''));
+  reader.onerror=()=>alert('Could not read that file.');
+  reader.readAsText(file);
+}
+window.handleBackupFile=handleBackupFile;
 
 async function deleteInspection(id){
   if(!confirm('Delete this inspection? This cannot be undone.'))return;

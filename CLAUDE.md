@@ -316,11 +316,22 @@ otherwise.
 
 ## Notifying the user when a response finishes
 
-A `Stop` hook (`.claude/settings.json` → `.claude/hooks/notify-stop.sh`) fires
-a real OS notification when Claude Code runs on the user's own machine. It
-cannot reach the user in a cloud/remote session — there is no local display
-for `osascript`/`notify-send` to reach, and this project's network egress
-policy blocks third-party push services (verified: `ntfy.sh` gets a 403
-policy denial from the agent proxy). In a remote session, call the
-`PushNotification` tool yourself at the end of a turn instead — it reaches
-the user's terminal and, if Remote Control is linked, their phone.
+Call the `PushNotification` tool yourself at the end of every turn, in every
+session — local or remote. It is the only thing that can reach the user's
+phone: a `Stop` hook can't invoke it (hooks only run shell/http/mcp_tool
+commands, never an agent tool), so there is no way to make the phone push
+hook-enforced. This has to be done by Claude, every time, deliberately
+overriding the tool's own default "don't notify for routine turns" guidance
+— the user has explicitly asked for a notification on every response.
+
+A `Stop` hook (`.claude/settings.json` → `.claude/hooks/notify-stop.sh`) also
+fires a real OS notification, but only when Claude Code runs on the user's
+own machine — it's a shell script with no reach to the phone, and no reach
+at all in a cloud/remote session (no local display for `osascript`/
+`notify-send`, and this project's network egress policy blocks third-party
+push services — verified: `ntfy.sh` gets a 403 policy denial from the agent
+proxy). Treat it as additive to the `PushNotification` call above, not a
+substitute: on a local machine expect two desktop-side signals (the OS
+notification from the hook, plus whatever `PushNotification` itself shows)
+alongside the one phone push; in a remote session `PushNotification` is the
+only signal there is.

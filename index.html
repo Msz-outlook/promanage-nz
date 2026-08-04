@@ -1232,7 +1232,7 @@ textarea:focus{border-color:var(--text)}
     <input type="text" id="login-email" style="width:100%;margin-bottom:10px" autocomplete="username">
     <label>Password</label>
     <input type="password" id="login-password" style="width:100%;margin-bottom:14px" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
-    <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Sign in</button>
+    <button type="button" id="login-btn" class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Sign in</button>
     <div id="login-error" style="color:var(--red-text);font-size:12px;margin-top:10px;display:none"></div>
   </div>
 </div>
@@ -2009,17 +2009,117 @@ const LAW_UPDATES_LAST_VERIFIED = '21 Jul 2026';
    ============================================================ */
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
 
+/* A sign-in fails in two very different ways, and only one of them used to be
+   visible. Supabase returns bad credentials as `error` — that path was handled.
+   But signInWithPassword() can also REJECT, or never settle at all: the auth
+   lock held by another tab of this origin, a storage adapter that throws, a
+   proxy or extension eating the request. Those landed as an unhandled promise
+   rejection, so the button did nothing at all, with no message — impossible to
+   tell apart from a dead button. Everything below exists so the user always
+   gets a reason. Do not remove the guards to "simplify" this. */
+const LOGIN_TIMEOUT_MS = 20000;
+
+function showLoginGate(){
+  document.getElementById('login-gate').style.display='flex';
+  document.getElementById('main-app').style.display='none';
+}
+
+function showLoginError(message){
+  const errEl=document.getElementById('login-error');
+  errEl.textContent=message;
+  errEl.style.display='block';
+}
+
+function setLoginBusy(busy){
+  const btn=document.getElementById('login-btn');
+  if(!btn) return;
+  btn.disabled=busy;
+  if(busy){
+    if(!btn.dataset.label) btn.dataset.label=btn.textContent;
+    btn.textContent='Signing in…';
+  }else{
+    btn.textContent=btn.dataset.label||'Sign in';
+  }
+}
+
+// Rejects rather than hanging forever. A sign-in that never comes back is the
+// single hardest failure to diagnose from the user's side of the screen.
+function withTimeout(promise,ms,message){
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(()=>clearTimeout(timer)),
+    new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);})
+  ]);
+}
+
+// Turns the failures that aren't plain bad credentials into something the
+// person in front of the screen can actually act on.
+function describeAuthFailure(err){
+  const raw=(err && (err.message||err.error_description))||String(err);
+  if(/timed out|did not respond/i.test(raw)){
+    return 'Sign-in did not respond. Another tab running this app can hold the '+
+           'auth lock — close other ProManage tabs and reload, or try a private window.';
+  }
+  if(/fetch|network|load failed|connection/i.test(raw)){
+    return 'Could not reach the server ('+raw+'). Check your connection, or whether '+
+           'a VPN, ad blocker or content blocker is blocking supabase.co.';
+  }
+  return raw;
+}
+
+/* Every module that has to be repainted on entry into the app. Kept as one
+   list because doLogin() and the DOMContentLoaded path both need it and they
+   used to drift apart (see the registration checklist in CLAUDE.md). Each entry
+   is run in isolation: one module throwing must not stop the rest from
+   rendering, and must never abort the sync that follows. */
+const APP_RENDERERS=[
+  ['inspections',async()=>{await renderInspectionList();updateSyncBanner();}],
+  ['properties', async()=>{await renderPropertiesList();updatePropSyncBanner();}],
+  ['tenants',    async()=>{await renderTenantsList();updateTenantSyncBanner();}],
+  ['maintenance',async()=>{await renderMaintenanceList();updateMaintSyncBanner();}],
+  ['invoices',   async()=>{await renderInvoicesList();updateInvoiceSyncBanner();}],
+  ['statements', async()=>{await renderStatementsList();updateStatementSyncBanner();}],
+  ['dashboard',  async()=>{await renderDashboard();}],
+  ['activity',   async()=>{await renderActivityLog();}],
+  ['compliance', async()=>{await renderComplianceLive();}]
+];
+
+async function renderAllModules(){
+  for(const [name,run] of APP_RENDERERS){
+    try{ await run(); }
+    catch(err){ console.error('Could not render '+name+':',err); }
+  }
+}
+
+// Shared by both ways into the app: a fresh sign-in and an existing session.
+async function enterApp(userId){
+  // Has to happen before the renders — they read straight out of IndexedDB,
+  // so a stale account's records would be on screen otherwise.
+  try{ await enforceLocalDataOwner(userId); }
+  catch(err){ console.error('Could not enforce local data owner:',err); }
+  await renderAllModules();
+  fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere
+}
+
 async function checkSession(){
-  const {data:{session}} = await sb.auth.getSession();
+  let session=null;
+  try{
+    const {data,error}=await withTimeout(sb.auth.getSession(),LOGIN_TIMEOUT_MS,'Session lookup did not respond');
+    if(error) throw error;
+    session=data && data.session;
+  }catch(err){
+    // Never leave a blank screen: if we can't tell whether there's a session,
+    // fall back to the login gate and say why.
+    console.error('Could not restore session:',err);
+    showLoginGate();
+    showLoginError(describeAuthFailure(err));
+    return;
+  }
   if(session){
     showApp();
-    // Before anything reads or pushes IndexedDB: make sure what's on this
-    // device belongs to the account that just opened it.
-    await enforceLocalDataOwner(session.user && session.user.id);
-    fullSyncNow(); // background — reconciles with Supabase now we know we're authenticated
+    await enterApp(session.user && session.user.id);
   }else{
-    document.getElementById('login-gate').style.display='flex';
-    document.getElementById('main-app').style.display='none';
+    showLoginGate();
   }
 }
 
@@ -2031,34 +2131,42 @@ function showApp(){
 async function doLogin(){
   const email=document.getElementById('login-email').value.trim();
   const password=document.getElementById('login-password').value;
-  const errEl=document.getElementById('login-error');
-  errEl.style.display='none';
-  const {data,error}=await sb.auth.signInWithPassword({email,password});
+  document.getElementById('login-error').style.display='none';
+  if(!email || !password){
+    showLoginError('Enter both an email address and a password.');
+    return;
+  }
+  setLoginBusy(true);
+  let result;
+  try{
+    result=await withTimeout(
+      sb.auth.signInWithPassword({email,password}),
+      LOGIN_TIMEOUT_MS,
+      'Sign-in did not respond'
+    );
+  }catch(err){
+    console.error('Sign-in failed:',err);
+    showLoginError(describeAuthFailure(err));
+    return;
+  }finally{
+    setLoginBusy(false);
+  }
+  const {data,error}=result||{};
   if(error){
-    errEl.textContent=error.message;
-    errEl.style.display='block';
+    // Bad credentials come through verbatim; a returned network failure gets
+    // the same hint as a thrown one, since it reads identically to the user.
+    showLoginError(describeAuthFailure(error));
+    return;
+  }
+  if(!data || !data.session){
+    // A 200 with nothing usable in it — rare, but it must not look like success.
+    showLoginError('Signed in, but no session was returned. Reload and try again.');
     return;
   }
   showApp();
-  // Has to happen before the renders below — they read straight out of
-  // IndexedDB, so a stale account's records would be on screen otherwise.
-  await enforceLocalDataOwner(data && data.user && data.user.id);
-  await renderInspectionList();
-  updateSyncBanner();
-  await renderPropertiesList();
-  updatePropSyncBanner();
-  await renderTenantsList();
-  updateTenantSyncBanner();
-  await renderMaintenanceList();
-  updateMaintSyncBanner();
-  await renderInvoicesList();
-  updateInvoiceSyncBanner();
-  await renderStatementsList();
-  updateStatementSyncBanner();
-  await renderDashboard();
-  await renderActivityLog();
-  await renderComplianceLive();
-  fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere, re-renders when done
+  // Past this point the account IS signed in, so a failure here must not throw
+  // them back to the login gate — enterApp() reports and carries on instead.
+  await enterApp(data.user && data.user.id);
 }
 
 async function doLogout(){
@@ -2074,13 +2182,17 @@ async function doLogout(){
       'Sign out anyway?');
     if(!ok) return;
   }
-  await sb.auth.signOut();
-  document.getElementById('login-gate').style.display='flex';
-  document.getElementById('main-app').style.display='none';
+  try{ await sb.auth.signOut(); }
+  catch(err){ console.error('Sign-out failed:',err); }
+  showLoginGate();
 }
 
 sb.auth.onAuthStateChange((event)=>{
-  if(event==='SIGNED_OUT') checkSession();
+  // This callback runs while supabase-js holds its auth lock, so calling back
+  // into sb.auth.* from inside it can deadlock every later auth call — which
+  // looks exactly like a sign-in button that does nothing. Defer off the
+  // callback's stack so the lock is released first.
+  if(event==='SIGNED_OUT') setTimeout(checkSession,0);
 });
 
 const DB_NAME='promanageDB', DB_VERSION=8;
@@ -2425,6 +2537,13 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
   try{
     const token=await authHeader();
+    // No session, no owner scope. An anon read returns 200 with an empty list
+    // rather than an error, and the delete pass below would take that at face
+    // value and clear the store — see authHeader().
+    if(!token){
+      console.log(`Pull sync: ${storeName} skipped — not signed in`);
+      return;
+    }
 
     /* Full or incremental? Full when we have no cursor to start from, when
        the last full pull has aged past FULL_PULL_INTERVAL_MS (that's the
@@ -2490,6 +2609,19 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
     if(!fullPull) return;
     if(!complete){
       console.log(`Pull sync: ${storeName} merged from a partial remote list — local records left untouched`);
+      return;
+    }
+    /* Last line of defence. An empty remote list is the one response a
+       permission failure and a genuinely empty table share, because RLS
+       filters rows rather than raising — so "delete everything" and "we were
+       not allowed to see anything" arrive here looking identical. The token
+       check above is the real fix; this refuses to spend the device's last
+       copy on that ambiguity even if some future path gets past it.
+       A genuine "cleared elsewhere" still converges: as soon as any row comes
+       back the list is evidently real, and deletes made on this device apply
+       immediately either way. */
+    if(!remoteRows.length && localAll.some(r=>r.synced && !r.pendingDelete)){
+      console.warn(`Pull sync: ${storeName} came back empty while this device still holds synced records — keeping them rather than reconciling against an empty list`);
       return;
     }
     for(const local of localAll){
@@ -2601,6 +2733,15 @@ async function fullSyncNow(){
     alert('Still offline — will sync automatically once connection returns.');
     return;
   }
+  /* Nothing may touch the backend before we know whose data this is. Without a
+     session every push is rejected and every pull comes back empty-but-OK,
+     which is exactly the shape that used to clear this device — see
+     authHeader(). The online listener fires regardless of sign-in state, so
+     this guard is load-bearing, not defensive. */
+  if(!await authHeader()){
+    console.log('Sync skipped — not signed in.');
+    return;
+  }
   await syncPendingProperties();
   await syncPendingTenants();
   await syncPendingMaintenance();
@@ -2674,6 +2815,7 @@ async function pruneLocalActivityLog(){
 async function pruneRemoteActivityLog(){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return null;
   const token=await authHeader();
+  if(!token) return null; // signed out — retention runs on the next signed-in sync
   try{
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/prune_activity_log`,{
       method:'POST',
@@ -2819,6 +2961,7 @@ async function renderActivityLog(){
 async function pushActivityLogToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/activity_log`,{
       method:'POST',
@@ -3311,6 +3454,7 @@ async function resolvePhotoRefs(refs){
 
 async function deletePhotosFromStorage(record){
   const token=await authHeader();
+  if(!token) return; // signed out — nothing we may delete on the owner's behalf
   const paths=record.areas.flatMap(a=>a.photos).map(extractStoragePath).filter(Boolean);
   await Promise.all(paths.map(path=>
     fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
@@ -3329,10 +3473,12 @@ async function deleteInspection(id){
   if(record.synced && navigator.onLine){
     await deletePhotosFromStorage(record);
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('inspections',id);
     }else{
@@ -3367,14 +3513,33 @@ function sanitizeForPath(str){
   return String(str).replace(/[^a-zA-Z0-9]+/g,'_');
 }
 
+/* The signed-in user's access token, or null when there is no session.
+
+   This must NEVER fall back to CONFIG.SUPABASE_KEY. That key authenticates as
+   the `anon` role, so auth.uid() is NULL, and every owner-scoped RLS policy
+   (`user_id = auth.uid()`) then matches nothing. PostgREST does not treat that
+   as an error — it answers a SELECT with a perfectly ordinary `200 []`, which
+   is byte-for-byte what an empty table looks like. pullAndMerge() reasonably
+   read that as "the server holds nothing", and its delete pass reconciled
+   every synced local row away. That is how a signed-out sync silently wiped
+   this device's records while the server's copies sat there untouched.
+
+   Callers must treat null as "don't talk to the backend yet" — never as a
+   reason to fall back to an unauthenticated request. */
 async function authHeader(){
-  const {data:{session}} = await sb.auth.getSession();
-  return session ? session.access_token : CONFIG.SUPABASE_KEY;
+  try{
+    const {data:{session}} = await sb.auth.getSession();
+    return (session && session.access_token) || null;
+  }catch(err){
+    console.error('Could not read the session for an authenticated request:',err);
+    return null;
+  }
 }
 
 async function uploadPhotoToStorage(dataUrl,path){
   const blob=dataUrlToBlob(dataUrl);
   const token=await authHeader();
+  if(!token) throw new Error('Photo upload needs a signed-in session');
   const res=await fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
     method:'POST',
     headers:{
@@ -3413,6 +3578,7 @@ async function pushInspectionToBackend(record){
     return record;
   }
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       await deletePhotosFromStorage(record);
@@ -3490,21 +3656,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
   checkSession();
   resetInspectionForm();
-  renderInspectionList();
-  updateSyncBanner();
-  renderPropertiesList();
-  updatePropSyncBanner();
-  renderTenantsList();
-  updateTenantSyncBanner();
-  renderMaintenanceList();
-  updateMaintSyncBanner();
-  renderInvoicesList();
-  updateInvoiceSyncBanner();
-  renderStatementsList();
-  updateStatementSyncBanner();
-  renderDashboard();
-  renderActivityLog();
-  renderComplianceLive();
+  renderAllModules();
   renderEmailTriageList();
   updateEmailTriageModeBanner();
   // Only auto-runs in demo mode — otherwise MOCK_INBOX would auto-create fake
@@ -3872,10 +4024,12 @@ async function deleteProperty(id){
   if(record.synced && navigator.onLine){
     // Already in Supabase — delete remotely now
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('properties',id);
     }else if(res && res.status===409){
@@ -3910,6 +4064,7 @@ async function deleteProperty(id){
 async function pushPropertyToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${record.id}`,{
@@ -4123,10 +4278,12 @@ async function deleteTenant(id){
   await logActivity('Tenant','Deleted',record.tenantName+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('tenants',id);
     }else{
@@ -4148,6 +4305,7 @@ async function deleteTenant(id){
 async function pushTenantToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${record.id}`,{
@@ -4330,10 +4488,12 @@ async function deleteMaintenance(id){
   await logActivity('Maintenance','Deleted',record.issue+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('maintenance',id);
     }else{
@@ -4355,6 +4515,7 @@ async function deleteMaintenance(id){
 async function pushMaintenanceToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${record.id}`,{
@@ -4936,10 +5097,12 @@ async function deleteInvoice(id){
   await logActivity('Invoice','Deleted',record.invoiceNumber+' — '+record.billToName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('invoices',id);
     }else{
@@ -4961,6 +5124,7 @@ async function deleteInvoice(id){
 async function pushInvoiceToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${record.id}`,{
@@ -5534,10 +5698,12 @@ async function deleteStatement(id){
   await logActivity('Statement','Deleted',record.statementNumber+' — '+record.ownerName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('statements',id);
     }else{
@@ -5556,6 +5722,7 @@ async function deleteStatement(id){
 async function pushStatementToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${record.id}`,{

@@ -250,8 +250,50 @@ fine on its own page and be stale everywhere else:
 Missing 5–7 is easy to overlook because `nav()` re-renders the page on
 navigation, which masks the gap until a banner goes stale.
 
+## Top-level code in the script block
+
+The whole app is two inline `<script>` blocks. **A statement that throws at the
+top level of one abandons every line after it in that block** — and because the
+markup is already on screen and function declarations are hoisted before any
+statement runs, the page looks completely normal while nothing behind it is
+wired up. Clicks reach handlers that exist but operate on a half-built world.
+
+This is not hypothetical. `const sb = supabase.createClient(...)` ran unguarded
+at line 2010. When `vendor/supabase-js-2.111.0.umd.js` failed to fetch,
+`supabase` was undefined, the line threw, and everything below it never ran:
+the `DOMContentLoaded` registration, the `online`/`offline` listeners, the
+service-worker registration. `doLogin` was still callable from its inline
+`onclick`, so the sign-in button looked alive and did nothing. Worse, `const`
+leaves a failed binding in the temporal dead zone, so the first read reported
+**`Cannot access 'sb' before initialization`** — a message that describes the
+symptom and hides the cause, which is a script tag that 404'd.
+
+So, for anything initialised at the top level:
+
+- **Check the global before dereferencing it.** Every vendored library is a
+  plain `<script src>` that can fail independently. The PDF modules already do
+  this right (`if (!global.jspdf || !global.jspdf.jsPDF) throw ...`, and the
+  same for `heic2any`) — and they do it *inside* `generate()`, so a missing
+  library breaks one button instead of the app.
+- **Use `let` and catch, not bare `const`,** for anything whose initialiser can
+  throw. A failed `const` poisons every later read with a TDZ error that points
+  at the wrong place; `let x = null` lets the rest of the app boot and lets the
+  one broken feature say what is actually wrong.
+- **Record the reason and surface it** where the user will hit it, rather than
+  letting the next caller produce an unrelated error — see `backendInitError`
+  and `BACKEND_UNAVAILABLE_MESSAGE`.
+- **Keep top-level statements to a minimum.** Prefer doing the work in
+  `DOMContentLoaded`, where a throw costs you that handler and not the file.
+
+When adding a new vendored library, add its guard at the same time as the
+`<script>` tag, and remember `sw.js` (`SHELL_FILES` + `CACHE_NAME`).
+
 ## Things not to "simplify"
 
+- **`let sb = null` + the try/catch around `createClient`.** Not a stylistic
+  choice — see "Top-level code in the script block" above. Restoring
+  `const sb = supabase.createClient(...)` re-arms a failure mode where a single
+  missing vendor file silently prevents the entire app from booting.
 - **`authHeader()` returning `null` when there is no session.** Never restore
   the old `: CONFIG.SUPABASE_KEY` fallback, and never send a request without
   checking the token first. That key authenticates as `anon`, so `auth.uid()`

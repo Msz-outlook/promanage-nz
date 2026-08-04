@@ -10,7 +10,7 @@
 // version), update SHELL_FILES below and bump CACHE_NAME so installed clients
 // discard the stale copy instead of serving it forever.
 
-const CACHE_NAME = 'promanage-shell-v3';
+const CACHE_NAME = 'promanage-shell-v4';
 
 const SHELL_FILES = [
   './index.html',
@@ -38,7 +38,11 @@ self.addEventListener('install', (event) => {
       Promise.all(
         SHELL_FILES.map((file) =>
           cache.add(new Request(file, { cache: 'reload' })).catch((err) => {
-            console.warn('[sw] failed to pre-cache ' + file, err);
+            // Still one at a time — one 404 must not cost the whole shell. But
+            // a miss here leaves a file that only the network can serve, so it
+            // is worth being loud about rather than leaving it to be
+            // rediscovered as a broken app later.
+            console.warn('[sw] failed to pre-cache ' + file + ' — it will be fetched from the network on demand', err);
           })
         )
       )
@@ -62,18 +66,37 @@ self.addEventListener('activate', (event) => {
 // Serve from cache, then refresh the cached copy in the background so the next
 // load gets the newer file. Used for the shell: instant offline start, without
 // pinning the app to a stale build forever.
-function cacheFirstRevalidate(request) {
-  return caches.open(CACHE_NAME).then((cache) =>
-    cache.match(request).then((cached) => {
-      const network = fetch(request)
-        .then((response) => {
-          if (response && response.ok) cache.put(request, response.clone());
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
-  );
+// Every path here MUST resolve to a Response. It previously did `.catch(() =>
+// cached)` and `return cached || network`, so a shell file that was not in the
+// cache AND could not be fetched resolved to `undefined` — and respondWith() on
+// undefined fails the request outright. For a <script src> that means the
+// library silently never loads, which is how the app came to report
+// "Cannot access 'sb' before initialization" and keep reporting it: install
+// only warns when a shell file fails to pre-cache, so the gap persists and
+// every later load takes the same dead path.
+async function cacheFirstRevalidate(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
+
+  if (cached) {
+    // Refresh in the background; failure here is fine, we already have a copy.
+    fetch(request)
+      .then((response) => {
+        if (response && response.ok) return cache.put(request, response.clone());
+      })
+      .catch(() => {});
+    return cached;
+  }
+
+  // Nothing cached — this is the path that used to return undefined.
+  try {
+    const response = await fetch(request);
+    if (response && response.ok) await cache.put(request, response.clone());
+    return response;
+  } catch (err) {
+    console.warn('[sw] ' + request.url + ' is neither cached nor reachable', err);
+    return new Response('', { status: 504, statusText: 'Offline and not cached' });
+  }
 }
 
 self.addEventListener('fetch', (event) => {

@@ -1234,6 +1234,11 @@ textarea:focus{border-color:var(--text)}
     <input type="password" id="login-password" style="width:100%;margin-bottom:14px" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
     <button type="button" id="login-btn" class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Sign in</button>
     <div id="login-error" style="color:var(--red-text);font-size:12px;margin-top:10px;display:none"></div>
+    <!-- Only revealed when the app shell itself failed to load. A stale or
+         half-written service-worker cache can serve a broken copy of a vendored
+         library indefinitely, and a normal reload will not shift it. -->
+    <button type="button" id="login-reset" class="btn" style="width:100%;justify-content:center;margin-top:10px;display:none" onclick="resetAppShell(this)">Clear cached app files and reload</button>
+    <div id="login-diagnosis" style="color:var(--text2);font-size:11px;margin-top:8px;display:none"></div>
   </div>
 </div>
 
@@ -2039,6 +2044,73 @@ try{
   console.error('Supabase client could not be created:',err);
 }
 
+/* The three reasons the vendored script can be missing need three different
+   fixes, and the user cannot tell them apart from the page. So ask the network
+   directly and say which one it is. */
+async function diagnoseBackendInit(){
+  const url='vendor/supabase-js-2.111.0.umd.js';
+  try{
+    /* The query string is what makes this a real answer. A plain fetch for this
+       path is a SHELL_URLS hit, so the service worker would hand back the same
+       cached copy that just failed and the probe would only ever confirm
+       itself. With a unique parameter the URL misses that set, falls through to
+       the network-first handler, and reports what the SERVER holds — which is
+       the thing we need to compare the failure against. `no-store` covers the
+       ordinary HTTP cache on top. */
+    const res=await fetch(url+'?shellprobe='+Date.now(),{cache:'no-store'});
+    if(!res.ok){
+      return `Diagnosis: ${url} returns HTTP ${res.status}. The file is not being served from this address — check the app is opened from the folder that contains vendor/.`;
+    }
+    const body=await res.text();
+    if(body.length<50000 || body.indexOf('createClient')===-1){
+      return `Diagnosis: ${url} downloaded but is incomplete (${body.length} bytes). A cached copy is corrupt — use the button above.`;
+    }
+    return `Diagnosis: ${url} downloads correctly now (${body.length} bytes), so startup used a stale cached copy. The button above clears it.`;
+  }catch(err){
+    return `Diagnosis: ${url} could not be fetched at all (${(err&&err.message)||err}). Something is blocking it — a content blocker, VPN, or an offline cache.`;
+  }
+}
+
+/* The escape hatch for a wedged shell. Unregisters the service worker and drops
+   every cache, so the next load is forced to come from the network. Local data
+   in IndexedDB is deliberately untouched — this clears the app's *files*, never
+   the user's records. */
+async function resetAppShell(btn){
+  if(btn){ btn.disabled=true; btn.textContent='Clearing…'; }
+  let workers=0, cleared=0;
+  try{
+    if('serviceWorker' in navigator){
+      const regs=await navigator.serviceWorker.getRegistrations();
+      workers=regs.length;
+      await Promise.all(regs.map(r=>r.unregister().catch(()=>{})));
+    }
+    if(window.caches){
+      const names=await caches.keys();
+      cleared=names.length;
+      await Promise.all(names.map(n=>caches.delete(n).catch(()=>{})));
+    }
+  }catch(err){
+    console.error('Could not clear the app shell:',err);
+  }
+  // Logged because the reload wipes the console view of everything before it,
+  // and this line is what tells you the reset actually did something.
+  console.log(`[reset] unregistered ${workers} service worker(s), deleted ${cleared} cache(s) — reloading`);
+  location.reload();
+}
+
+// Shown wherever the client could not be created — see the `let sb` block above.
+function showBackendUnavailable(){
+  showLoginGate();
+  showLoginError(BACKEND_UNAVAILABLE_MESSAGE+(backendInitError?' ('+backendInitError+')':''));
+  const resetBtn=document.getElementById('login-reset');
+  if(resetBtn) resetBtn.style.display='flex';
+  diagnoseBackendInit().then(text=>{
+    const el=document.getElementById('login-diagnosis');
+    if(el){ el.textContent=text; el.style.display='block'; }
+    console.log(text);
+  });
+}
+
 const BACKEND_UNAVAILABLE_MESSAGE =
   'The app did not finish loading, so sign-in is unavailable. Reload the page. '+
   'If it keeps happening, a cached copy of the app may be incomplete — reload '+
@@ -2138,8 +2210,7 @@ async function enterApp(userId){
 
 async function checkSession(){
   if(!sb){
-    showLoginGate();
-    showLoginError(BACKEND_UNAVAILABLE_MESSAGE);
+    showBackendUnavailable();
     return;
   }
   let session=null;
@@ -2173,7 +2244,7 @@ async function doLogin(){
   const password=document.getElementById('login-password').value;
   document.getElementById('login-error').style.display='none';
   if(!sb){
-    showLoginError(BACKEND_UNAVAILABLE_MESSAGE);
+    showBackendUnavailable();
     return;
   }
   if(!email || !password){

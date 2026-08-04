@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/notify-stop.sh\"",
+            "timeout": 10,
+            "statusMessage": "Notifying you that Claude finished..."
+          }
+        ]
+      }
+    ]
+  }
+}

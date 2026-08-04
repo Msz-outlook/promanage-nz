@@ -313,3 +313,14 @@ and offline (DevTools → Network → Offline).
 When bumping anything in `vendor/` or the app shell, update `SHELL_FILES` and
 bump `CACHE_NAME` in `sw.js` — installed clients keep serving the old shell
 otherwise.
+
+## Notifying the user when a response finishes
+
+A `Stop` hook (`.claude/settings.json` → `.claude/hooks/notify-stop.sh`) fires
+a real OS notification when Claude Code runs on the user's own machine. It
+cannot reach the user in a cloud/remote session — there is no local display
+for `osascript`/`notify-send` to reach, and this project's network egress
+policy blocks third-party push services (verified: `ntfy.sh` gets a 403
+policy denial from the agent proxy). In a remote session, call the
+`PushNotification` tool yourself at the end of a turn instead — it reaches
+the user's terminal and, if Remote Control is linked, their phone.

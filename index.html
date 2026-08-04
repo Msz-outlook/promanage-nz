@@ -2537,6 +2537,13 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return;
   try{
     const token=await authHeader();
+    // No session, no owner scope. An anon read returns 200 with an empty list
+    // rather than an error, and the delete pass below would take that at face
+    // value and clear the store — see authHeader().
+    if(!token){
+      console.log(`Pull sync: ${storeName} skipped — not signed in`);
+      return;
+    }
 
     /* Full or incremental? Full when we have no cursor to start from, when
        the last full pull has aged past FULL_PULL_INTERVAL_MS (that's the
@@ -2602,6 +2609,19 @@ async function pullAndMerge(storeName,remoteTable,mapRemoteToLocal,options){
     if(!fullPull) return;
     if(!complete){
       console.log(`Pull sync: ${storeName} merged from a partial remote list — local records left untouched`);
+      return;
+    }
+    /* Last line of defence. An empty remote list is the one response a
+       permission failure and a genuinely empty table share, because RLS
+       filters rows rather than raising — so "delete everything" and "we were
+       not allowed to see anything" arrive here looking identical. The token
+       check above is the real fix; this refuses to spend the device's last
+       copy on that ambiguity even if some future path gets past it.
+       A genuine "cleared elsewhere" still converges: as soon as any row comes
+       back the list is evidently real, and deletes made on this device apply
+       immediately either way. */
+    if(!remoteRows.length && localAll.some(r=>r.synced && !r.pendingDelete)){
+      console.warn(`Pull sync: ${storeName} came back empty while this device still holds synced records — keeping them rather than reconciling against an empty list`);
       return;
     }
     for(const local of localAll){
@@ -2713,6 +2733,15 @@ async function fullSyncNow(){
     alert('Still offline — will sync automatically once connection returns.');
     return;
   }
+  /* Nothing may touch the backend before we know whose data this is. Without a
+     session every push is rejected and every pull comes back empty-but-OK,
+     which is exactly the shape that used to clear this device — see
+     authHeader(). The online listener fires regardless of sign-in state, so
+     this guard is load-bearing, not defensive. */
+  if(!await authHeader()){
+    console.log('Sync skipped — not signed in.');
+    return;
+  }
   await syncPendingProperties();
   await syncPendingTenants();
   await syncPendingMaintenance();
@@ -2786,6 +2815,7 @@ async function pruneLocalActivityLog(){
 async function pruneRemoteActivityLog(){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return null;
   const token=await authHeader();
+  if(!token) return null; // signed out — retention runs on the next signed-in sync
   try{
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/prune_activity_log`,{
       method:'POST',
@@ -2931,6 +2961,7 @@ async function renderActivityLog(){
 async function pushActivityLogToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/activity_log`,{
       method:'POST',
@@ -3423,6 +3454,7 @@ async function resolvePhotoRefs(refs){
 
 async function deletePhotosFromStorage(record){
   const token=await authHeader();
+  if(!token) return; // signed out — nothing we may delete on the owner's behalf
   const paths=record.areas.flatMap(a=>a.photos).map(extractStoragePath).filter(Boolean);
   await Promise.all(paths.map(path=>
     fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
@@ -3441,10 +3473,12 @@ async function deleteInspection(id){
   if(record.synced && navigator.onLine){
     await deletePhotosFromStorage(record);
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('inspections',id);
     }else{
@@ -3479,14 +3513,33 @@ function sanitizeForPath(str){
   return String(str).replace(/[^a-zA-Z0-9]+/g,'_');
 }
 
+/* The signed-in user's access token, or null when there is no session.
+
+   This must NEVER fall back to CONFIG.SUPABASE_KEY. That key authenticates as
+   the `anon` role, so auth.uid() is NULL, and every owner-scoped RLS policy
+   (`user_id = auth.uid()`) then matches nothing. PostgREST does not treat that
+   as an error — it answers a SELECT with a perfectly ordinary `200 []`, which
+   is byte-for-byte what an empty table looks like. pullAndMerge() reasonably
+   read that as "the server holds nothing", and its delete pass reconciled
+   every synced local row away. That is how a signed-out sync silently wiped
+   this device's records while the server's copies sat there untouched.
+
+   Callers must treat null as "don't talk to the backend yet" — never as a
+   reason to fall back to an unauthenticated request. */
 async function authHeader(){
-  const {data:{session}} = await sb.auth.getSession();
-  return session ? session.access_token : CONFIG.SUPABASE_KEY;
+  try{
+    const {data:{session}} = await sb.auth.getSession();
+    return (session && session.access_token) || null;
+  }catch(err){
+    console.error('Could not read the session for an authenticated request:',err);
+    return null;
+  }
 }
 
 async function uploadPhotoToStorage(dataUrl,path){
   const blob=dataUrlToBlob(dataUrl);
   const token=await authHeader();
+  if(!token) throw new Error('Photo upload needs a signed-in session');
   const res=await fetch(`${CONFIG.SUPABASE_URL}/storage/v1/object/${CONFIG.STORAGE_BUCKET}/${path}`,{
     method:'POST',
     headers:{
@@ -3525,6 +3578,7 @@ async function pushInspectionToBackend(record){
     return record;
   }
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       await deletePhotosFromStorage(record);
@@ -3970,10 +4024,12 @@ async function deleteProperty(id){
   if(record.synced && navigator.onLine){
     // Already in Supabase — delete remotely now
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('properties',id);
     }else if(res && res.status===409){
@@ -4008,6 +4064,7 @@ async function deleteProperty(id){
 async function pushPropertyToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${record.id}`,{
@@ -4221,10 +4278,12 @@ async function deleteTenant(id){
   await logActivity('Tenant','Deleted',record.tenantName+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('tenants',id);
     }else{
@@ -4246,6 +4305,7 @@ async function deleteTenant(id){
 async function pushTenantToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${record.id}`,{
@@ -4428,10 +4488,12 @@ async function deleteMaintenance(id){
   await logActivity('Maintenance','Deleted',record.issue+' — '+record.propertyAddress);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('maintenance',id);
     }else{
@@ -4453,6 +4515,7 @@ async function deleteMaintenance(id){
 async function pushMaintenanceToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${record.id}`,{
@@ -5034,10 +5097,12 @@ async function deleteInvoice(id){
   await logActivity('Invoice','Deleted',record.invoiceNumber+' — '+record.billToName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('invoices',id);
     }else{
@@ -5059,6 +5124,7 @@ async function deleteInvoice(id){
 async function pushInvoiceToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${record.id}`,{
@@ -5632,10 +5698,12 @@ async function deleteStatement(id){
   await logActivity('Statement','Deleted',record.statementNumber+' — '+record.ownerName);
   if(record.synced && navigator.onLine){
     const token=await authHeader();
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
+    // Signed out: skip the request entirely rather than firing it as `anon`.
+    // res=null takes the same path as a failed delete — queued, not lost.
+    const res=token ? await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${id}`,{
       method:'DELETE',
       headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
-    }).catch(()=>null);
+    }).catch(()=>null) : null;
     if(res && res.ok){
       await dbDelete('statements',id);
     }else{
@@ -5654,6 +5722,7 @@ async function deleteStatement(id){
 async function pushStatementToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
+  if(!token) return false; // signed out — stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${record.id}`,{

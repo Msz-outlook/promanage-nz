@@ -252,6 +252,20 @@ navigation, which masks the gap until a banner goes stale.
 
 ## Things not to "simplify"
 
+- **`authHeader()` returning `null` when there is no session.** Never restore
+  the old `: CONFIG.SUPABASE_KEY` fallback, and never send a request without
+  checking the token first. That key authenticates as `anon`, so `auth.uid()`
+  is NULL and every owner-scoped RLS policy matches nothing — and PostgREST
+  reports that as `200 []`, not as an error. It is indistinguishable from an
+  empty table, so `pullAndMerge()` concluded the server was empty and its
+  delete pass cleared every synced record off the device. **This is how the
+  app wiped its own local database on 4 Aug 2026** after a failed sign-in left
+  the Mac session-less while the `online` listener kept calling `fullSyncNow()`.
+  The server copies were never touched, which is the only reason it was
+  recoverable. Any new backend call gets a `if(!token)` guard.
+- **The empty-list check before the delete pass** in `pullAndMerge()`. A
+  permission failure and a genuinely empty table arrive looking identical, so
+  the device's last copy is never spent on that ambiguity.
 - **Pagination + the delete guard** (see the comment at 2262). It looks
   redundant. It is not.
 - **The private Storage bucket.** Photos are stored as `storage:<path>`

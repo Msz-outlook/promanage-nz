@@ -1232,7 +1232,7 @@ textarea:focus{border-color:var(--text)}
     <input type="text" id="login-email" style="width:100%;margin-bottom:10px" autocomplete="username">
     <label>Password</label>
     <input type="password" id="login-password" style="width:100%;margin-bottom:14px" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
-    <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Sign in</button>
+    <button type="button" id="login-btn" class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Sign in</button>
     <div id="login-error" style="color:var(--red-text);font-size:12px;margin-top:10px;display:none"></div>
   </div>
 </div>
@@ -2009,17 +2009,117 @@ const LAW_UPDATES_LAST_VERIFIED = '21 Jul 2026';
    ============================================================ */
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
 
+/* A sign-in fails in two very different ways, and only one of them used to be
+   visible. Supabase returns bad credentials as `error` — that path was handled.
+   But signInWithPassword() can also REJECT, or never settle at all: the auth
+   lock held by another tab of this origin, a storage adapter that throws, a
+   proxy or extension eating the request. Those landed as an unhandled promise
+   rejection, so the button did nothing at all, with no message — impossible to
+   tell apart from a dead button. Everything below exists so the user always
+   gets a reason. Do not remove the guards to "simplify" this. */
+const LOGIN_TIMEOUT_MS = 20000;
+
+function showLoginGate(){
+  document.getElementById('login-gate').style.display='flex';
+  document.getElementById('main-app').style.display='none';
+}
+
+function showLoginError(message){
+  const errEl=document.getElementById('login-error');
+  errEl.textContent=message;
+  errEl.style.display='block';
+}
+
+function setLoginBusy(busy){
+  const btn=document.getElementById('login-btn');
+  if(!btn) return;
+  btn.disabled=busy;
+  if(busy){
+    if(!btn.dataset.label) btn.dataset.label=btn.textContent;
+    btn.textContent='Signing in…';
+  }else{
+    btn.textContent=btn.dataset.label||'Sign in';
+  }
+}
+
+// Rejects rather than hanging forever. A sign-in that never comes back is the
+// single hardest failure to diagnose from the user's side of the screen.
+function withTimeout(promise,ms,message){
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(()=>clearTimeout(timer)),
+    new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);})
+  ]);
+}
+
+// Turns the failures that aren't plain bad credentials into something the
+// person in front of the screen can actually act on.
+function describeAuthFailure(err){
+  const raw=(err && (err.message||err.error_description))||String(err);
+  if(/timed out|did not respond/i.test(raw)){
+    return 'Sign-in did not respond. Another tab running this app can hold the '+
+           'auth lock — close other ProManage tabs and reload, or try a private window.';
+  }
+  if(/fetch|network|load failed|connection/i.test(raw)){
+    return 'Could not reach the server ('+raw+'). Check your connection, or whether '+
+           'a VPN, ad blocker or content blocker is blocking supabase.co.';
+  }
+  return raw;
+}
+
+/* Every module that has to be repainted on entry into the app. Kept as one
+   list because doLogin() and the DOMContentLoaded path both need it and they
+   used to drift apart (see the registration checklist in CLAUDE.md). Each entry
+   is run in isolation: one module throwing must not stop the rest from
+   rendering, and must never abort the sync that follows. */
+const APP_RENDERERS=[
+  ['inspections',async()=>{await renderInspectionList();updateSyncBanner();}],
+  ['properties', async()=>{await renderPropertiesList();updatePropSyncBanner();}],
+  ['tenants',    async()=>{await renderTenantsList();updateTenantSyncBanner();}],
+  ['maintenance',async()=>{await renderMaintenanceList();updateMaintSyncBanner();}],
+  ['invoices',   async()=>{await renderInvoicesList();updateInvoiceSyncBanner();}],
+  ['statements', async()=>{await renderStatementsList();updateStatementSyncBanner();}],
+  ['dashboard',  async()=>{await renderDashboard();}],
+  ['activity',   async()=>{await renderActivityLog();}],
+  ['compliance', async()=>{await renderComplianceLive();}]
+];
+
+async function renderAllModules(){
+  for(const [name,run] of APP_RENDERERS){
+    try{ await run(); }
+    catch(err){ console.error('Could not render '+name+':',err); }
+  }
+}
+
+// Shared by both ways into the app: a fresh sign-in and an existing session.
+async function enterApp(userId){
+  // Has to happen before the renders — they read straight out of IndexedDB,
+  // so a stale account's records would be on screen otherwise.
+  try{ await enforceLocalDataOwner(userId); }
+  catch(err){ console.error('Could not enforce local data owner:',err); }
+  await renderAllModules();
+  fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere
+}
+
 async function checkSession(){
-  const {data:{session}} = await sb.auth.getSession();
+  let session=null;
+  try{
+    const {data,error}=await withTimeout(sb.auth.getSession(),LOGIN_TIMEOUT_MS,'Session lookup did not respond');
+    if(error) throw error;
+    session=data && data.session;
+  }catch(err){
+    // Never leave a blank screen: if we can't tell whether there's a session,
+    // fall back to the login gate and say why.
+    console.error('Could not restore session:',err);
+    showLoginGate();
+    showLoginError(describeAuthFailure(err));
+    return;
+  }
   if(session){
     showApp();
-    // Before anything reads or pushes IndexedDB: make sure what's on this
-    // device belongs to the account that just opened it.
-    await enforceLocalDataOwner(session.user && session.user.id);
-    fullSyncNow(); // background — reconciles with Supabase now we know we're authenticated
+    await enterApp(session.user && session.user.id);
   }else{
-    document.getElementById('login-gate').style.display='flex';
-    document.getElementById('main-app').style.display='none';
+    showLoginGate();
   }
 }
 
@@ -2031,34 +2131,42 @@ function showApp(){
 async function doLogin(){
   const email=document.getElementById('login-email').value.trim();
   const password=document.getElementById('login-password').value;
-  const errEl=document.getElementById('login-error');
-  errEl.style.display='none';
-  const {data,error}=await sb.auth.signInWithPassword({email,password});
+  document.getElementById('login-error').style.display='none';
+  if(!email || !password){
+    showLoginError('Enter both an email address and a password.');
+    return;
+  }
+  setLoginBusy(true);
+  let result;
+  try{
+    result=await withTimeout(
+      sb.auth.signInWithPassword({email,password}),
+      LOGIN_TIMEOUT_MS,
+      'Sign-in did not respond'
+    );
+  }catch(err){
+    console.error('Sign-in failed:',err);
+    showLoginError(describeAuthFailure(err));
+    return;
+  }finally{
+    setLoginBusy(false);
+  }
+  const {data,error}=result||{};
   if(error){
-    errEl.textContent=error.message;
-    errEl.style.display='block';
+    // Bad credentials come through verbatim; a returned network failure gets
+    // the same hint as a thrown one, since it reads identically to the user.
+    showLoginError(describeAuthFailure(error));
+    return;
+  }
+  if(!data || !data.session){
+    // A 200 with nothing usable in it — rare, but it must not look like success.
+    showLoginError('Signed in, but no session was returned. Reload and try again.');
     return;
   }
   showApp();
-  // Has to happen before the renders below — they read straight out of
-  // IndexedDB, so a stale account's records would be on screen otherwise.
-  await enforceLocalDataOwner(data && data.user && data.user.id);
-  await renderInspectionList();
-  updateSyncBanner();
-  await renderPropertiesList();
-  updatePropSyncBanner();
-  await renderTenantsList();
-  updateTenantSyncBanner();
-  await renderMaintenanceList();
-  updateMaintSyncBanner();
-  await renderInvoicesList();
-  updateInvoiceSyncBanner();
-  await renderStatementsList();
-  updateStatementSyncBanner();
-  await renderDashboard();
-  await renderActivityLog();
-  await renderComplianceLive();
-  fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere, re-renders when done
+  // Past this point the account IS signed in, so a failure here must not throw
+  // them back to the login gate — enterApp() reports and carries on instead.
+  await enterApp(data.user && data.user.id);
 }
 
 async function doLogout(){
@@ -2074,13 +2182,17 @@ async function doLogout(){
       'Sign out anyway?');
     if(!ok) return;
   }
-  await sb.auth.signOut();
-  document.getElementById('login-gate').style.display='flex';
-  document.getElementById('main-app').style.display='none';
+  try{ await sb.auth.signOut(); }
+  catch(err){ console.error('Sign-out failed:',err); }
+  showLoginGate();
 }
 
 sb.auth.onAuthStateChange((event)=>{
-  if(event==='SIGNED_OUT') checkSession();
+  // This callback runs while supabase-js holds its auth lock, so calling back
+  // into sb.auth.* from inside it can deadlock every later auth call — which
+  // looks exactly like a sign-in button that does nothing. Defer off the
+  // callback's stack so the lock is released first.
+  if(event==='SIGNED_OUT') setTimeout(checkSession,0);
 });
 
 const DB_NAME='promanageDB', DB_VERSION=8;
@@ -3490,21 +3602,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
   checkSession();
   resetInspectionForm();
-  renderInspectionList();
-  updateSyncBanner();
-  renderPropertiesList();
-  updatePropSyncBanner();
-  renderTenantsList();
-  updateTenantSyncBanner();
-  renderMaintenanceList();
-  updateMaintSyncBanner();
-  renderInvoicesList();
-  updateInvoiceSyncBanner();
-  renderStatementsList();
-  updateStatementSyncBanner();
-  renderDashboard();
-  renderActivityLog();
-  renderComplianceLive();
+  renderAllModules();
   renderEmailTriageList();
   updateEmailTriageModeBanner();
   // Only auto-runs in demo mode — otherwise MOCK_INBOX would auto-create fake

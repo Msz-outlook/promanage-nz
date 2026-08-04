@@ -290,6 +290,14 @@ When adding a new vendored library, add its guard at the same time as the
 
 ## Things not to "simplify"
 
+- **Every branch of a `fetch` handler in `sw.js` resolving to a `Response`.**
+  `event.respondWith()` on a promise that resolves to `undefined` fails the
+  request outright, and for a `<script src>` that is silent — the library
+  simply never loads. `cacheFirstRevalidate` did exactly that for a shell file
+  that was neither cached nor reachable (`.catch(() => cached)` with nothing
+  cached), which is what made "Cannot access 'sb' before initialization"
+  recur rather than clear on reload. A 504 you can see beats an `undefined`
+  you cannot.
 - **`let sb = null` + the try/catch around `createClient`.** Not a stylistic
   choice — see "Top-level code in the script block" above. Restoring
   `const sb = supabase.createClient(...)` re-arms a failure mode where a single

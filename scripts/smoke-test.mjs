@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 //
-// Boot smoke test. Serves the repo on localhost and loads the app in a real
-// browser, because the failure this guards against is invisible to a syntax
-// check: the markup renders, function declarations hoist, every onclick
-// handler exists and is callable — and nothing behind them is wired up.
+// Boot smoke test. Loads the app in a real browser, because the failure this
+// guards against is invisible to a syntax check: the markup renders, function
+// declarations hoist, every onclick handler exists and is callable — and
+// nothing behind them is wired up.
 //
 //   node scripts/smoke-test.mjs
 //
@@ -14,35 +14,10 @@
 // statements*, not the presence of functions. Declarations are hoisted, so
 // `typeof saveInspection === 'function'` stays true even when the block that
 // defines it threw on line one. Only a side effect proves the block ran.
+//
+// This is the "does it boot" check. Logic lives in scripts/test.mjs.
 
-import { chromium } from 'playwright';
-import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { join, extname, dirname, resolve, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-const TYPES = {
-  '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
-  '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml'
-};
-
-// Service workers need a secure context; localhost counts as one.
-const server = createServer(async (req, res) => {
-  const rel = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^(\.\.[/\\])+/, '');
-  const path = join(ROOT, rel === '/' ? 'index.html' : rel);
-  try {
-    const body = await readFile(path);
-    res.writeHead(200, { 'Content-Type': TYPES[extname(path)] || 'application/octet-stream' });
-    res.end(body);
-  } catch {
-    res.writeHead(404).end('not found');
-  }
-});
-
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const origin = `http://127.0.0.1:${server.address().port}`;
+import { openApp } from './lib/harness.mjs';
 
 const failures = [];
 const check = (name, condition, detail) => {
@@ -50,32 +25,10 @@ const check = (name, condition, detail) => {
   else { console.log(`  FAIL  ${name}`); failures.push({ name, detail }); }
 };
 
-// CHROMIUM_PATH lets an environment with a pre-installed browser point at it
-// rather than downloading a second copy. CI leaves it unset and uses the one
-// `npx playwright install chromium` puts in the default location.
-const browser = await chromium.launch(
-  process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}
-);
-const context = await browser.newContext();
-const page = await context.newPage();
-
-const pageErrors = [];
-const consoleErrors = [];
-page.on('pageerror', (err) => pageErrors.push(err.message));
-page.on('console', (msg) => {
-  // The browser requests /favicon.ico on its own and the repo has no such
-  // file — a permanent, meaningless 404 that would otherwise sit in every
-  // failure report.
-  if (msg.type() === 'error' && !msg.location()?.url?.endsWith('/favicon.ico')) {
-    consoleErrors.push(msg.text());
-  }
-});
-
 // The app is offline-first and CI has no Supabase credentials, so let network
 // calls to Supabase fail naturally — a boot that depends on them reaching the
 // server is itself a bug worth catching.
-await page.goto(origin, { waitUntil: 'load' });
-await page.waitForTimeout(2500); // let DOMContentLoaded work and SW registration settle
+const { page, pageErrors, consoleErrors, close } = await openApp();
 
 /* No uncaught exceptions anywhere during boot. */
 check('no uncaught page errors', pageErrors.length === 0, pageErrors.join('\n    '));
@@ -132,8 +85,7 @@ check(
   (await page.evaluate('navigator.serviceWorker.getRegistrations().then(r => r.length)')) > 0
 );
 
-await browser.close();
-server.close();
+await close();
 
 console.log('');
 if (failures.length) {

@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       # On a pull request, also assert that touching a shell file came with a
       # CACHE_NAME bump — installed clients keep serving the old shell forever
@@ -55,7 +55,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       # No package.json in the repo, and deliberately so — install without
       # writing one.

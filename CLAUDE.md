@@ -18,11 +18,14 @@ signal and does not hand a third party a request on every page load.
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 6191 | The whole app — markup, CSS, PDF report modules, and every feature module |
+| `index.html` | 6477 | The whole app — markup, CSS, PDF report modules, and every feature module |
 | `supabase/schema.sql` | 567 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention. Safe to re-run |
-| `sw.js` | 126 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v2'`), navigation falls back to cached `index.html` |
+| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v4'`), navigation falls back to cached `index.html` |
 | `vendor/` | — | supabase-js 2.111.0, jsPDF 2.5.2, jspdf-autotable 3.8.2, heic2any 0.0.4 |
 | `manifest.json` | — | PWA manifest |
+| `scripts/` | 340 | `check-app.mjs` (static checks, no deps) and `smoke-test.mjs` (boots the app in Chromium). See "Verifying a change" |
+| `.github/workflows/` | — | `ci.yml` runs both check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
+| `docs/REVIEW-2026-08.md` | — | Review ahead of scaling to ~6 properties: backup gap, photo sizing, quota projections |
 
 **This repo is the deploy root.** GitHub Pages serves every committed file, and
 directories without an index are listable. Never commit real owner/tenant data,
@@ -359,21 +362,36 @@ once the project is upgraded.
 
 ## Verifying a change
 
-There is no test runner. At minimum, syntax-check the two inline script blocks:
+There is no test runner, but there are two check scripts. Run both before
+pushing — CI (`.github/workflows/ci.yml`) runs exactly these:
 
 ```sh
-python3 - <<'EOF'
-import re
-src = open('index.html', encoding='utf-8').read()
-for i, b in enumerate(re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', src, re.S)):
-    open(f'/tmp/block{i}.js', 'w', encoding='utf-8').write(b)
-EOF
-node --check /tmp/block0.js && node --check /tmp/block1.js
+node scripts/check-app.mjs      # static checks, no dependencies
+node scripts/smoke-test.mjs     # boots the app in a real browser
 ```
 
-Then open `index.html` in a browser and exercise the affected module both online
-and offline (DevTools → Network → Offline).
+`check-app.mjs` replaces the old manual `node --check` ritual and adds the
+assertions that ritual could not make: that every `<script src>` exists on
+disk, that `SHELL_FILES` in `sw.js` covers them, and that no service-role key
+has landed in `index.html`. Pass `--base origin/main` (CI does this on pull
+requests) to also assert that a change to a shell file came with a `CACHE_NAME`
+bump — installed clients keep serving the old shell otherwise.
 
-When bumping anything in `vendor/` or the app shell, update `SHELL_FILES` and
-bump `CACHE_NAME` in `sw.js` — installed clients keep serving the old shell
-otherwise.
+`smoke-test.mjs` needs Playwright:
+
+```sh
+npm install --no-save playwright && npx playwright install chromium
+```
+
+It checks **side effects of top-level statements**, not the presence of
+functions — declarations are hoisted, so `typeof saveInspection === 'function'`
+stays true even when the block defining it threw on its first line. The last
+assertion is that the service worker registered, which is the final top-level
+statement in block 1: if that ran, the whole block ran. This is the specific
+regression described in "Top-level code in the script block" above, and
+removing a file from `vendor/` is a quick way to confirm the test still
+catches it.
+
+Neither script replaces using the thing. Open `index.html` in a browser and
+exercise the affected module both online and offline (DevTools → Network →
+Offline).

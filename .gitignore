@@ -10,6 +10,13 @@ statement/
 statements/
 *.pdf
 
+# Playwright, installed on demand for scripts/smoke-test.mjs. There is
+# deliberately no package.json — `npm install --no-save playwright` leaves this
+# directory behind, and since GitHub Pages serves everything in the branch,
+# committing it would publish ~19 MB of browser tooling to the live site.
+node_modules/
+package-lock.json
+
 # Local scratch and editor/OS noise
 .DS_Store
 Thumbs.db

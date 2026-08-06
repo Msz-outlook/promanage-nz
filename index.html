@@ -1311,6 +1311,27 @@ textarea:focus{border-color:var(--text)}
     </table></div><div class="scroll-fade"></div></div>
   </div>
 
+  <div class="card">
+    <div class="card-head">
+      Backup
+      <span>
+        <button class="btn btn-sm" onclick="exportAllData(false,this)">⬇ Export data</button>
+        <button class="btn btn-sm" onclick="exportAllData(true,this)">⬇ Export data + photos</button>
+        <button class="btn btn-sm" onclick="pickBackupFile()">⬆ Restore…</button>
+      </span>
+    </div>
+    <div style="padding:0 14px 14px">
+      <div id="dash-backup-status" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+      <div style="color:var(--text3);font-size:12px;margin-top:8px">
+        The Supabase project is on the Free plan, which keeps no automated backups.
+        This device and the server hold the same data one sync apart — neither is a
+        backup of the other. Keep the exported file somewhere else.
+      </div>
+      <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none"
+             onchange="importAllData(this.files&&this.files[0])">
+    </div>
+  </div>
+
   <div class="metrics" id="dash-metrics">
     <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val" id="dm-maint">—</div><div class="metric-sub" id="dm-maint-sub"></div></div>
     <div class="metric"><div class="metric-label">Not compliant</div><div class="metric-val" id="dm-noncompliant">—</div><div class="metric-sub" id="dm-noncompliant-sub"></div></div>
@@ -2188,7 +2209,8 @@ const APP_RENDERERS=[
   ['statements', async()=>{await renderStatementsList();updateStatementSyncBanner();}],
   ['dashboard',  async()=>{await renderDashboard();}],
   ['activity',   async()=>{await renderActivityLog();}],
-  ['compliance', async()=>{await renderComplianceLive();}]
+  ['compliance', async()=>{await renderComplianceLive();}],
+  ['backup',     async()=>{await renderBackupCard();}]
 ];
 
 async function renderAllModules(){
@@ -2204,6 +2226,10 @@ async function enterApp(userId){
   // so a stale account's records would be on screen otherwise.
   try{ await enforceLocalDataOwner(userId); }
   catch(err){ console.error('Could not enforce local data owner:',err); }
+  // Ask for the durable storage bucket once we know someone is actually using
+  // this device for real work. Fire-and-forget: the answer only changes what
+  // the Backup card reports, never whether the app runs.
+  requestPersistentStorage().then(()=>renderBackupCard()).catch(()=>{});
   await renderAllModules();
   fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere
 }
@@ -2314,11 +2340,34 @@ if(sb) sb.auth.onAuthStateChange((event)=>{
 
 const DB_NAME='promanageDB', DB_VERSION=8;
 let dbInstance=null;
+// The in-flight open. Without it, the `if(dbInstance)` check below is useless
+// against concurrent callers: it runs synchronously, so every dbGetAll() fired
+// during a render pass — and renderAllModules() fires nine of them — calls
+// indexedDB.open() before the first has resolved. That left a pile of live
+// connections with only the last one reachable, which stayed invisible until
+// onversionchange started firing once per leaked connection.
+let dbOpening=null;
 
+/* onblocked is not optional here. indexedDB.open() with a raised DB_VERSION
+   does not fail when another tab still holds the old version — it simply never
+   fires onsuccess, so this promise never settles and every await on it hangs
+   forever. The page keeps its markup, function declarations are already
+   hoisted, and every handler stays callable against a world that was never
+   built: the same silent half-boot described under "Top-level code in the
+   script block" above, arrived at from a different direction and with nothing
+   in the console.
+
+   onversionchange is the other half: it fires in the OLD tab when a NEW one
+   wants to upgrade. Closing the connection there is what lets the new tab
+   proceed instead of both sitting and waiting for each other. */
 function openDB(){
-  return new Promise((resolve,reject)=>{
-    if(dbInstance) return resolve(dbInstance);
+  if(dbInstance) return Promise.resolve(dbInstance);
+  if(dbOpening) return dbOpening;
+  dbOpening=new Promise((resolve,reject)=>{
     const req=indexedDB.open(DB_NAME,DB_VERSION);
+    req.onblocked=()=>{
+      reject(new Error('Another tab or window has ProManage open on an older version. Close it, then reload this page.'));
+    };
     req.onupgradeneeded=(e)=>{
       const db=e.target.result;
       if(!db.objectStoreNames.contains('inspections')){
@@ -2346,17 +2395,55 @@ function openDB(){
         db.createObjectStore('emailTriage',{keyPath:'id'});
       }
     };
-    req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
+    req.onsuccess=(e)=>{
+      const db=e.target.result;
+      // Another tab wants to upgrade: let go, or we block it forever.
+      db.onversionchange=()=>{
+        db.close();
+        dbInstance=null;
+        alert('ProManage was updated in another tab. Reload this page to continue.');
+      };
+      // The browser can close a connection on its own (eviction, a crashed
+      // backing store). Without this the cached handle stays in place and
+      // every later call throws InvalidStateError with no way back short of
+      // a reload; clearing it means the next openDB() simply reconnects.
+      db.onclose=()=>{ dbInstance=null; };
+      dbInstance=db;
+      resolve(db);
+    };
     req.onerror=(e)=>reject(e.target.error);
   });
+  // The attempt is over either way: clear the slot so a failure can be retried.
+  // dbInstance carries the success case, so this never discards a live handle.
+  dbOpening.then(()=>{dbOpening=null;},()=>{dbOpening=null;});
+  return dbOpening;
+}
+
+/* A full store rejects with QuotaExceededError, which reads as "the write
+   failed" and says nothing about why or what to do. Inspection photos are the
+   only thing here big enough to fill a quota, and a save that fails after the
+   form has already closed looks exactly like a save that worked. Rewrite it
+   into something the caller can put in front of the user. */
+const STORAGE_FULL_MESSAGE='This device is out of storage for ProManage. Sync to free up space (synced photos are kept on the server), or clear space on the device, then try again.';
+
+function isQuotaError(err){
+  return !!err && (err.name==='QuotaExceededError' || err.name==='NS_ERROR_DOM_QUOTA_REACHED');
 }
 
 function dbPut(storeName,record){
   return openDB().then(db=>new Promise((resolve,reject)=>{
     const tx=db.transaction(storeName,'readwrite');
-    tx.objectStore(storeName).put(record);
+    const fail=(err)=>reject(isQuotaError(err)?Object.assign(new Error(STORAGE_FULL_MESSAGE),{name:'QuotaExceededError',cause:err}):err);
+    try{
+      tx.objectStore(storeName).put(record);
+    }catch(err){
+      // A record too large for the store throws synchronously rather than
+      // surfacing through tx.onerror.
+      fail(err); return;
+    }
     tx.oncomplete=()=>resolve(record);
-    tx.onerror=(e)=>reject(e.target.error);
+    tx.onerror=(e)=>fail(e.target.error);
+    tx.onabort=(e)=>fail(e.target.error);
   }));
 }
 
@@ -3399,7 +3486,19 @@ async function saveInspection(){
     createdAt: (isEdit&&existing)?existing.createdAt:new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
-  await dbPut('inspections',record);
+  // An inspection is the biggest thing this app writes — a dozen photos of a
+  // few hundred KB each. If the store is full, the write must not be allowed
+  // to fail quietly behind a form that has already closed and a "saved"
+  // message that has already been shown.
+  try{
+    await dbPut('inspections',record);
+  }catch(err){
+    console.error('Could not save inspection:',err);
+    alert(isQuotaError(err)||err.name==='QuotaExceededError'
+      ? STORAGE_FULL_MESSAGE+'\n\nThe inspection has NOT been saved — leave this form open and try again after syncing.'
+      : 'Could not save this inspection on the device: '+((err&&err.message)||err)+'\n\nIt has NOT been saved.');
+    return;
+  }
   await logActivity('Inspection', isEdit?'Updated':'Created', record.property+' — '+record.date);
   await renderInspectionList();
   updateSyncBanner();
@@ -6344,6 +6443,274 @@ async function renderFinancials(){
   document.getElementById('fin-disbursement-breakdown').innerHTML=categoryTableHtml(
     passThroughCategoryAgg,passThrough,'Total paid on owners’ behalf','red',
     'No pass-through costs recorded for this period');
+}
+
+/* ============================================================
+   BACKUP — export/import of every local store.
+
+   The Supabase project is on the Free plan, which has NO automated
+   backups; Supabase's own guidance is that free projects export
+   regularly and keep the copies off-platform. Until this existed,
+   the complete set of copies of the owner statements — the agency's
+   books — was one unbacked Postgres and one IndexedDB store the
+   browser is allowed to evict at will. Neither is a backup of the
+   other: they are the same data, one sync apart.
+
+   Rows and photos are separate exports on purpose. Rows are small,
+   need no network, and always work; photos live in the private
+   Storage bucket as "storage:<path>" refs that have to be signed and
+   fetched one by one, which needs a session and takes real time. A
+   backup you can always take beats a backup that sometimes fails,
+   so the fast one is the default and the complete one is explicit.
+   ============================================================ */
+
+const BACKUP_FORMAT=1;
+const LAST_EXPORT_KEY='promanage_last_export_at';
+const BACKUP_STALE_DAYS=30;
+
+function backupFileName(withPhotos){
+  const d=new Date();
+  const stamp=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  return 'promanage-backup-'+stamp+(withPhotos?'-with-photos':'')+'.json';
+}
+
+function downloadJSON(filename,obj){
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
+
+function formatBytes(n){
+  if(!n && n!==0) return '—';
+  if(n<1024) return n+' B';
+  if(n<1024*1024) return (n/1024).toFixed(0)+' KB';
+  if(n<1024*1024*1024) return (n/(1024*1024)).toFixed(1)+' MB';
+  return (n/(1024*1024*1024)).toFixed(2)+' GB';
+}
+
+async function exportAllData(withPhotos,btn){
+  const label=btn?btn.textContent:null;
+  if(btn){ btn.disabled=true; btn.textContent='Exporting…'; }
+  try{
+    const data={};
+    let rows=0;
+    for(const store of LOCAL_STORES){
+      data[store]=await dbGetAll(store).catch(()=>[]);
+      rows+=data[store].length;
+    }
+
+    let photoCount=0, photoFailures=0;
+    if(withPhotos){
+      // Inline each photo as a data URL keyed by its storage ref, so a restore
+      // can put the bytes back even if the bucket is gone. resolvePhotoRefs()
+      // already knows how to sign a batch of refs; reuse it rather than
+      // duplicating the signing logic.
+      const refs=new Set();
+      for(const insp of data.inspections||[]){
+        for(const area of insp.areas||[]){
+          for(const p of area.photos||[]){
+            if(typeof p==='string' && p.startsWith(PHOTO_REF_PREFIX)) refs.add(p);
+          }
+        }
+      }
+      data.photos={};
+      let done=0;
+      for(const ref of refs){
+        if(btn) btn.textContent='Photos '+(++done)+'/'+refs.size+'…';
+        try{
+          const [signed]=await resolvePhotoRefs([ref]);
+          if(!signed || signed.startsWith(PHOTO_REF_PREFIX)) throw new Error('could not sign '+ref);
+          const res=await fetch(signed);
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          const blob=await res.blob();
+          data.photos[ref]=await new Promise((resolve,reject)=>{
+            const fr=new FileReader();
+            fr.onload=()=>resolve(fr.result);
+            fr.onerror=()=>reject(fr.error);
+            fr.readAsDataURL(blob);
+          });
+          photoCount++;
+        }catch(err){
+          console.warn('[backup] skipping photo',ref,err);
+          photoFailures++;
+        }
+      }
+    }
+
+    const payload={
+      format:BACKUP_FORMAT,
+      exportedAt:new Date().toISOString(),
+      dbVersion:DB_VERSION,
+      includesPhotos:!!withPhotos,
+      counts:Object.fromEntries(LOCAL_STORES.map(s=>[s,(data[s]||[]).length])),
+      data
+    };
+    downloadJSON(backupFileName(withPhotos),payload);
+
+    try{ localStorage.setItem(LAST_EXPORT_KEY,payload.exportedAt); }catch(_){}
+    renderBackupCard();
+    await logActivity('Backup','Exported',rows+' records'+(withPhotos?', '+photoCount+' photos':''));
+
+    alert('Backup downloaded — '+rows+' records'
+      +(withPhotos?', '+photoCount+' photo'+(photoCount===1?'':'s'):'')
+      +'.\n\nKeep it somewhere other than this device.'
+      +(photoFailures?'\n\nWARNING: '+photoFailures+' photo(s) could not be fetched and are NOT in this file.':''));
+  }catch(err){
+    console.error('Export failed:',err);
+    alert('Export failed: '+((err&&err.message)||err));
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent=label; }
+  }
+}
+
+/* Restore. "Merge" keeps anything on this device that the file does not
+   mention; "Replace" makes the device match the file exactly. Replace is the
+   one you want after a device is wiped, merge is the one you want after an
+   accidental deletion — so the choice is explicit rather than guessed. */
+async function importAllData(file){
+  if(!file) return;
+  let payload;
+  try{
+    payload=JSON.parse(await file.text());
+  }catch(err){
+    alert('That file is not valid JSON.'); return;
+  }
+  if(!payload || typeof payload!=='object' || !payload.data || typeof payload.data!=='object'){
+    alert('That does not look like a ProManage backup — no "data" section.'); return;
+  }
+  if(payload.format!==BACKUP_FORMAT){
+    if(!confirm('This file was written in backup format '+payload.format+', and this app reads format '+BACKUP_FORMAT+'.\n\nTry to import it anyway?')) return;
+  }
+
+  const incoming={};
+  for(const store of LOCAL_STORES){
+    incoming[store]=Array.isArray(payload.data[store])?payload.data[store]:[];
+  }
+  const current={};
+  for(const store of LOCAL_STORES) current[store]=await dbGetAll(store).catch(()=>[]);
+
+  const summary=LOCAL_STORES
+    .filter(s=>incoming[s].length||current[s].length)
+    .map(s=>'  '+s+': '+current[s].length+' here → '+incoming[s].length+' in file')
+    .join('\n');
+
+  const replace=confirm(
+    'Restore from backup taken '+(payload.exportedAt?new Date(payload.exportedAt).toLocaleString():'(unknown date)')+'\n\n'
+    +summary+'\n\n'
+    +'OK = REPLACE — wipe local records and use the file exactly.\n'
+    +'Cancel = choose merge instead.');
+
+  if(!replace){
+    if(!confirm('Merge instead? Records in the file are added or overwrite the copy here by id; anything on this device the file does not mention is kept.')) return;
+  }else if(!confirm('REPLACE will delete every local record not in this file. Unsynced work on this device will be lost.\n\nAre you sure?')){
+    return;
+  }
+
+  let written=0;
+  try{
+    for(const store of LOCAL_STORES){
+      if(replace) await dbClear(store);
+      for(const record of incoming[store]){
+        if(record && record.id!==undefined && record.id!==null){ await dbPut(store,record); written++; }
+      }
+    }
+
+    // Photos come back as data URLs in place of their storage refs, so the
+    // normal pending-sync path re-uploads them and mints fresh refs.
+    let photosRestored=0;
+    if(payload.data.photos && typeof payload.data.photos==='object'){
+      const inspections=await dbGetAll('inspections').catch(()=>[]);
+      for(const insp of inspections){
+        let touched=false;
+        for(const area of insp.areas||[]){
+          area.photos=(area.photos||[]).map(p=>{
+            const dataUrl=payload.data.photos[p];
+            if(typeof p==='string' && p.startsWith(PHOTO_REF_PREFIX) && dataUrl){
+              touched=true; photosRestored++; return dataUrl;
+            }
+            return p;
+          });
+        }
+        if(touched){ insp.synced=false; await dbPut('inspections',insp); }
+      }
+    }
+
+    await logActivity('Backup',replace?'Restored (replace)':'Restored (merge)',written+' records');
+    await renderAllModules();
+    alert('Restored '+written+' record'+(written===1?'':'s')
+      +(photosRestored?' and '+photosRestored+' photo'+(photosRestored===1?'':'s'):'')
+      +'.\n\nNothing has been pushed to the server yet — check the data looks right, then use Sync now.');
+  }catch(err){
+    console.error('Import failed:',err);
+    alert('Import failed part-way through: '+((err&&err.message)||err)
+      +'\n\nThe device may now hold a partial restore. Re-run the import before syncing.');
+  }
+}
+
+function pickBackupFile(){
+  const input=document.getElementById('backup-file-input');
+  if(input){ input.value=''; input.click(); }
+}
+
+/* IndexedDB defaults to a "best-effort" bucket, which the browser may evict
+   under storage pressure — and this app creates that pressure itself by
+   holding photos as base64. An inspection recorded somewhere with no signal
+   lives ONLY there until it syncs, so ask for the durable bucket. The request
+   is silent and idempotent; Chrome grants it to installed PWAs and to sites
+   with engagement, and there is nothing to do but report the answer if it
+   declines. */
+async function requestPersistentStorage(){
+  try{
+    if(!navigator.storage || !navigator.storage.persist) return null;
+    if(await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  }catch(err){
+    console.warn('[storage] persist() failed:',err);
+    return null;
+  }
+}
+
+async function renderBackupCard(){
+  const el=document.getElementById('dash-backup-status');
+  if(!el) return;
+
+  let last=null;
+  try{ last=localStorage.getItem(LAST_EXPORT_KEY); }catch(_){}
+  const lastDate=last?new Date(last):null;
+  const days=lastDate?Math.floor((Date.now()-lastDate.getTime())/86400000):null;
+
+  let line, cls;
+  if(!lastDate){
+    line='Never exported from this device'; cls='br';
+  }else if(days>=BACKUP_STALE_DAYS){
+    line='Last export '+days+' days ago — '+formatDateNZ(lastDate); cls='br';
+  }else{
+    line='Last export '+(days===0?'today':days+' day'+(days===1?'':'s')+' ago')+' — '+formatDateNZ(lastDate); cls='bg';
+  }
+
+  const bits=['<span class="badge '+cls+'">'+escapeHtml(line)+'</span>'];
+
+  try{
+    if(navigator.storage&&navigator.storage.estimate){
+      const {usage,quota}=await navigator.storage.estimate();
+      const pct=quota?Math.round((usage/quota)*100):null;
+      bits.push('<span class="badge">'+formatBytes(usage)+' used'
+        +(quota?' of '+formatBytes(quota)+(pct!==null?' ('+pct+'%)':''):'')+'</span>');
+    }
+    if(navigator.storage&&navigator.storage.persisted){
+      const persisted=await navigator.storage.persisted();
+      bits.push('<span class="badge '+(persisted?'bg':'ba')+'">'
+        +(persisted?'Storage is durable':'Storage is evictable — the browser may clear it')+'</span>');
+    }
+  }catch(err){
+    console.warn('[storage] estimate failed:',err);
+  }
+
+  el.innerHTML=bits.join(' ');
 }
 
 /* ============================================================

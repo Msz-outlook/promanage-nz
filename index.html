@@ -132,6 +132,7 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .sync-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 14px;border-radius:var(--radius);font-size:12.5px;margin-bottom:1rem;border:0.5px solid var(--border2)}
 .sync-online{background:var(--green-bg);color:var(--green-text)}
 .sync-offline{background:var(--amber-bg);color:var(--amber-text)}
+.sync-error{background:var(--red-bg);color:var(--red-text)}
 .sync-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;background:currentColor}
 
 /* Inspection module */
@@ -1311,6 +1312,27 @@ textarea:focus{border-color:var(--text)}
     </table></div><div class="scroll-fade"></div></div>
   </div>
 
+  <div class="card">
+    <div class="card-head">
+      Backup
+      <span>
+        <button class="btn btn-sm" onclick="exportAllData(false,this)">⬇ Export data</button>
+        <button class="btn btn-sm" onclick="exportAllData(true,this)">⬇ Export data + photos</button>
+        <button class="btn btn-sm" onclick="pickBackupFile()">⬆ Restore…</button>
+      </span>
+    </div>
+    <div style="padding:0 14px 14px">
+      <div id="dash-backup-status" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+      <div style="color:var(--text3);font-size:12px;margin-top:8px">
+        The Supabase project is on the Free plan, which keeps no automated backups.
+        This device and the server hold the same data one sync apart — neither is a
+        backup of the other. Keep the exported file somewhere else.
+      </div>
+      <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none"
+             onchange="importAllData(this.files&&this.files[0])">
+    </div>
+  </div>
+
   <div class="metrics" id="dash-metrics">
     <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val" id="dm-maint">—</div><div class="metric-sub" id="dm-maint-sub"></div></div>
     <div class="metric"><div class="metric-label">Not compliant</div><div class="metric-val" id="dm-noncompliant">—</div><div class="metric-sub" id="dm-noncompliant-sub"></div></div>
@@ -1616,6 +1638,14 @@ textarea:focus{border-color:var(--text)}
         <tbody id="fin-disbursement-breakdown"></tbody>
       </table></div><div class="scroll-fade"></div></div>
       <div style="font-size:11px;color:var(--text3);padding:0 1.25rem 1rem">Tradie and supplier invoices settled from owner funds, plus recoveries you paid first and recharged (advertising, credit checks). These are the owners' costs — they don't reduce your revenue. Click a category to see the individual line items.</div>
+    </div>
+
+    <div class="card" id="fin-unreviewed-card" style="display:none">
+      <div class="card-head">Unreviewed lines <span id="fin-unreviewed-count" style="color:var(--text3);font-weight:400"></span></div>
+      <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Statement</th><th>Property</th><th>Description</th><th class="tr">Amount</th></tr></thead>
+        <tbody id="fin-unreviewed-body"></tbody>
+      </table></div><div class="scroll-fade"></div></div>
+      <div style="font-size:11px;color:var(--text3);padding:0 1.25rem 1rem">These lines matched neither a fee-type keyword nor a pass-through category, so they were counted above as a pass-through cost by default — the safe direction, since counting an unmatched line as revenue would be the wrong guess if it turns out to be a tradie invoice. Check each one: if it's really a fee you charged, its description needs a keyword this app recognises.</div>
     </div>
   </div>
 
@@ -2188,7 +2218,8 @@ const APP_RENDERERS=[
   ['statements', async()=>{await renderStatementsList();updateStatementSyncBanner();}],
   ['dashboard',  async()=>{await renderDashboard();}],
   ['activity',   async()=>{await renderActivityLog();}],
-  ['compliance', async()=>{await renderComplianceLive();}]
+  ['compliance', async()=>{await renderComplianceLive();}],
+  ['backup',     async()=>{await renderBackupCard();}]
 ];
 
 async function renderAllModules(){
@@ -2204,6 +2235,10 @@ async function enterApp(userId){
   // so a stale account's records would be on screen otherwise.
   try{ await enforceLocalDataOwner(userId); }
   catch(err){ console.error('Could not enforce local data owner:',err); }
+  // Ask for the durable storage bucket once we know someone is actually using
+  // this device for real work. Fire-and-forget: the answer only changes what
+  // the Backup card reports, never whether the app runs.
+  requestPersistentStorage().then(()=>renderBackupCard()).catch(()=>{});
   await renderAllModules();
   fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere
 }
@@ -2314,11 +2349,34 @@ if(sb) sb.auth.onAuthStateChange((event)=>{
 
 const DB_NAME='promanageDB', DB_VERSION=8;
 let dbInstance=null;
+// The in-flight open. Without it, the `if(dbInstance)` check below is useless
+// against concurrent callers: it runs synchronously, so every dbGetAll() fired
+// during a render pass — and renderAllModules() fires nine of them — calls
+// indexedDB.open() before the first has resolved. That left a pile of live
+// connections with only the last one reachable, which stayed invisible until
+// onversionchange started firing once per leaked connection.
+let dbOpening=null;
 
+/* onblocked is not optional here. indexedDB.open() with a raised DB_VERSION
+   does not fail when another tab still holds the old version — it simply never
+   fires onsuccess, so this promise never settles and every await on it hangs
+   forever. The page keeps its markup, function declarations are already
+   hoisted, and every handler stays callable against a world that was never
+   built: the same silent half-boot described under "Top-level code in the
+   script block" above, arrived at from a different direction and with nothing
+   in the console.
+
+   onversionchange is the other half: it fires in the OLD tab when a NEW one
+   wants to upgrade. Closing the connection there is what lets the new tab
+   proceed instead of both sitting and waiting for each other. */
 function openDB(){
-  return new Promise((resolve,reject)=>{
-    if(dbInstance) return resolve(dbInstance);
+  if(dbInstance) return Promise.resolve(dbInstance);
+  if(dbOpening) return dbOpening;
+  dbOpening=new Promise((resolve,reject)=>{
     const req=indexedDB.open(DB_NAME,DB_VERSION);
+    req.onblocked=()=>{
+      reject(new Error('Another tab or window has ProManage open on an older version. Close it, then reload this page.'));
+    };
     req.onupgradeneeded=(e)=>{
       const db=e.target.result;
       if(!db.objectStoreNames.contains('inspections')){
@@ -2346,17 +2404,55 @@ function openDB(){
         db.createObjectStore('emailTriage',{keyPath:'id'});
       }
     };
-    req.onsuccess=(e)=>{dbInstance=e.target.result;resolve(dbInstance);};
+    req.onsuccess=(e)=>{
+      const db=e.target.result;
+      // Another tab wants to upgrade: let go, or we block it forever.
+      db.onversionchange=()=>{
+        db.close();
+        dbInstance=null;
+        alert('ProManage was updated in another tab. Reload this page to continue.');
+      };
+      // The browser can close a connection on its own (eviction, a crashed
+      // backing store). Without this the cached handle stays in place and
+      // every later call throws InvalidStateError with no way back short of
+      // a reload; clearing it means the next openDB() simply reconnects.
+      db.onclose=()=>{ dbInstance=null; };
+      dbInstance=db;
+      resolve(db);
+    };
     req.onerror=(e)=>reject(e.target.error);
   });
+  // The attempt is over either way: clear the slot so a failure can be retried.
+  // dbInstance carries the success case, so this never discards a live handle.
+  dbOpening.then(()=>{dbOpening=null;},()=>{dbOpening=null;});
+  return dbOpening;
+}
+
+/* A full store rejects with QuotaExceededError, which reads as "the write
+   failed" and says nothing about why or what to do. Inspection photos are the
+   only thing here big enough to fill a quota, and a save that fails after the
+   form has already closed looks exactly like a save that worked. Rewrite it
+   into something the caller can put in front of the user. */
+const STORAGE_FULL_MESSAGE='This device is out of storage for ProManage. Sync to free up space (synced photos are kept on the server), or clear space on the device, then try again.';
+
+function isQuotaError(err){
+  return !!err && (err.name==='QuotaExceededError' || err.name==='NS_ERROR_DOM_QUOTA_REACHED');
 }
 
 function dbPut(storeName,record){
   return openDB().then(db=>new Promise((resolve,reject)=>{
     const tx=db.transaction(storeName,'readwrite');
-    tx.objectStore(storeName).put(record);
+    const fail=(err)=>reject(isQuotaError(err)?Object.assign(new Error(STORAGE_FULL_MESSAGE),{name:'QuotaExceededError',cause:err}):err);
+    try{
+      tx.objectStore(storeName).put(record);
+    }catch(err){
+      // A record too large for the store throws synchronously rather than
+      // surfacing through tx.onerror.
+      fail(err); return;
+    }
     tx.oncomplete=()=>resolve(record);
-    tx.onerror=(e)=>reject(e.target.error);
+    tx.onerror=(e)=>fail(e.target.error);
+    tx.onabort=(e)=>fail(e.target.error);
   }));
 }
 
@@ -2838,18 +2934,123 @@ async function pullAllAndMerge(options){
   await renderFinancials();
 }
 
+/* ============================================================
+   SYNC RETRY — backoff and a visible reason, shared by every
+   syncPendingX() below.
+
+   Before this, a push failure retried on every fullSyncNow() call
+   forever with no visible reason — the banner said "N pending sync"
+   whether the cause was a slow connection or (as schema.sql §2
+   records happened once already) a signed-out device silently
+   failing every push. Two problems, one fix:
+
+   - BACKOFF stops a broken sync from hammering the network on every
+     online event and visibility trigger (see below) — without it,
+     escalating the sync triggers in this section would just mean
+     escalating retries of something that was never going to succeed
+     on this attempt either.
+   - A RECORDED REASON turns "still pending" into something a user
+     can act on, instead of a number that never explains itself.
+
+   pushXToBackend() functions signal failure by returning
+   pushFailure(reason) instead of a bare `false`, so the reason from
+   fetch's own error/response is preserved rather than discarded by a
+   catch block that used to just console.log and move on.
+   ============================================================ */
+const SYNC_RETRY_BACKOFF_MINUTES=[0,1,5,15,60,240]; // last entry repeats for every attempt beyond it
+const SYNC_RETRY_VISIBLE_AFTER=3; // failed attempts before the banner explains why
+
+function pushFailure(reason){
+  return {ok:false,reason:reason||'Unknown error'};
+}
+function isPushFailure(result){
+  return !result || (typeof result==='object' && result.ok===false);
+}
+
+function dueForSyncRetry(record){
+  if(!record.syncNextAttempt) return true;
+  return Date.now()>=new Date(record.syncNextAttempt).getTime();
+}
+
+// Mutates `record` in place — callers already hold the object they're about
+// to dbPut(), so this just adds the bookkeeping fields to that write instead
+// of causing a second one.
+function noteSyncFailure(record,reason){
+  const attempts=(record.syncAttempts||0)+1;
+  const minutes=SYNC_RETRY_BACKOFF_MINUTES[Math.min(attempts,SYNC_RETRY_BACKOFF_MINUTES.length-1)];
+  record.syncAttempts=attempts;
+  record.syncNextAttempt=new Date(Date.now()+minutes*60000).toISOString();
+  record.syncLastError=reason;
+}
+function clearSyncAttemptState(record){
+  delete record.syncAttempts;
+  delete record.syncNextAttempt;
+  delete record.syncLastError;
+}
+
+// Shared by every updateXSyncBanner(): once a record has failed enough times
+// to be worth explaining, surface the most recent reason rather than the
+// oldest — that's the one still relevant to what's blocking sync right now.
+function syncFailureSummary(all){
+  const failing=all.filter(r=>!r.synced && (r.syncAttempts||0)>=SYNC_RETRY_VISIBLE_AFTER);
+  if(!failing.length) return null;
+  const latest=failing.slice().sort((a,b)=>(b.syncNextAttempt||'').localeCompare(a.syncNextAttempt||''))[0];
+  return {count:failing.length,reason:latest.syncLastError||'Unknown error'};
+}
+
+// The online/offline/failing pill is identical across all six sync banners;
+// only the element ids and the store differ, which each updateXSyncBanner()
+// still owns. This is just the part that would otherwise be copied six times.
+function applySyncBannerState(banner,statusText,pendingText,all){
+  const pending=all.filter(r=>!r.synced);
+  const online=navigator.onLine;
+  const failure=syncFailureSummary(all);
+  banner.classList.toggle('sync-online',online&&!failure);
+  banner.classList.toggle('sync-offline',!online);
+  banner.classList.toggle('sync-error',online&&!!failure);
+  statusText.textContent=online?'Online':'Offline';
+  pendingText.textContent=failure
+    ? pending.length+' pending — '+failure.reason
+    : pending.length+' pending sync';
+}
+
 // Push anything pending, then pull whatever changed elsewhere. Pushing first
 // means local edits win any race against a stale remote copy.
-async function fullSyncNow(){
-  // The only place that tells the user we're offline. The per-entity
-  // syncPending* helpers below stay silent: fullSyncNow() calls all seven in a
-  // row, so alerting in each one meant seven stacked dialogs if connectivity
-  // dropped mid-sync. The banners (updateSyncBanner et al) already show the
-  // offline state passively.
+let syncInFlight=false;
+let lastSyncAt=0;
+
+// `silent` distinguishes an automatic trigger (visibilitychange, the periodic
+// interval below) from an explicit one (the "Sync now" button, the online
+// event). An automatic trigger firing while offline is the normal case — a
+// closed laptop lid, a tunnel — and must not pop an alert about it; an
+// explicit one is the user asking specifically, so it still gets an answer.
+async function fullSyncNow(opts){
+  const silent=!!(opts&&opts.silent);
+  // The only place that tells the user we're offline (when not silent). The
+  // per-entity syncPending* helpers below stay silent: fullSyncNow() calls
+  // all seven in a row, so alerting in each one meant seven stacked dialogs
+  // if connectivity dropped mid-sync. The banners (updateSyncBanner et al)
+  // already show the offline state passively.
   if(!navigator.onLine){
-    alert('Still offline — will sync automatically once connection returns.');
+    if(!silent) alert('Still offline — will sync automatically once connection returns.');
     return;
   }
+  // Sync freshness (visibilitychange + the interval, below) adds triggers
+  // that can overlap a sync already under way — a tab regaining focus right
+  // as the online event fires, say. Concurrent passes over the same pending
+  // records aren't unsafe, just wasteful and prone to duplicate "blocked
+  // property" dialogs; one flag serialises them instead.
+  if(syncInFlight) return;
+  syncInFlight=true;
+  try{
+    await fullSyncNowInner();
+  }finally{
+    syncInFlight=false;
+    lastSyncAt=Date.now();
+  }
+}
+
+async function fullSyncNowInner(){
   /* Nothing may touch the backend before we know whose data this is. Without a
      session every push is rejected and every pull comes back empty-but-OK,
      which is exactly the shape that used to clear this device — see
@@ -3078,7 +3279,7 @@ async function renderActivityLog(){
 async function pushActivityLogToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/activity_log`,{
       method:'POST',
@@ -3093,19 +3294,23 @@ async function pushActivityLogToBackend(record){
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
-    return res.ok;
+    return res.ok ? true : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Activity log sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 async function syncPendingActivityLog(){
   if(!navigator.onLine) return;
   const all=await dbGetAll('activityLog');
-  const pending=all.filter(l=>!l.synced);
+  const pending=all.filter(l=>!l.synced).filter(dueForSyncRetry);
   for(const record of pending){
     const result=await pushActivityLogToBackend(record);
-    if(result){
+    if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('activityLog',record);
+    }else{
+      clearSyncAttemptState(record);
       record.synced=true;
       await dbPut('activityLog',record);
     }
@@ -3399,7 +3604,19 @@ async function saveInspection(){
     createdAt: (isEdit&&existing)?existing.createdAt:new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
-  await dbPut('inspections',record);
+  // An inspection is the biggest thing this app writes — a dozen photos of a
+  // few hundred KB each. If the store is full, the write must not be allowed
+  // to fail quietly behind a form that has already closed and a "saved"
+  // message that has already been shown.
+  try{
+    await dbPut('inspections',record);
+  }catch(err){
+    console.error('Could not save inspection:',err);
+    alert(isQuotaError(err)||err.name==='QuotaExceededError'
+      ? STORAGE_FULL_MESSAGE+'\n\nThe inspection has NOT been saved — leave this form open and try again after syncing.'
+      : 'Could not save this inspection on the device: '+((err&&err.message)||err)+'\n\nIt has NOT been saved.');
+    return;
+  }
   await logActivity('Inspection', isEdit?'Updated':'Created', record.property+' — '+record.date);
   await renderInspectionList();
   updateSyncBanner();
@@ -3697,7 +3914,7 @@ async function pushInspectionToBackend(record){
     return record;
   }
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       await deletePhotosFromStorage(record);
@@ -3705,7 +3922,7 @@ async function pushInspectionToBackend(record){
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      return res.ok ? 'deleted' : pushFailure('Delete failed — HTTP '+res.status);
     }
     const uploadedRecord=await uploadRecordPhotos(record);
     const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/inspections`, {
@@ -3727,22 +3944,26 @@ async function pushInspectionToBackend(record){
         updated_at: uploadedRecord.updatedAt||uploadedRecord.createdAt
       })
     });
-    return res.ok ? uploadedRecord : false;
+    return res.ok ? uploadedRecord : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 
 async function syncPendingInspections(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('inspections');
-  const pending=all.filter(i=>!i.synced);
+  const pending=all.filter(i=>!i.synced).filter(dueForSyncRetry);
   for(const record of pending){
     const result=await pushInspectionToBackend(record);
     if(result==='deleted'){
       await dbDelete('inspections',record.id);
-    }else if(result){
+    }else if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('inspections',record);
+    }else{
+      clearSyncAttemptState(result);
       result.synced=true;
       await dbPut('inspections',result); // saves back with photo URLs instead of base64 — shrinks local storage too
     }
@@ -3756,18 +3977,36 @@ async function updateSyncBanner(){
   const statusText=document.getElementById('sync-status-text');
   const pendingText=document.getElementById('sync-pending-text');
   const all=await dbGetAll('inspections').catch(()=>[]);
-  const pendingCount=all.filter(i=>!i.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
+  applySyncBannerState(banner,statusText,pendingText,all);
 }
 
 // Every module with a sync banner has to be refreshed here, or its banner keeps
 // showing the connectivity state from whenever its page was last rendered.
 window.addEventListener('online',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();updateStatementSyncBanner();fullSyncNow();});
 window.addEventListener('offline',()=>{updateSyncBanner();updatePropSyncBanner();updateTenantSyncBanner();updateMaintSyncBanner();updateInvoiceSyncBanner();updateStatementSyncBanner();});
+
+/* SYNC FRESHNESS. Before this, fullSyncNow() only ran at login, on the
+   online event, and on the six "Sync now" buttons — an installed PWA left
+   open on a tablet never saw a phone's edits until someone pressed one. Two
+   triggers close that gap, both silent (an automatic trigger firing while
+   offline is normal, not something to alert about):
+
+   - visibilitychange: sync when the tab regains focus, if it's been long
+     enough that there's plausibly something to catch up on. Cheap to check
+     on every focus since lastSyncAt is just a number in memory.
+   - an interval while the page is open at all, for the case that never
+     blurs — a single tab left on the dashboard all day. */
+const SYNC_FRESHNESS_MIN_GAP_MS=5*60*1000;
+const SYNC_FRESHNESS_INTERVAL_MS=20*60*1000;
+
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible' && Date.now()-lastSyncAt>=SYNC_FRESHNESS_MIN_GAP_MS){
+    fullSyncNow({silent:true});
+  }
+});
+setInterval(()=>{
+  if(document.visibilityState==='visible') fullSyncNow({silent:true});
+},SYNC_FRESHNESS_INTERVAL_MS);
 
 // Initialise the inspection page once the DOM is ready
 document.addEventListener('DOMContentLoaded',()=>{
@@ -4183,7 +4422,7 @@ async function deleteProperty(id){
 async function pushPropertyToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties?id=eq.${record.id}`,{
@@ -4195,7 +4434,7 @@ async function pushPropertyToBackend(record){
       // will not come right on its own, so it must not stay queued: the row
       // is hidden by pendingDelete, and retrying forever would leave a
       // property invisible in the app and present in the database.
-      return res.status===409 ? 'blocked' : false;
+      return res.status===409 ? 'blocked' : pushFailure('Delete failed — HTTP '+res.status);
     }
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/properties`,{
       method:'POST',
@@ -4213,17 +4452,17 @@ async function pushPropertyToBackend(record){
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
-    return res.ok;
+    return res.ok ? true : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Property sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 
 async function syncPendingProperties(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('properties');
-  const pending=all.filter(p=>!p.synced);
+  const pending=all.filter(p=>!p.synced).filter(dueForSyncRetry);
   const blocked=[];
   for(const record of pending){
     const result=await pushPropertyToBackend(record);
@@ -4233,9 +4472,14 @@ async function syncPendingProperties(){
       // Put it back the way it was so it reappears in the list, still synced.
       record.pendingDelete=false;
       record.synced=true;
+      clearSyncAttemptState(record);
       await dbPut('properties',record);
       blocked.push(record.address);
-    }else if(result){
+    }else if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('properties',record);
+    }else{
+      clearSyncAttemptState(record);
       record.synced=true;
       await dbPut('properties',record);
     }
@@ -4256,12 +4500,7 @@ async function updatePropSyncBanner(){
   const statusText=document.getElementById('sync-status-text-prop');
   const pendingText=document.getElementById('sync-pending-text-prop');
   const all=await dbGetAll('properties').catch(()=>[]);
-  const pendingCount=all.filter(p=>!p.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
+  applySyncBannerState(banner,statusText,pendingText,all);
 }
 
 /* ============================================================
@@ -4424,14 +4663,14 @@ async function deleteTenant(id){
 async function pushTenantToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants?id=eq.${record.id}`,{
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      return res.ok ? 'deleted' : pushFailure('Delete failed — HTTP '+res.status);
     }
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/tenants`,{
       method:'POST',
@@ -4449,22 +4688,26 @@ async function pushTenantToBackend(record){
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
-    return res.ok;
+    return res.ok ? true : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Tenant sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 
 async function syncPendingTenants(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('tenants');
-  const pending=all.filter(t=>!t.synced);
+  const pending=all.filter(t=>!t.synced).filter(dueForSyncRetry);
   for(const record of pending){
     const result=await pushTenantToBackend(record);
     if(result==='deleted'){
       await dbDelete('tenants',record.id);
-    }else if(result){
+    }else if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('tenants',record);
+    }else{
+      clearSyncAttemptState(record);
       record.synced=true;
       await dbPut('tenants',record);
     }
@@ -4478,12 +4721,7 @@ async function updateTenantSyncBanner(){
   const statusText=document.getElementById('sync-status-text-tenant');
   const pendingText=document.getElementById('sync-pending-text-tenant');
   const all=await dbGetAll('tenants').catch(()=>[]);
-  const pendingCount=all.filter(t=>!t.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
+  applySyncBannerState(banner,statusText,pendingText,all);
 }
 
 /* ============================================================
@@ -4634,14 +4872,14 @@ async function deleteMaintenance(id){
 async function pushMaintenanceToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance?id=eq.${record.id}`,{
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      return res.ok ? 'deleted' : pushFailure('Delete failed — HTTP '+res.status);
     }
     const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/maintenance`,{
       method:'POST',
@@ -4658,22 +4896,26 @@ async function pushMaintenanceToBackend(record){
         updated_at:record.updatedAt||record.createdAt
       })
     });
-    return res.ok;
+    return res.ok ? true : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Maintenance sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 
 async function syncPendingMaintenance(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('maintenance');
-  const pending=all.filter(m=>!m.synced);
+  const pending=all.filter(m=>!m.synced).filter(dueForSyncRetry);
   for(const record of pending){
     const result=await pushMaintenanceToBackend(record);
     if(result==='deleted'){
       await dbDelete('maintenance',record.id);
-    }else if(result){
+    }else if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('maintenance',record);
+    }else{
+      clearSyncAttemptState(record);
       record.synced=true;
       await dbPut('maintenance',record);
     }
@@ -4687,12 +4929,7 @@ async function updateMaintSyncBanner(){
   const statusText=document.getElementById('sync-status-text-maint');
   const pendingText=document.getElementById('sync-pending-text-maint');
   const all=await dbGetAll('maintenance').catch(()=>[]);
-  const pendingCount=all.filter(m=>!m.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
+  applySyncBannerState(banner,statusText,pendingText,all);
 }
 
 /* ============================================================
@@ -4967,6 +5204,19 @@ async function renderEmailTriageList(){
    ============================================================ */
 
 const GST_RATE = 0.15;
+
+/* Money otherwise accumulates as ordinary floats — qty*price, row sums,
+   opening+(income−expenses) — which display fine (toLocaleString rounds what's
+   shown) but leaves the STORED total carrying float dust: 0.1+0.2 stores as
+   0.30000000000000004, not 0.3. Two rounded-to-cent numbers can still sum to a
+   dusty one, so this has to run at every accumulation boundary, not just once
+   at the end — see recalcInvoiceTotals/recalcStatementTotals/saveInvoice/
+   saveStatement below for where. Placed here because invoices need it first;
+   the statements module further down reuses it rather than repeating it. */
+function toCents(dollars){ return Math.round((dollars||0)*100); }
+function fromCents(cents){ return cents/100; }
+function roundMoney(dollars){ return fromCents(toCents(dollars)); }
+
 let editingInvoiceId=null;
 let invoiceItemRowCounter=0;
 
@@ -5003,6 +5253,27 @@ function addDaysToDateStr(str,days){
   d.setDate(d.getDate()+(Number(days)||0));
   return formatDateNZ(d);
 }
+
+/* The fallback-to-today above is correct for addDaysToDateStr as a low-level
+   utility — every OTHER caller already guarantees it a valid string (a fresh
+   formatDateNZ(new Date()), or a value read back out of a record this app
+   itself wrote). The one caller that couldn't guarantee that was the save
+   path: invoice-issue-date and statement-period-start/end are free-typed
+   text, not a native <input type="date">, so a typo used to reach
+   addDaysToDateStr's silent fallback and quietly re-date the record to
+   today — see docs/REVIEW-2026-08.md finding 14. This is the guard at that
+   one boundary: reject the typo before it is ever saved, rather than
+   reinterpreting it. Empty is fine — several of these fields are optional —
+   only non-empty-and-unparseable is refused. */
+function validateDateField(fieldId,label){
+  const el=document.getElementById(fieldId);
+  const raw=el.value.trim();
+  if(!raw||parseFlexibleDate(raw)) return true;
+  alert(`"${raw}" doesn't look like a date for ${label}. Try a format like 25 Jul 2026 or 25/07/2026.`);
+  el.focus();
+  return false;
+}
+
 function autoFillInvoiceDueDate(){
   const issueEl=document.getElementById('invoice-issue-date');
   const termsEl=document.getElementById('invoice-payment-terms');
@@ -5054,14 +5325,15 @@ function recalcInvoiceTotals(){
   document.querySelectorAll('#invoice-items-body tr').forEach(row=>{
     const qty=Number(row.querySelector('.item-qty').value)||0;
     const price=Number(row.querySelector('.item-price').value)||0;
-    const amount=qty*price;
+    const amount=roundMoney(qty*price); // a fractional qty (e.g. 2.5 hours) can carry more than 2dp
     row.querySelector('.item-amount').textContent='$'+amount.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
     subtotal+=amount;
   });
+  subtotal=roundMoney(subtotal); // summing already-rounded amounts can still land off a binary float
   const mode=document.getElementById('invoice-gst-mode').value;
   let gst=0,total=0;
-  if(mode==='exclusive'){ gst=subtotal*GST_RATE; total=subtotal+gst; }
-  else if(mode==='inclusive'){ total=subtotal; subtotal=total/(1+GST_RATE); gst=total-subtotal; }
+  if(mode==='exclusive'){ gst=roundMoney(subtotal*GST_RATE); total=roundMoney(subtotal+gst); }
+  else if(mode==='inclusive'){ total=subtotal; subtotal=roundMoney(total/(1+GST_RATE)); gst=roundMoney(total-subtotal); }
   else { total=subtotal; gst=0; }
   document.getElementById('invoice-subtotal-display').textContent='$'+subtotal.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
   document.getElementById('invoice-gst-display').textContent='$'+gst.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -5132,12 +5404,26 @@ async function saveInvoice(){
   const billToName=document.getElementById('invoice-bill-name').value.trim();
   if(!invoiceNumber){ alert('Invoice number is required.'); return; }
   if(!billToName){ alert('"Bill to" name is required.'); return; }
+  if(!validateDateField('invoice-issue-date','the issue date')) return;
+  if(!validateDateField('invoice-due-date','the due date')) return;
+  // A duplicate can still reach the server (see the 409 remint in
+  // pushInvoiceToBackend) — this is the fast, offline-capable warning that
+  // catches most of them before that: two invoices with the same number are
+  // in the same GST records, and it's cheaper to catch here than to have the
+  // number silently reassigned on sync.
+  {
+    const dupe=(await dbGetAll('invoices')).find(i=>i.invoiceNumber===invoiceNumber && i.id!==editingInvoiceId && !i.pendingDelete);
+    if(dupe && !confirm(`Invoice ${invoiceNumber} already exists (billed to ${dupe.billToName||'—'}).\n\nSave anyway with a duplicate number?`)) return;
+  }
   const items=Array.from(document.querySelectorAll('#invoice-items-body tr')).map(row=>{
     const quantity=Number(row.querySelector('.item-qty').value)||0;
     const unitPrice=Number(row.querySelector('.item-price').value)||0;
     return{
       description:row.querySelector('.item-desc').value.trim(),
-      quantity,unitPrice,amount:quantity*unitPrice
+      // Rounded the same way recalcInvoiceTotals() rounds it above, so the
+      // stored line item and the stored subtotal that summed it agree to the
+      // cent — the two are computed independently from the same DOM.
+      quantity,unitPrice,amount:roundMoney(quantity*unitPrice)
     };
   }).filter(it=>it.description||it.quantity||it.unitPrice);
   if(!items.length){ alert('Add at least one line item.'); return; }
@@ -5243,16 +5529,19 @@ async function deleteInvoice(id){
 async function pushInvoiceToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices?id=eq.${record.id}`,{
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      return res.ok ? 'deleted' : pushFailure('Delete failed — HTTP '+res.status);
     }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices`,{
+    // A closure over the mutable record so a retry after a remint (below)
+    // sends the number that's actually going to be saved, not the stale one
+    // captured when the request was first built.
+    const post=()=>fetch(`${CONFIG.SUPABASE_URL}/rest/v1/invoices`,{
       method:'POST',
       headers:{
         'Content-Type':'application/json',
@@ -5272,22 +5561,37 @@ async function pushInvoiceToBackend(record){
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
-    return res.ok;
+    let res=await post();
+    if(res.status===409){
+      // The unique index in schema.sql §8 rejected this number — most likely
+      // two offline devices minted the same one. record is the same object
+      // syncPendingInvoices() holds, so mutating invoiceNumber here is what
+      // persists the accepted number locally once this returns; retried
+      // exactly once, since a second collision means something is actually
+      // wrong rather than a one-off race.
+      record.invoiceNumber=await nextInvoiceNumber();
+      res=await post();
+    }
+    return res.ok ? true : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Invoice sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 
 async function syncPendingInvoices(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('invoices');
-  const pending=all.filter(i=>!i.synced);
+  const pending=all.filter(i=>!i.synced).filter(dueForSyncRetry);
   for(const record of pending){
     const result=await pushInvoiceToBackend(record);
     if(result==='deleted'){
       await dbDelete('invoices',record.id);
-    }else if(result){
+    }else if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('invoices',record);
+    }else{
+      clearSyncAttemptState(record);
       record.synced=true;
       await dbPut('invoices',record);
     }
@@ -5302,12 +5606,7 @@ async function updateInvoiceSyncBanner(){
   const statusText=document.getElementById('sync-status-text-invoice');
   const pendingText=document.getElementById('sync-pending-text-invoice');
   const all=await dbGetAll('invoices').catch(()=>[]);
-  const pendingCount=all.filter(i=>!i.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
+  applySyncBannerState(banner,statusText,pendingText,all);
 }
 
 async function generateInvoicePDF(id){
@@ -5543,7 +5842,7 @@ function sumStatementRows(block,section){
   block.querySelectorAll('.stmt-'+section+'-body tr').forEach(row=>{
     total+=Number(row.querySelector('.stmt-amount').value)||0;
   });
-  return total;
+  return roundMoney(total); // each row is already 2dp; the running sum is what can drift
 }
 
 function recalcStatementTotals(){
@@ -5552,14 +5851,18 @@ function recalcStatementTotals(){
   document.querySelectorAll('.stmt-property-block').forEach(block=>{
     const inc=sumStatementRows(block,'income');
     const exp=sumStatementRows(block,'expense');
-    const opening=Number(block.querySelector('.stmt-prop-opening').value)||0;
-    const closing=opening+(inc-exp);
+    const opening=roundMoney(Number(block.querySelector('.stmt-prop-opening').value)||0);
+    const closing=roundMoney(opening+(inc-exp));
     block.querySelector('.stmt-prop-income-total').textContent=fmt(inc);
     block.querySelector('.stmt-prop-expense-total').textContent=fmt(exp);
     block.querySelector('.stmt-prop-closing-total').textContent=fmt(closing);
     totalIncome+=inc; totalExpenses+=exp; openingBalance+=opening; closingBalance+=closing;
   });
-  const net=totalIncome-totalExpenses;
+  // Aggregating already-rounded per-property figures across several
+  // properties is itself another accumulation boundary.
+  totalIncome=roundMoney(totalIncome); totalExpenses=roundMoney(totalExpenses);
+  openingBalance=roundMoney(openingBalance); closingBalance=roundMoney(closingBalance);
+  const net=roundMoney(totalIncome-totalExpenses);
   document.getElementById('statement-opening-total-display').textContent=fmt(openingBalance);
   document.getElementById('statement-income-total-display').textContent=fmt(totalIncome);
   document.getElementById('statement-expense-total-display').textContent=fmt(totalExpenses);
@@ -5623,23 +5926,34 @@ async function saveStatement(){
   const ownerName=document.getElementById('statement-owner-name').value.trim();
   if(!statementNumber){ alert('Statement number is required.'); return; }
   if(!ownerName){ alert('Owner name is required.'); return; }
+  if(!validateDateField('statement-period-start','the period start')) return;
+  if(!validateDateField('statement-period-end','the period end')) return;
+  // See saveInvoice() for why this check exists alongside the 409 remint in
+  // pushStatementToBackend rather than instead of it.
+  {
+    const dupe=(await dbGetAll('statements')).find(s=>s.statementNumber===statementNumber && s.id!==editingStatementId && !s.pendingDelete);
+    if(dupe && !confirm(`Statement ${statementNumber} already exists (owner ${dupe.ownerName||'—'}).\n\nSave anyway with a duplicate number?`)) return;
+  }
   const blocks=Array.from(document.querySelectorAll('.stmt-property-block'));
   if(!blocks.length){ alert('Add at least one property.'); return; }
   const readRows=(block,section)=>Array.from(block.querySelectorAll('.stmt-'+section+'-body tr')).map(row=>({
       date:row.querySelector('.stmt-date').value.trim(),
       description:row.querySelector('.stmt-desc').value.trim(),
-      amount:Number(row.querySelector('.stmt-amount').value)||0
+      amount:roundMoney(Number(row.querySelector('.stmt-amount').value)||0)
     })).filter(it=>it.description||it.amount);
   const properties=blocks.map(block=>{
     const propertyId=block.querySelector('.stmt-prop-select').value;
     const propertyAddress=block.querySelector('.stmt-prop-address').value.trim();
     const income=readRows(block,'income');
     const expenses=readRows(block,'expense');
-    const openingBalance=Number(block.querySelector('.stmt-prop-opening').value)||0;
-    const totalIncome=income.reduce((s,it)=>s+it.amount,0);
-    const totalExpenses=expenses.reduce((s,it)=>s+it.amount,0);
-    const netAmount=totalIncome-totalExpenses;
-    const closingBalance=openingBalance+netAmount;
+    const openingBalance=roundMoney(Number(block.querySelector('.stmt-prop-opening').value)||0);
+    // Computed independently from recalcStatementTotals() above (this reduces
+    // the same DOM rows a second time to build the per-property record), so
+    // it needs the identical rounding treatment or the two can disagree.
+    const totalIncome=roundMoney(income.reduce((s,it)=>s+it.amount,0));
+    const totalExpenses=roundMoney(expenses.reduce((s,it)=>s+it.amount,0));
+    const netAmount=roundMoney(totalIncome-totalExpenses);
+    const closingBalance=roundMoney(openingBalance+netAmount);
     const notes=block.querySelector('.stmt-prop-notes').value;
     return {propertyId,propertyAddress,openingBalance,income,expenses,totalIncome,totalExpenses,netAmount,closingBalance,notes};
   });
@@ -5841,16 +6155,19 @@ async function deleteStatement(id){
 async function pushStatementToBackend(record){
   if(!CONFIG.SUPABASE_URL) return true;
   const token=await authHeader();
-  if(!token) return false; // signed out — stays pending, pushes on the next sync
+  if(!token) return pushFailure('Not signed in'); // stays pending, pushes on the next sync
   try{
     if(record.pendingDelete){
       const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements?id=eq.${record.id}`,{
         method:'DELETE',
         headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
       });
-      return res.ok ? 'deleted' : false;
+      return res.ok ? 'deleted' : pushFailure('Delete failed — HTTP '+res.status);
     }
-    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements`,{
+    // Closure over the mutable record, same reason as pushInvoiceToBackend: a
+    // retry after a remint (below) must send the number that's actually
+    // going to be saved.
+    const post=()=>fetch(`${CONFIG.SUPABASE_URL}/rest/v1/statements`,{
       method:'POST',
       headers:{
         'Content-Type':'application/json',
@@ -5870,22 +6187,35 @@ async function pushStatementToBackend(record){
         created_at:record.createdAt,updated_at:record.updatedAt||record.createdAt
       })
     });
-    return res.ok;
+    let res=await post();
+    if(res.status===409){
+      // The unique index in schema.sql §8 rejected this number — see
+      // pushInvoiceToBackend for the identical reasoning. record is the same
+      // object syncPendingStatements() holds, so mutating statementNumber
+      // here persists the accepted number locally; retried exactly once.
+      record.statementNumber=await nextStatementNumber();
+      res=await post();
+    }
+    return res.ok ? true : pushFailure('HTTP '+res.status);
   }catch(err){
     console.log('Statement sync failed, will retry later:',err);
-    return false;
+    return pushFailure((err&&err.message)||String(err));
   }
 }
 
 async function syncPendingStatements(){
   if(!navigator.onLine) return; // fullSyncNow() owns the user-facing offline notice
   const all=await dbGetAll('statements');
-  const pending=all.filter(s=>!s.synced);
+  const pending=all.filter(s=>!s.synced).filter(dueForSyncRetry);
   for(const record of pending){
     const result=await pushStatementToBackend(record);
     if(result==='deleted'){
       await dbDelete('statements',record.id);
-    }else if(result){
+    }else if(isPushFailure(result)){
+      noteSyncFailure(record,result.reason);
+      await dbPut('statements',record);
+    }else{
+      clearSyncAttemptState(record);
       record.synced=true;
       await dbPut('statements',record);
     }
@@ -5900,12 +6230,7 @@ async function updateStatementSyncBanner(){
   const statusText=document.getElementById('sync-status-text-statement');
   const pendingText=document.getElementById('sync-pending-text-statement');
   const all=await dbGetAll('statements').catch(()=>[]);
-  const pendingCount=all.filter(s=>!s.synced).length;
-  const online=navigator.onLine;
-  banner.classList.toggle('sync-online',online);
-  banner.classList.toggle('sync-offline',!online);
-  statusText.textContent=online?'Online':'Offline';
-  pendingText.textContent=pendingCount+' pending sync';
+  applySyncBannerState(banner,statusText,pendingText,all);
 }
 
 async function generateStatementPDF(id){
@@ -6207,6 +6532,14 @@ async function renderFinancials(){
   const propertyClosing=new Map();
   const feeCategoryAgg=new Map();
   const passThroughCategoryAgg=new Map();
+  // Lines that classifyStatementExpenseLine() sent to 'disbursement' AND that
+  // categorizeExpenseDescription() also couldn't place beyond 'Other' — i.e.
+  // matched nothing anywhere in the classifier, as opposed to the ordinary,
+  // correctly-identified pass-through expense (a plumber's invoice matches
+  // 'repair' and is not unreviewed). See docs/REVIEW-2026-08.md finding 13:
+  // an unrecognised line silently understates agency revenue, and until this
+  // existed nothing said so.
+  const unreviewedLines=[];
 
   const addToCategory=(agg,category,label,amount)=>{
     let catEntry=agg.get(category);
@@ -6245,9 +6578,18 @@ async function renderFinancials(){
             recoveries+=amount;
             addToCategory(passThroughCategoryAgg,categorizeExpenseDescription(label),label,amount);
             break;
-          default:
+          default: {
             disbursements+=amount;
-            addToCategory(passThroughCategoryAgg,categorizeExpenseDescription(label),label,amount);
+            const category=categorizeExpenseDescription(label);
+            addToCategory(passThroughCategoryAgg,category,label,amount);
+            if(category==='Other'){
+              unreviewedLines.push({
+                statementNumber:s.statementNumber,
+                property:addressOf(p)||p.propertyAddress||'Unspecified property',
+                description:label,amount
+              });
+            }
+          }
         }
       });
 
@@ -6344,6 +6686,289 @@ async function renderFinancials(){
   document.getElementById('fin-disbursement-breakdown').innerHTML=categoryTableHtml(
     passThroughCategoryAgg,passThrough,'Total paid on owners’ behalf','red',
     'No pass-through costs recorded for this period');
+
+  const unreviewedCard=document.getElementById('fin-unreviewed-card');
+  if(unreviewedCard){
+    unreviewedCard.style.display=unreviewedLines.length?'block':'none';
+    const countEl=document.getElementById('fin-unreviewed-count');
+    if(countEl) countEl.textContent=unreviewedLines.length?`(${unreviewedLines.length})`:'';
+    document.getElementById('fin-unreviewed-body').innerHTML=unreviewedLines
+      .sort((a,b)=>b.amount-a.amount)
+      .map(l=>`<tr>
+        <td>${escapeHtml(l.statementNumber||'—')}</td>
+        <td>${escapeHtml(l.property)}</td>
+        <td>${escapeHtml(l.description)}</td>
+        <td class="tr">${fmt2(l.amount)}</td>
+      </tr>`).join('');
+  }
+}
+
+/* ============================================================
+   BACKUP — export/import of every local store.
+
+   The Supabase project is on the Free plan, which has NO automated
+   backups; Supabase's own guidance is that free projects export
+   regularly and keep the copies off-platform. Until this existed,
+   the complete set of copies of the owner statements — the agency's
+   books — was one unbacked Postgres and one IndexedDB store the
+   browser is allowed to evict at will. Neither is a backup of the
+   other: they are the same data, one sync apart.
+
+   Rows and photos are separate exports on purpose. Rows are small,
+   need no network, and always work; photos live in the private
+   Storage bucket as "storage:<path>" refs that have to be signed and
+   fetched one by one, which needs a session and takes real time. A
+   backup you can always take beats a backup that sometimes fails,
+   so the fast one is the default and the complete one is explicit.
+   ============================================================ */
+
+const BACKUP_FORMAT=1;
+const LAST_EXPORT_KEY='promanage_last_export_at';
+const BACKUP_STALE_DAYS=30;
+
+function backupFileName(withPhotos){
+  const d=new Date();
+  const stamp=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  return 'promanage-backup-'+stamp+(withPhotos?'-with-photos':'')+'.json';
+}
+
+function downloadJSON(filename,obj){
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
+
+function formatBytes(n){
+  if(!n && n!==0) return '—';
+  if(n<1024) return n+' B';
+  if(n<1024*1024) return (n/1024).toFixed(0)+' KB';
+  if(n<1024*1024*1024) return (n/(1024*1024)).toFixed(1)+' MB';
+  return (n/(1024*1024*1024)).toFixed(2)+' GB';
+}
+
+async function exportAllData(withPhotos,btn){
+  const label=btn?btn.textContent:null;
+  if(btn){ btn.disabled=true; btn.textContent='Exporting…'; }
+  try{
+    const data={};
+    let rows=0;
+    for(const store of LOCAL_STORES){
+      data[store]=await dbGetAll(store).catch(()=>[]);
+      rows+=data[store].length;
+    }
+
+    let photoCount=0, photoFailures=0;
+    if(withPhotos){
+      // Inline each photo as a data URL keyed by its storage ref, so a restore
+      // can put the bytes back even if the bucket is gone. resolvePhotoRefs()
+      // already knows how to sign a batch of refs; reuse it rather than
+      // duplicating the signing logic.
+      const refs=new Set();
+      for(const insp of data.inspections||[]){
+        for(const area of insp.areas||[]){
+          for(const p of area.photos||[]){
+            if(typeof p==='string' && p.startsWith(PHOTO_REF_PREFIX)) refs.add(p);
+          }
+        }
+      }
+      data.photos={};
+      let done=0;
+      for(const ref of refs){
+        if(btn) btn.textContent='Photos '+(++done)+'/'+refs.size+'…';
+        try{
+          const [signed]=await resolvePhotoRefs([ref]);
+          if(!signed || signed.startsWith(PHOTO_REF_PREFIX)) throw new Error('could not sign '+ref);
+          const res=await fetch(signed);
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          const blob=await res.blob();
+          data.photos[ref]=await new Promise((resolve,reject)=>{
+            const fr=new FileReader();
+            fr.onload=()=>resolve(fr.result);
+            fr.onerror=()=>reject(fr.error);
+            fr.readAsDataURL(blob);
+          });
+          photoCount++;
+        }catch(err){
+          console.warn('[backup] skipping photo',ref,err);
+          photoFailures++;
+        }
+      }
+    }
+
+    const payload={
+      format:BACKUP_FORMAT,
+      exportedAt:new Date().toISOString(),
+      dbVersion:DB_VERSION,
+      includesPhotos:!!withPhotos,
+      counts:Object.fromEntries(LOCAL_STORES.map(s=>[s,(data[s]||[]).length])),
+      data
+    };
+    downloadJSON(backupFileName(withPhotos),payload);
+
+    try{ localStorage.setItem(LAST_EXPORT_KEY,payload.exportedAt); }catch(_){}
+    renderBackupCard();
+    await logActivity('Backup','Exported',rows+' records'+(withPhotos?', '+photoCount+' photos':''));
+
+    alert('Backup downloaded — '+rows+' records'
+      +(withPhotos?', '+photoCount+' photo'+(photoCount===1?'':'s'):'')
+      +'.\n\nKeep it somewhere other than this device.'
+      +(photoFailures?'\n\nWARNING: '+photoFailures+' photo(s) could not be fetched and are NOT in this file.':''));
+  }catch(err){
+    console.error('Export failed:',err);
+    alert('Export failed: '+((err&&err.message)||err));
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent=label; }
+  }
+}
+
+/* Restore. "Merge" keeps anything on this device that the file does not
+   mention; "Replace" makes the device match the file exactly. Replace is the
+   one you want after a device is wiped, merge is the one you want after an
+   accidental deletion — so the choice is explicit rather than guessed. */
+async function importAllData(file){
+  if(!file) return;
+  let payload;
+  try{
+    payload=JSON.parse(await file.text());
+  }catch(err){
+    alert('That file is not valid JSON.'); return;
+  }
+  if(!payload || typeof payload!=='object' || !payload.data || typeof payload.data!=='object'){
+    alert('That does not look like a ProManage backup — no "data" section.'); return;
+  }
+  if(payload.format!==BACKUP_FORMAT){
+    if(!confirm('This file was written in backup format '+payload.format+', and this app reads format '+BACKUP_FORMAT+'.\n\nTry to import it anyway?')) return;
+  }
+
+  const incoming={};
+  for(const store of LOCAL_STORES){
+    incoming[store]=Array.isArray(payload.data[store])?payload.data[store]:[];
+  }
+  const current={};
+  for(const store of LOCAL_STORES) current[store]=await dbGetAll(store).catch(()=>[]);
+
+  const summary=LOCAL_STORES
+    .filter(s=>incoming[s].length||current[s].length)
+    .map(s=>'  '+s+': '+current[s].length+' here → '+incoming[s].length+' in file')
+    .join('\n');
+
+  const replace=confirm(
+    'Restore from backup taken '+(payload.exportedAt?new Date(payload.exportedAt).toLocaleString():'(unknown date)')+'\n\n'
+    +summary+'\n\n'
+    +'OK = REPLACE — wipe local records and use the file exactly.\n'
+    +'Cancel = choose merge instead.');
+
+  if(!replace){
+    if(!confirm('Merge instead? Records in the file are added or overwrite the copy here by id; anything on this device the file does not mention is kept.')) return;
+  }else if(!confirm('REPLACE will delete every local record not in this file. Unsynced work on this device will be lost.\n\nAre you sure?')){
+    return;
+  }
+
+  let written=0;
+  try{
+    for(const store of LOCAL_STORES){
+      if(replace) await dbClear(store);
+      for(const record of incoming[store]){
+        if(record && record.id!==undefined && record.id!==null){ await dbPut(store,record); written++; }
+      }
+    }
+
+    // Photos come back as data URLs in place of their storage refs, so the
+    // normal pending-sync path re-uploads them and mints fresh refs.
+    let photosRestored=0;
+    if(payload.data.photos && typeof payload.data.photos==='object'){
+      const inspections=await dbGetAll('inspections').catch(()=>[]);
+      for(const insp of inspections){
+        let touched=false;
+        for(const area of insp.areas||[]){
+          area.photos=(area.photos||[]).map(p=>{
+            const dataUrl=payload.data.photos[p];
+            if(typeof p==='string' && p.startsWith(PHOTO_REF_PREFIX) && dataUrl){
+              touched=true; photosRestored++; return dataUrl;
+            }
+            return p;
+          });
+        }
+        if(touched){ insp.synced=false; await dbPut('inspections',insp); }
+      }
+    }
+
+    await logActivity('Backup',replace?'Restored (replace)':'Restored (merge)',written+' records');
+    await renderAllModules();
+    alert('Restored '+written+' record'+(written===1?'':'s')
+      +(photosRestored?' and '+photosRestored+' photo'+(photosRestored===1?'':'s'):'')
+      +'.\n\nNothing has been pushed to the server yet — check the data looks right, then use Sync now.');
+  }catch(err){
+    console.error('Import failed:',err);
+    alert('Import failed part-way through: '+((err&&err.message)||err)
+      +'\n\nThe device may now hold a partial restore. Re-run the import before syncing.');
+  }
+}
+
+function pickBackupFile(){
+  const input=document.getElementById('backup-file-input');
+  if(input){ input.value=''; input.click(); }
+}
+
+/* IndexedDB defaults to a "best-effort" bucket, which the browser may evict
+   under storage pressure — and this app creates that pressure itself by
+   holding photos as base64. An inspection recorded somewhere with no signal
+   lives ONLY there until it syncs, so ask for the durable bucket. The request
+   is silent and idempotent; Chrome grants it to installed PWAs and to sites
+   with engagement, and there is nothing to do but report the answer if it
+   declines. */
+async function requestPersistentStorage(){
+  try{
+    if(!navigator.storage || !navigator.storage.persist) return null;
+    if(await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  }catch(err){
+    console.warn('[storage] persist() failed:',err);
+    return null;
+  }
+}
+
+async function renderBackupCard(){
+  const el=document.getElementById('dash-backup-status');
+  if(!el) return;
+
+  let last=null;
+  try{ last=localStorage.getItem(LAST_EXPORT_KEY); }catch(_){}
+  const lastDate=last?new Date(last):null;
+  const days=lastDate?Math.floor((Date.now()-lastDate.getTime())/86400000):null;
+
+  let line, cls;
+  if(!lastDate){
+    line='Never exported from this device'; cls='br';
+  }else if(days>=BACKUP_STALE_DAYS){
+    line='Last export '+days+' days ago — '+formatDateNZ(lastDate); cls='br';
+  }else{
+    line='Last export '+(days===0?'today':days+' day'+(days===1?'':'s')+' ago')+' — '+formatDateNZ(lastDate); cls='bg';
+  }
+
+  const bits=['<span class="badge '+cls+'">'+escapeHtml(line)+'</span>'];
+
+  try{
+    if(navigator.storage&&navigator.storage.estimate){
+      const {usage,quota}=await navigator.storage.estimate();
+      const pct=quota?Math.round((usage/quota)*100):null;
+      bits.push('<span class="badge">'+formatBytes(usage)+' used'
+        +(quota?' of '+formatBytes(quota)+(pct!==null?' ('+pct+'%)':''):'')+'</span>');
+    }
+    if(navigator.storage&&navigator.storage.persisted){
+      const persisted=await navigator.storage.persisted();
+      bits.push('<span class="badge '+(persisted?'bg':'ba')+'">'
+        +(persisted?'Storage is durable':'Storage is evictable — the browser may clear it')+'</span>');
+    }
+  }catch(err){
+    console.warn('[storage] estimate failed:',err);
+  }
+
+  el.innerHTML=bits.join(' ');
 }
 
 /* ============================================================

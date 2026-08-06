@@ -18,11 +18,14 @@ signal and does not hand a third party a request on every page load.
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 6191 | The whole app — markup, CSS, PDF report modules, and every feature module |
-| `supabase/schema.sql` | 567 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention. Safe to re-run |
-| `sw.js` | 126 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v2'`), navigation falls back to cached `index.html` |
+| `index.html` | 7102 | The whole app — markup, CSS, PDF report modules, and every feature module |
+| `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
+| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v7'`), navigation falls back to cached `index.html` |
 | `vendor/` | — | supabase-js 2.111.0, jsPDF 2.5.2, jspdf-autotable 3.8.2, heic2any 0.0.4 |
 | `manifest.json` | — | PWA manifest |
+| `scripts/` | 1611 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
+| `.github/workflows/` | — | `ci.yml` runs both check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
+| `docs/REVIEW-2026-08.md` | — | Review ahead of scaling to ~6 properties: backup gap, photo sizing, quota projections |
 
 **This repo is the deploy root.** GitHub Pages serves every committed file, and
 directories without an index are listable. Never commit real owner/tenant data,
@@ -359,21 +362,92 @@ once the project is upgraded.
 
 ## Verifying a change
 
-There is no test runner. At minimum, syntax-check the two inline script blocks:
+Three scripts. Run all three before pushing — CI (`.github/workflows/ci.yml`)
+runs exactly these:
 
 ```sh
-python3 - <<'EOF'
-import re
-src = open('index.html', encoding='utf-8').read()
-for i, b in enumerate(re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', src, re.S)):
-    open(f'/tmp/block{i}.js', 'w', encoding='utf-8').write(b)
-EOF
-node --check /tmp/block0.js && node --check /tmp/block1.js
+node scripts/check-app.mjs      # static checks, no dependencies
+node scripts/smoke-test.mjs     # boots the app in a real browser
+node scripts/test.mjs           # the test suite (100 cases)
 ```
 
-Then open `index.html` in a browser and exercise the affected module both online
-and offline (DevTools → Network → Offline).
+`check-app.mjs` replaces the old manual `node --check` ritual and adds the
+assertions that ritual could not make: that every `<script src>` exists on
+disk, that `SHELL_FILES` in `sw.js` covers them, and that no service-role key
+has landed in `index.html`. Pass `--base origin/main` (CI does this on pull
+requests) to also assert that a change to a shell file came with a `CACHE_NAME`
+bump — installed clients keep serving the old shell otherwise.
 
-When bumping anything in `vendor/` or the app shell, update `SHELL_FILES` and
-bump `CACHE_NAME` in `sw.js` — installed clients keep serving the old shell
-otherwise.
+`smoke-test.mjs` needs Playwright:
+
+```sh
+npm install --no-save playwright && npx playwright install chromium
+```
+
+It checks **side effects of top-level statements**, not the presence of
+functions — declarations are hoisted, so `typeof saveInspection === 'function'`
+stays true even when the block defining it threw on its first line. The last
+assertion is that the service worker registered, which is the final top-level
+statement in block 1: if that ran, the whole block ran. This is the specific
+regression described in "Top-level code in the script block" above, and
+removing a file from `vendor/` is a quick way to confirm the test still
+catches it.
+
+### The test suite
+
+`scripts/test.mjs` runs `scripts/tests/*.test.mjs` against the **real functions
+in the real page**, not against a copy.
+
+This works without any change to `index.html` because of how classic scripts
+scope declarations: top-level `function` declarations become properties of
+`window`, and top-level `const`/`let` land in the global lexical environment.
+Both are reachable as bare identifiers inside `page.evaluate()`, so a test can
+call `escapeHtml()` or read `GST_RATE` directly. That is the whole reason the
+runner is browser-based rather than Node-based — the alternatives were to
+extract the logic into a module (a refactor this project explicitly does not
+want) or to re-implement it in the test, which would test the copy.
+
+Writing a suite:
+
+```js
+export const name = 'dates';
+export default ({ test, app, eq, deepEq, ok, notOk }) => {
+  test('parses dd/mm/yyyy, not mm/dd/yyyy', async () => {
+    eq(await app((s) => formatDateNZ(parseFlexibleDate(s)), '5/8/2026'), '05 Aug 2026');
+  });
+};
+```
+
+`app(fn, arg)` is `page.evaluate` — one optional argument, which must be
+JSON-serialisable, and `fn` closes over nothing from the test file. Return a
+plain value: a `Date` will not survive the trip, so format it inside the page.
+
+**The page is booted once and shared by every suite**, so tests must not depend
+on mutable app state or on each other. Assert on pure functions and on values
+derived from arguments you pass in. `pagination.test.mjs` writes to the shared
+`pageState`, so it resets the key it uses in every case — follow that pattern
+if you touch module-level state.
+
+If the page throws while booting, the runner refuses to run rather than
+reporting a suite of misleading passes — hoisting would leave every function
+callable against a world that was never built.
+
+A case named `CURRENT BEHAVIOUR:` pins a bug recorded in
+`docs/REVIEW-2026-08.md` so that fixing it is a deliberate, visible change
+rather than an accidental one — currently `classifyStatementExpenseLine()`
+still defaulting an unrecognised line to `disbursement` (finding 13; mitigated
+by the "Unreviewed lines" panel on Financials, not changed, since redefining
+what counts as a disbursement is a bigger call than making the miscount
+visible). Update the case as part of any fix that changes it.
+
+The other pinned case — an unreadable date silently becoming today (finding
+14) — is fixed: `validateDateField()` now refuses to save a non-empty,
+unparseable `invoice-issue-date`/`invoice-due-date`/
+`statement-period-start`/`statement-period-end`. `dates.test.mjs` keeps a
+case pinning `addDaysToDateStr`'s own fallback, reframed as the intentional
+behaviour of a low-level utility whose other callers already guarantee it a
+valid string, not as a live bug.
+
+None of this replaces using the thing. Open `index.html` in a browser and
+exercise the affected module both online and offline (DevTools → Network →
+Offline).

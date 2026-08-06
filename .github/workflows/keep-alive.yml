@@ -1,0 +1,75 @@
+# Keeps the Supabase project awake.
+#
+# Projects on the Free plan pause after 7 consecutive days of inactivity. A
+# property manager who opens the app weekly is exactly that usage pattern, and
+# a paused project fails every sync with no indication of why. It is restorable
+# within 90 days, but the downtime arrives unannounced.
+#
+# This sends a trivial REST request twice a week. No secrets are involved: the
+# URL and publishable key are read out of index.html, where they are already
+# public by design (see CONFIG in index.html — the publishable key is meant to
+# be in the served file; RLS is what protects the data).
+#
+# Note: GitHub disables scheduled workflows in a repository with no activity
+# for 60 days, and will email before doing so. If this repo goes quiet for that
+# long, re-enable it from the Actions tab.
+
+name: keep-alive
+
+on:
+  schedule:
+    - cron: '17 20 * * 1,4'   # Mon + Thu, 20:17 UTC (~08:17 NZST next morning)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: ping Supabase
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read project config from index.html
+        id: config
+        run: |
+          node -e '
+            const fs = require("fs");
+            const src = fs.readFileSync("index.html", "utf8");
+            const pick = (key) => {
+              const m = new RegExp(key + ":\\s*\x27([^\x27]+)\x27").exec(src);
+              if (!m) { console.error("could not find " + key + " in index.html"); process.exit(1); }
+              return m[1];
+            };
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "url=" + pick("SUPABASE_URL") + "\n");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "key=" + pick("SUPABASE_KEY") + "\n");
+          '
+
+      - name: Ping REST and auth
+        run: |
+          set -euo pipefail
+          URL='${{ steps.config.outputs.url }}'
+          KEY='${{ steps.config.outputs.key }}'
+
+          rest=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "apikey: $KEY" -H "Authorization: Bearer $KEY" "$URL/rest/v1/")
+          auth=$(curl -sS -o /dev/null -w '%{http_code}' "$URL/auth/v1/health")
+
+          echo "rest/v1/       -> $rest"
+          echo "auth/v1/health -> $auth"
+
+          # Require an explicit 2xx/3xx rather than testing for "not >= 400":
+          # a connection that never completes reports 000, and `[ 000 -ge 400 ]`
+          # is false, so the negative test would have passed the very outage
+          # this job exists to detect. (set -e already catches a non-zero curl
+          # exit; this covers the case where curl exits 0 with no response.)
+          for code in "$rest" "$auth"; do
+            case "$code" in
+              2[0-9][0-9]|3[0-9][0-9]) ;;
+              *)
+                echo "::error::Supabase answered $code — the project may be paused."
+                exit 1
+                ;;
+            esac
+          done

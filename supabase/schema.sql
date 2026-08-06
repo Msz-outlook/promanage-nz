@@ -12,6 +12,7 @@
 --   5. Foreign keys — and the decision on what a property delete does
 --   6. Indexes — RLS predicates, incremental pulls, FK checks
 --   7. Activity log retention
+--   8. Uniqueness — invoice and statement numbers, per owner
 --
 -- Applying this file to a project that already holds data will FAIL LOUDLY
 -- rather than half-apply if it cannot work out who owns the existing rows —
@@ -561,6 +562,34 @@ grant execute on function public.prune_activity_log(integer) to authenticated;
 -- so it runs as the job owner with no auth.uid() and RLS does not scope it.
 -- That is the intent for a maintenance job; it is also why the function above
 -- is not the thing being scheduled.
+
+
+-- ============================================================
+-- 8. UNIQUENESS — invoice and statement numbers, per owner
+-- ============================================================
+-- nextInvoiceNumber() / nextStatementNumber() in index.html mint the next
+-- number by reading the highest one already in local IndexedDB. That is
+-- read-then-write with nothing enforcing it server-side, so two devices
+-- offline at the same time can both mint INV-0005, and — separately — once a
+-- pendingDelete invoice is actually purged, its number is free for the next
+-- save to reuse. Either way, two different invoices end up sharing a number
+-- in what are GST records.
+--
+-- A unique index is the same guarantee a unique constraint would give
+-- (Postgres implements one as the other) and is what the rest of this file
+-- already uses for "add this if it is not already there" — see section 6.
+-- Scoped to (user_id, *_number), not the number alone: two different owners
+-- are free to both use INV-0001, and there is no reason to stop them.
+--
+-- If this ever fails on a project that already has data, the failure IS the
+-- point: Postgres reports the exact duplicate pair, and that pair needs a
+-- human decision (which one keeps the number), not a script guessing.
+
+create unique index if not exists invoices_user_id_invoice_number_key
+  on public.invoices (user_id, invoice_number);
+
+create unique index if not exists statements_user_id_statement_number_key
+  on public.statements (user_id, statement_number);
 
 
 -- PostgREST caches the schema. Everything above changes it.

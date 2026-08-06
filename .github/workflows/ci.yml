@@ -38,10 +38,17 @@ jobs:
       # On a pull request, also assert that touching a shell file came with a
       # CACHE_NAME bump — installed clients keep serving the old shell forever
       # otherwise. There is no base to diff against on a plain push.
+      #
+      # No extra `git fetch` here: checkout above already ran with
+      # fetch-depth: 0, which fetches full history for every branch, not just
+      # the one being checked out — origin/<base_ref> is already a local
+      # remote-tracking ref by this point. A `git fetch --depth=0` was tried
+      # here once; it's invalid syntax (git rejects a depth below 1 with
+      # "fatal: depth 0 is not a positive number") and was also redundant, so
+      # it silently failed this job on every pull_request-triggered run.
       - name: Run checks
         run: |
           if [ -n "${{ github.base_ref }}" ]; then
-            git fetch --no-tags --depth=0 origin "${{ github.base_ref }}"
             node scripts/check-app.mjs --base "origin/${{ github.base_ref }}"
           else
             node scripts/check-app.mjs

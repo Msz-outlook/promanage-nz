@@ -6,11 +6,13 @@ Guidance for Claude Code working in this repository.
 
 A property-management app for a Christchurch, NZ property manager. It is a
 **single-file offline-first PWA**: essentially all of the app lives in
-`index.html` (~6.2k lines), backed by Supabase (Postgres + Auth + private
+`index.html` (~7.5k lines), backed by Supabase (Postgres + Auth + private
 Storage) and IndexedDB for local state.
 
-**There is no build step, no package.json, no test suite.** You edit
-`index.html` directly and open it in a browser. Third-party libraries are
+**There is no build step and no package.json.** You edit `index.html` directly
+and open it in a browser. There *is* a test suite, but it runs against the real
+page in a real browser rather than importing modules — see "Verifying a change".
+Third-party libraries are
 vendored into `vendor/` rather than pulled from a CDN, so the app works with no
 signal and does not hand a third party a request on every page load.
 
@@ -18,13 +20,13 @@ signal and does not hand a third party a request on every page load.
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 7102 | The whole app — markup, CSS, PDF report modules, and every feature module |
+| `index.html` | 7545 | The whole app — markup, CSS, PDF report modules, and every feature module |
 | `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
-| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v7'`), navigation falls back to cached `index.html` |
+| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v8'`), navigation falls back to cached `index.html` |
 | `vendor/` | — | supabase-js 2.111.0, jsPDF 2.5.2, jspdf-autotable 3.8.2, heic2any 0.0.4 |
 | `manifest.json` | — | PWA manifest |
-| `scripts/` | 1611 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
-| `.github/workflows/` | — | `ci.yml` runs both check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
+| `scripts/` | 2013 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
+| `.github/workflows/` | — | `ci.yml` runs all three check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
 | `docs/REVIEW-2026-08.md` | — | Review ahead of scaling to ~6 properties: backup gap, photo sizing, quota projections |
 
 **This repo is the deploy root.** GitHub Pages serves every committed file, and
@@ -70,7 +72,7 @@ it, and exposes a single `generate(data, options)`.
 
 | Line | Function |
 | --- | --- |
-| 2089 | `openDB()` — `promanageDB`, `DB_VERSION = 8`, 8 object stores |
+| 2089 | `openDB()` — `promanageDB`, `DB_VERSION = 9`, 9 object stores (8 synced + `settings`) |
 | 2125–2152 | `dbPut` / `dbGetAll` / `dbDelete` / `dbClear` |
 | 2198 | `enforceLocalDataOwner(userId)` — wipes local stores when a different account signs in |
 | 2211 | `countUnsyncedRecords()` |
@@ -218,14 +220,36 @@ Off by default so the mock inbox cannot invent maintenance jobs on real data.
 Derived live from Owner Statements — agency revenue is the management fee, not
 the owner's rent.
 
-### Dashboard (6063–6182)
+### Backup and Archive — two different jobs
+
+**Backup** (`exportAllData` / `importAllData`) is for *restore*: one JSON blob
+of every store, photos optionally inlined as data URLs, meant to be re-imported
+into the app after a wipe. Nothing is ever deleted because of it.
+
+**Archive** (`archiveInspections` / `purgeArchivedPhotos`) is for *records*:
+per-inspection folders on an external drive holding the generated `report.pdf`,
+the source photos, and a `manifest.json` — and it is the only thing in the app
+that deletes from Supabase Storage on purpose.
+
+| Function | What it does |
+| --- | --- |
+| `archiveSupported()` | `showDirectoryPicker` present — Chrome/Edge desktop only |
+| `pickArchiveDirectory()` | prompts, stores the handle in the `settings` store |
+| `getArchiveDirectory()` | restores the handle; returns null unless permission is still `granted` |
+| `archiveFolderName(insp, addr)` | `YYYY-MM-DD_Address` — date first to sort, address to avoid same-day collisions |
+| `archiveOneInspection(dir, insp, addr)` | generate → write → **verify**, then report |
+| `verifyArchivedInspection(dir, insp)` | re-opens every recorded file and checks its size |
+| `purgeArchivedPhotos(dir)` | deletes Storage copies older than `ARCHIVE_PURGE_AFTER_DAYS` (180), gated on verification |
+| `storageUsageEstimate()` | headroom against the Free 1 GB cap, from `photoSizes` recorded at upload |
+
+### Dashboard
 
 | Line | Function |
 | --- | --- |
-| 6071 | `INSPECTION_INTERVAL_DAYS = 180` |
-| 6082 | `lastInspectionByProperty(inspections)` |
-| 6103 | `renderDashboard()` |
-| 6184 | Service-worker registration |
+| — | `INSPECTION_INTERVAL_DAYS = 180` |
+| — | `lastInspectionByProperty(inspections)` |
+| — | `renderDashboard()` |
+| — | Service-worker registration (last top-level statement in block 1) |
 
 ## Conventions
 
@@ -326,6 +350,21 @@ When adding a new vendored library, add its guard at the same time as the
   guessable from the address and inspection id, and a public bucket also allows
   listing. `storage:` is deliberately not loadable by `<img src>` so a missed
   resolver step fails loudly instead of leaking a link.
+- **`verifyArchivedInspection()` running at PURGE time, not just archive time.**
+  This is the only code in the app that deletes photos from Storage on purpose,
+  and once it has, the external drive is the *only* copy — there is no mirror.
+  The `archivedAt` flag proves the files were written six months ago; it proves
+  nothing about whether the drive still holds them today. So purge re-opens
+  every file and re-checks its size before deleting, and skips the inspection
+  entirely if the drive is absent, a file is missing, or a size differs. Every
+  failure path here must resolve to *keep the photos* — the cost of being wrong
+  in that direction is a storage-cap warning, and in the other direction it is
+  permanent loss of inspection evidence. Do not "optimise" the re-check away on
+  the grounds that the archive was already verified.
+- **`generateInspectionPDF` refusing on `photosPurgedAt`.** `resolvePhotoRefs`
+  returns null for a purged photo and the `.filter(Boolean)` downstream would
+  quietly emit a report with no photos in it, under the same filename as the
+  real one. Refusing and naming the archive folder is the point.
 - **Server-side `updated_at`** (schema.sql §1). Conflict resolution compares
   `updated_at`; letting clients write it means the device with the fastest clock
   wins. It also makes the incremental pull cursor meaningful.
@@ -368,7 +407,7 @@ runs exactly these:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (100 cases)
+node scripts/test.mjs           # the test suite (118 cases)
 ```
 
 `check-app.mjs` replaces the old manual `node --check` ritual and adds the

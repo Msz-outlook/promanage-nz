@@ -141,6 +141,10 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .insp-area-name{font-weight:600;font-size:13.5px}
 .photo-strip{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .photo-thumb{width:56px;height:56px;border-radius:6px;object-fit:cover;border:0.5px solid var(--border2)}
+/* A thumb whose photo has been archived off to the backup drive: no src to
+   render, so give it a visible placeholder rather than a broken-image icon. */
+.photo-archived{background:var(--bg3);border-style:dashed;position:relative}
+.photo-archived::after{content:'🗄';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:20px;opacity:.55}
 .photo-add{width:56px;height:56px;border-radius:6px;border:1px dashed var(--border2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;color:var(--text2);background:var(--bg2)}
 textarea{width:100%;padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;resize:vertical;min-height:44px;outline:none}
 textarea:focus{border-color:var(--text)}
@@ -1333,6 +1337,26 @@ textarea:focus{border-color:var(--text)}
     </div>
   </div>
 
+  <div class="card">
+    <div class="card-head">
+      Inspection archive
+      <span>
+        <button class="btn btn-sm" onclick="pickArchiveDirectory()">📁 Choose folder…</button>
+        <button class="btn btn-sm" onclick="archiveInspections(this)">🗄 Archive now</button>
+      </span>
+    </div>
+    <div style="padding:0 14px 14px">
+      <div id="dash-archive-status" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+      <div style="color:var(--text3);font-size:12px;margin-top:8px">
+        Each inspection is written to the drive as its PDF report plus the original photos.
+        Photos are removed from cloud storage once that archive is over
+        <strong>180 days</strong> old — but only after every archived file is re-checked on the
+        drive first, so a missing or disconnected drive never causes a deletion.
+        After a purge the drive is the only copy: keep it somewhere safe.
+      </div>
+    </div>
+  </div>
+
   <div class="metrics" id="dash-metrics">
     <div class="metric"><div class="metric-label">Open maintenance</div><div class="metric-val" id="dm-maint">—</div><div class="metric-sub" id="dm-maint-sub"></div></div>
     <div class="metric"><div class="metric-label">Not compliant</div><div class="metric-val" id="dm-noncompliant">—</div><div class="metric-sub" id="dm-noncompliant-sub"></div></div>
@@ -2219,7 +2243,8 @@ const APP_RENDERERS=[
   ['dashboard',  async()=>{await renderDashboard();}],
   ['activity',   async()=>{await renderActivityLog();}],
   ['compliance', async()=>{await renderComplianceLive();}],
-  ['backup',     async()=>{await renderBackupCard();}]
+  ['backup',     async()=>{await renderBackupCard();}],
+  ['archive',    async()=>{await renderArchiveCard();}]
 ];
 
 async function renderAllModules(){
@@ -2241,6 +2266,18 @@ async function enterApp(userId){
   requestPersistentStorage().then(()=>renderBackupCard()).catch(()=>{});
   await renderAllModules();
   fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere
+  // Opportunistic purge: if the archive drive happens to be connected and its
+  // permission still granted, clear out photos whose archive is old enough.
+  // Silent by design — it does nothing at all when the drive is absent, which
+  // is the common case, and each candidate is re-verified before any delete.
+  getArchiveDirectory()
+    .then(async (dir)=>{
+      if(!dir) return;
+      const result=await purgeArchivedPhotos(dir);
+      if(result.purged||result.blocked.length) await renderArchiveCard();
+      if(result.blocked.length) console.warn('[archive] purge blocked for',result.blocked);
+    })
+    .catch(err=>console.warn('[archive] startup purge skipped:',err));
 }
 
 async function checkSession(){
@@ -2347,7 +2384,7 @@ if(sb) sb.auth.onAuthStateChange((event)=>{
   if(event==='SIGNED_OUT') setTimeout(checkSession,0);
 });
 
-const DB_NAME='promanageDB', DB_VERSION=8;
+const DB_NAME='promanageDB', DB_VERSION=9;
 let dbInstance=null;
 // The in-flight open. Without it, the `if(dbInstance)` check below is useless
 // against concurrent callers: it runs synchronously, so every dbGetAll() fired
@@ -2402,6 +2439,14 @@ function openDB(){
       }
       if(!db.objectStoreNames.contains('emailTriage')){
         db.createObjectStore('emailTriage',{keyPath:'id'});
+      }
+      // Device-local settings that are NOT app data: currently only the SSD
+      // archive directory handle. Deliberately outside LOCAL_STORES so it is
+      // never synced, never exported, and never wiped by
+      // enforceLocalDataOwner() — a directory handle belongs to this browser
+      // profile on this machine, not to an account.
+      if(!db.objectStoreNames.contains('settings')){
+        db.createObjectStore('settings',{keyPath:'key'});
       }
     };
     req.onsuccess=(e)=>{
@@ -2461,6 +2506,18 @@ function dbGetAll(storeName){
     const tx=db.transaction(storeName,'readonly');
     const req=tx.objectStore(storeName).getAll();
     req.onsuccess=()=>resolve(req.result||[]);
+    req.onerror=(e)=>reject(e.target.error);
+  }));
+}
+
+// Fetch one record by primary key. Used by the `settings` store, whose keyPath
+// is 'key' rather than 'id' — dbGetAll() would work but reads the whole store
+// to find one row.
+function dbGet(storeName,key){
+  return openDB().then(db=>new Promise((resolve,reject)=>{
+    const tx=db.transaction(storeName,'readonly');
+    const req=tx.objectStore(storeName).get(key);
+    req.onsuccess=()=>resolve(req.result||null);
     req.onerror=(e)=>reject(e.target.error);
   }));
 }
@@ -3358,7 +3415,7 @@ function addInspectionArea(name,opts){
       </div>
     </div>`;
   document.getElementById('insp-areas').appendChild(wrap);
-  renderAreaPhotos(wrap,opts.photos||[]);
+  renderAreaPhotos(wrap,opts.photos||[],opts);
 }
 
 /* Puts the already-saved photos of an area into its strip. Each thumb
@@ -3367,7 +3424,8 @@ function addInspectionArea(name,opts){
    the signed URL is filled in once it comes back. Built with DOM calls
    rather than an HTML string so a stored value can't break out of the
    src/attribute it lands in. */
-function renderAreaPhotos(wrap,photos){
+function renderAreaPhotos(wrap,photos,opts){
+  opts=opts||{};
   const strip=wrap.querySelector('.photo-strip');
   const addBtn=strip.querySelector('.photo-add');
   const imgs=photos.map(ref=>{
@@ -3378,6 +3436,21 @@ function renderAreaPhotos(wrap,photos){
     strip.insertBefore(img,addBtn);
     return img;
   });
+
+  // Purged photos are gone from Storage on purpose, not missing by accident.
+  // Signing them would fail and land in the generic "could not be loaded"
+  // branch below, which reads like a fault — say where they actually are.
+  if(opts.photosPurgedAt){
+    const where=opts.archivePath?' → '+opts.archivePath:'';
+    imgs.forEach(img=>{
+      if(!img.dataset.photoRef) return;
+      img.alt='Archived';
+      img.title='Archived to the backup drive on '+formatDateNZ(new Date(opts.photosPurgedAt))+where;
+      img.classList.add('photo-archived');
+    });
+    return;
+  }
+
   resolvePhotoRefs(photos).then(urls=>{
     urls.forEach((url,i)=>{
       const img=imgs[i];
@@ -3559,7 +3632,7 @@ async function editInspection(id){
   document.getElementById('insp-date').value=record.date;
   document.getElementById('insp-areas').innerHTML='';
   areaCounter=0;
-  (record.areas||[]).forEach(a=>addInspectionArea(a.name,{status:a.status,notes:a.notes,photos:a.photos}));
+  (record.areas||[]).forEach(a=>addInspectionArea(a.name,{status:a.status,notes:a.notes,photos:a.photos,photosPurgedAt:record.photosPurgedAt,archivePath:record.archivePath}));
   const titleEl=document.getElementById('insp-form-title');
   if(titleEl) titleEl.textContent='Edit inspection';
   const btnEl=document.getElementById('insp-save-btn');
@@ -3656,39 +3729,63 @@ async function renderInspectionList(){
 /* `btn` is handed in as `this` from the onclick — the button can't be recovered
    from the global `event` once the first await has yielded, and reading it that
    way also breaks if this is ever called from anywhere but a click handler. */
-async function generateInspectionPDF(id,btn){
-  const all=await dbGetAll('inspections');
-  const insp=all.find(i=>i.id===id);
-  if(!insp) return;
-  const properties=await dbGetAll('properties').catch(()=>[]);
-  const siteAddress=resolvePropertyAddress(properties)(insp);
+/* Shapes an inspection into the payload FindingsReport.generate() expects.
+   Shared by the on-screen "Generate PDF" button and the SSD archive, which
+   must produce byte-identical reports — the archived PDF is the artifact the
+   photos get purged in favour of, so it cannot be a different rendering.
 
-  // Stored photos are local base64 data URLs (not yet synced) or private
-  // storage references — resolvePhotoRefs() passes the former through and
-  // signs the latter so FindingsReport.generate() can fetch them. Anything
-  // that fails to sign is dropped rather than breaking the whole report.
+   Stored photos are local base64 data URLs (not yet synced) or private storage
+   references; resolvePhotoRefs() passes the former through and signs the
+   latter. Callers MUST check photosPurgedAt before calling this: once photos
+   are gone from Storage the refs resolve to null and the filter below would
+   quietly emit a report with no photos in it. */
+async function buildInspectionReportData(insp,siteAddress){
   const findings=await Promise.all((insp.areas||[]).map(async a=>({
     item: a.name,
     description: 'Status: '+a.status+(a.notes?' — '+a.notes:''),
     photos: (await resolvePhotoRefs(a.photos||[])).filter(Boolean)
   })));
+  return {
+    title:'Property Inspection Report',
+    meta:{
+      Site: siteAddress||'—',
+      Reference: insp.id,
+      Date: insp.date||'—',
+      'Prepared by':'ProManage NZ'
+    },
+    findings
+  };
+}
 
-  if(!findings.length){ alert('This inspection has no areas to report.'); return; }
+function inspectionReportFileName(insp,siteAddress){
+  return `inspection-${sanitizeForPath(siteAddress||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`;
+}
+
+async function generateInspectionPDF(id,btn){
+  const all=await dbGetAll('inspections');
+  const insp=all.find(i=>i.id===id);
+  if(!insp) return;
+
+  // Refuse rather than silently emit a photo-less report. The photos for this
+  // inspection are no longer in Storage; the report that WAS generated from
+  // them is on the archive drive, and re-rendering here would produce a
+  // different, worse document under the same name.
+  if(insp.photosPurgedAt){
+    alert(ARCHIVED_REPORT_MESSAGE(insp));
+    return;
+  }
+
+  const properties=await dbGetAll('properties').catch(()=>[]);
+  const siteAddress=resolvePropertyAddress(properties)(insp);
+  const data=await buildInspectionReportData(insp,siteAddress);
+
+  if(!data.findings.length){ alert('This inspection has no areas to report.'); return; }
 
   const original=btn?btn.textContent:null;
   if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
 
   try{
-    await FindingsReport.generate({
-      title:'Property Inspection Report',
-      meta:{
-        Site: siteAddress||'—',
-        Reference: insp.id,
-        Date: insp.date||'—',
-        'Prepared by':'ProManage NZ'
-      },
-      findings
-    },{ fileName:`inspection-${sanitizeForPath(siteAddress||'property')}-${(insp.date||'').replace(/\//g,'-')}.pdf`, download:true });
+    await FindingsReport.generate(data,{ fileName:inspectionReportFileName(insp,siteAddress), download:true });
   }catch(err){
     alert('Could not generate report: '+(err && err.message));
   }finally{
@@ -3897,15 +3994,23 @@ async function uploadPhotoToStorage(dataUrl,path){
 // small, avoids re-uploading the same photo on a later sync retry, and
 // stores nothing that is fetchable on its own (see resolvePhotoRefs()).
 async function uploadRecordPhotos(record){
+  // Byte size per storage ref, so the Archive card can show real headroom
+  // against the Free plan's 1 GB cap without listing the bucket. Carried
+  // forward from any previous sync; photos uploaded before this existed are
+  // simply absent and get counted-but-not-sized.
+  const photoSizes={...(record.photoSizes||{})};
   const areas=await Promise.all(record.areas.map(async (area,ai)=>{
     const photos=await Promise.all(area.photos.map(async (photo,pi)=>{
       if(!photo.startsWith('data:')) return photo; // already a storage ref from a previous sync
       const path=`${sanitizeForPath(record.property)}/${record.id}/area${ai}-photo${pi}.jpg`;
-      return await uploadPhotoToStorage(photo,path);
+      const size=dataUrlToBlob(photo).size;
+      const ref=await uploadPhotoToStorage(photo,path);
+      photoSizes[ref]=size;
+      return ref;
     }));
     return {...area,photos};
   }));
-  return {...record,areas};
+  return {...record,areas,photoSizes};
 }
 
 async function pushInspectionToBackend(record){
@@ -6966,6 +7071,344 @@ async function renderBackupCard(){
     }
   }catch(err){
     console.warn('[storage] estimate failed:',err);
+  }
+
+  el.innerHTML=bits.join(' ');
+}
+
+/* ============================================================
+   ARCHIVE — inspections out to an external drive, then their
+   photos out of Supabase Storage.
+
+   WHY. Photos are captured full-resolution (~2.5 MB each) and the
+   Supabase project is on the Free plan's 1 GB Storage cap. At six
+   properties that is roughly 960 MB/year, so photos cannot simply
+   accumulate. Rather than shrink them, each inspection is written
+   to an external drive as its generated PDF report PLUS the source
+   photos, and the Storage copies are deleted once that archive is
+   old enough. The PDF is the artifact: because it is rendered and
+   saved BEFORE anything is deleted, nothing ever needs
+   regenerating from photos that no longer exist.
+
+   THE DANGEROUS PART. After a purge there is no second copy — the
+   drive is it. So the flag written at archive time is never
+   trusted at purge time: purgeArchivedPhotos() re-opens every
+   file on the drive and re-checks its size before deleting
+   anything, and skips the inspection entirely if the drive is
+   absent or a single file fails to match. Every failure mode here
+   must resolve to "keep the photos". See verifyArchivedInspection.
+
+   PLATFORM. showDirectoryPicker() is Chrome/Edge desktop only —
+   there is no Safari, Firefox or iOS support, so archiving is a
+   desk operation, not something that happens on the phone in the
+   field. archiveSupported() gates the UI accordingly.
+   ============================================================ */
+
+const ARCHIVE_DIR_KEY='archiveDirectory';
+const ARCHIVE_PURGE_AFTER_DAYS=180;
+const ARCHIVE_MANIFEST_VERSION=1;
+// Free plan Storage cap. Only used to show headroom — nothing enforces it
+// client-side, the server just starts rejecting uploads.
+const STORAGE_CAP_BYTES=1024*1024*1024;
+
+function archiveSupported(){
+  return typeof window!=='undefined' && typeof window.showDirectoryPicker==='function';
+}
+
+const ARCHIVED_REPORT_MESSAGE=(insp)=>
+  'The photos for this inspection were archived to the backup drive on '
+  +formatDateNZ(new Date(insp.photosPurgedAt))+' and removed from cloud storage.\n\n'
+  +'The report generated at archive time is already on the drive'
+  +(insp.archivePath?':\n\n    '+insp.archivePath+'/report.pdf':'.')
+  +'\n\nUse that copy — regenerating here would produce a report with no photos in it.';
+
+/* The archive folder name. Date first so the drive sorts chronologically, and
+   the address appended because two properties inspected on the same day would
+   otherwise land in the same folder and overwrite each other. */
+function archiveFolderName(insp,siteAddress){
+  const d=parseFlexibleDate(insp.date);
+  const stamp=d
+    ? d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')
+    : 'undated';
+  return stamp+'_'+sanitizeForPath(siteAddress||insp.property||'property');
+}
+
+async function getArchiveDirectory(){
+  if(!archiveSupported()) return null;
+  try{
+    const row=await dbGet('settings',ARCHIVE_DIR_KEY);
+    if(!row||!row.value) return null;
+    const handle=row.value;
+    // A stored handle survives a restart but its permission grant may not.
+    // queryPermission() never prompts, so this is safe to call on boot; only
+    // pickArchiveDirectory() (behind a click) may request.
+    const state=await handle.queryPermission({mode:'readwrite'});
+    return state==='granted'?handle:null;
+  }catch(err){
+    console.warn('[archive] could not restore directory handle:',err);
+    return null;
+  }
+}
+
+async function pickArchiveDirectory(){
+  if(!archiveSupported()){
+    alert('This browser cannot write to a folder directly. Archiving needs Chrome or Edge on desktop.');
+    return;
+  }
+  try{
+    const handle=await window.showDirectoryPicker({mode:'readwrite'});
+    if(await handle.requestPermission({mode:'readwrite'})!=='granted'){
+      alert('Write permission is needed to archive to that folder.');
+      return;
+    }
+    await dbPut('settings',{key:ARCHIVE_DIR_KEY,value:handle});
+    await logActivity('Archive','Folder set',handle.name);
+    await renderArchiveCard();
+  }catch(err){
+    if(err && err.name==='AbortError') return; // user closed the picker
+    console.error('[archive] could not set folder:',err);
+    alert('Could not use that folder: '+((err&&err.message)||err));
+  }
+}
+
+async function writeFileTo(dirHandle,name,blob){
+  const fileHandle=await dirHandle.getFileHandle(name,{create:true});
+  const writable=await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return (await fileHandle.getFile()).size;
+}
+
+/* Re-opens everything the manifest says was written and checks it is still
+   there at the recorded size. This is the gate in front of every delete — it
+   runs at purge time, months after the archive, precisely because the flag
+   written back then says nothing about whether the drive still holds the
+   files today. Returns {ok, reason}. */
+async function verifyArchivedInspection(dirHandle,insp){
+  if(!dirHandle) return {ok:false,reason:'Archive drive not connected'};
+  if(!insp.archivePath) return {ok:false,reason:'No archive folder recorded'};
+  if(!Array.isArray(insp.archivedFiles)||!insp.archivedFiles.length){
+    return {ok:false,reason:'No archived file list recorded'};
+  }
+  try{
+    const folder=await dirHandle.getDirectoryHandle(insp.archivePath);
+    for(const entry of insp.archivedFiles){
+      const parts=entry.file.split('/');
+      let dir=folder;
+      for(let i=0;i<parts.length-1;i++) dir=await dir.getDirectoryHandle(parts[i]);
+      const file=await (await dir.getFileHandle(parts[parts.length-1])).getFile();
+      if(file.size!==entry.size){
+        return {ok:false,reason:`${entry.file} is ${formatBytes(file.size)}, expected ${formatBytes(entry.size)}`};
+      }
+    }
+    return {ok:true,reason:''};
+  }catch(err){
+    return {ok:false,reason:(err&&err.name==='NotFoundError')?'A file is missing from the archive folder':((err&&err.message)||String(err))};
+  }
+}
+
+/* Writes one inspection's report + photos, then verifies before reporting
+   success. Order matters: generate, write, verify, and only then let the
+   caller mark it archived. */
+async function archiveOneInspection(dirHandle,insp,siteAddress){
+  if(insp.photosPurgedAt) return {ok:false,reason:'Photos already purged'};
+
+  const data=await buildInspectionReportData(insp,siteAddress);
+  if(!data.findings.length) return {ok:false,reason:'No areas to report'};
+
+  const folderName=archiveFolderName(insp,siteAddress);
+  const folder=await dirHandle.getDirectoryHandle(folderName,{create:true});
+  const files=[];
+
+  const pdfBlob=await FindingsReport.generate(data,{download:false});
+  files.push({ref:null,file:'report.pdf',size:await writeFileTo(folder,'report.pdf',pdfBlob)});
+
+  // One signing round trip for every photo in the inspection rather than one
+  // per photo — createSignedUrls() takes the whole batch.
+  const allRefs=(insp.areas||[]).flatMap(a=>a.photos||[]);
+  const resolved=await resolvePhotoRefs(allRefs);
+  const photosDir=allRefs.length?await folder.getDirectoryHandle('photos',{create:true}):null;
+
+  let i=0;
+  for(const [ai,area] of (insp.areas||[]).entries()){
+    for(const [pi] of (area.photos||[]).entries()){
+      const ref=allRefs[i], url=resolved[i];
+      i++;
+      if(!url) return {ok:false,reason:'Could not fetch a photo (offline, or it is already gone from storage)'};
+      const res=await fetch(url);
+      if(!res.ok) return {ok:false,reason:'Photo fetch failed — HTTP '+res.status};
+      const name=`area${ai}-photo${pi}.jpg`;
+      files.push({ref,file:'photos/'+name,size:await writeFileTo(photosDir,name,await res.blob())});
+    }
+  }
+
+  const manifest={
+    manifestVersion:ARCHIVE_MANIFEST_VERSION,
+    archivedAt:new Date().toISOString(),
+    inspectionId:insp.id,
+    property:siteAddress||insp.property||'',
+    inspectionDate:insp.date||'',
+    files:files.map(f=>({file:f.file,size:f.size,ref:f.ref||undefined}))
+  };
+  const manifestBlob=new Blob([JSON.stringify(manifest,null,2)],{type:'application/json'});
+  files.push({ref:null,file:'manifest.json',size:await writeFileTo(folder,'manifest.json',manifestBlob)});
+
+  const candidate={...insp,archivePath:folderName,archivedFiles:files};
+  const check=await verifyArchivedInspection(dirHandle,candidate);
+  if(!check.ok) return {ok:false,reason:'Written but failed verification — '+check.reason};
+
+  return {ok:true,archivePath:folderName,archivedFiles:files,manifest};
+}
+
+async function archiveInspections(btn){
+  const dirHandle=await getArchiveDirectory();
+  if(!dirHandle){
+    alert(archiveSupported()
+      ? 'Choose an archive folder first (and reconnect the drive if it is unplugged).'
+      : 'Archiving needs Chrome or Edge on desktop.');
+    return;
+  }
+  const label=btn?btn.textContent:null;
+  if(btn){ btn.disabled=true; btn.textContent='Archiving…'; }
+  try{
+    const properties=await dbGetAll('properties').catch(()=>[]);
+    const addressOf=resolvePropertyAddress(properties);
+    const all=await dbGetAll('inspections');
+    // Only archive what the server already has. An unsynced inspection may
+    // still change, and its photos are local data URLs rather than storage
+    // refs — archiving it would capture a draft.
+    const pending=all.filter(i=>i.synced && !i.pendingDelete && !i.archivedAt && !i.photosPurgedAt);
+
+    let done=0; const failed=[];
+    for(const insp of pending){
+      if(btn) btn.textContent=`Archiving ${done+1}/${pending.length}…`;
+      try{
+        const result=await archiveOneInspection(dirHandle,insp,addressOf(insp));
+        if(!result.ok){ failed.push({insp,reason:result.reason}); continue; }
+        insp.archivedAt=new Date().toISOString();
+        insp.archivePath=result.archivePath;
+        insp.archivedFiles=result.archivedFiles;
+        await dbPut('inspections',insp);
+        await logActivity('Archive','Exported',
+          (addressOf(insp)||insp.property||'Inspection')+' — '+result.archivePath+' ('+result.archivedFiles.length+' files)');
+        done++;
+      }catch(err){
+        console.error('[archive] failed for',insp.id,err);
+        failed.push({insp,reason:(err&&err.message)||String(err)});
+      }
+    }
+
+    // Purge runs off the back of a successful archive pass, which is exactly
+    // when the drive is known to be connected.
+    const purged=await purgeArchivedPhotos(dirHandle);
+    await renderArchiveCard();
+
+    alert('Archived '+done+' inspection'+(done===1?'':'s')
+      +(purged.purged?'\nPurged photos for '+purged.purged+' older inspection'+(purged.purged===1?'':'s'):'')
+      +(failed.length?'\n\nSkipped '+failed.length+':\n'+failed.map(f=>'  • '+(f.insp.property||f.insp.id)+' — '+f.reason).join('\n'):'')
+      +(purged.blocked.length?'\n\nNOT purged (archive could not be verified):\n'+purged.blocked.map(b=>'  • '+b.property+' — '+b.reason).join('\n'):''));
+  }catch(err){
+    console.error('[archive] run failed:',err);
+    alert('Archive failed: '+((err&&err.message)||err));
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent=label; }
+  }
+}
+
+/* Deletes Storage copies for inspections archived longer ago than
+   ARCHIVE_PURGE_AFTER_DAYS — but only after re-proving the archive is intact
+   right now. Never deletes on a failed or unavailable check; the worst case
+   is that photos stay in Storage and the cap warning appears, which is
+   recoverable, unlike the alternative. */
+async function purgeArchivedPhotos(dirHandle){
+  const result={purged:0,blocked:[]};
+  if(!dirHandle) return result;
+
+  const cutoff=Date.now()-ARCHIVE_PURGE_AFTER_DAYS*86400000;
+  const all=await dbGetAll('inspections');
+  const due=all.filter(i=>i.archivedAt && !i.photosPurgedAt && new Date(i.archivedAt).getTime()<=cutoff);
+
+  for(const insp of due){
+    const check=await verifyArchivedInspection(dirHandle,insp);
+    if(!check.ok){
+      result.blocked.push({property:insp.property||insp.id,reason:check.reason});
+      console.warn('[archive] refusing to purge',insp.id,'—',check.reason);
+      continue;
+    }
+    try{
+      await deletePhotosFromStorage(insp);
+      insp.photosPurgedAt=new Date().toISOString();
+      await dbPut('inspections',insp);
+      await logActivity('Archive','Purged',
+        (insp.property||insp.id)+' — photos removed from cloud storage, archive verified at '+insp.archivePath);
+      result.purged++;
+    }catch(err){
+      console.error('[archive] purge failed for',insp.id,err);
+      result.blocked.push({property:insp.property||insp.id,reason:(err&&err.message)||String(err)});
+    }
+  }
+  return result;
+}
+
+/* Bytes still held in Supabase Storage, derived from the local records rather
+   than by listing the bucket. Sizes are recorded at upload time; the handful
+   of photos that predate that are counted but not sized, which the card says
+   rather than quietly under-reporting. */
+async function storageUsageEstimate(){
+  const all=await dbGetAll('inspections').catch(()=>[]);
+  let bytes=0,sized=0,unsized=0;
+  for(const insp of all){
+    if(insp.photosPurgedAt||insp.pendingDelete) continue;
+    for(const area of insp.areas||[]){
+      for(const ref of area.photos||[]){
+        if(typeof ref!=='string'||!ref.startsWith(PHOTO_REF_PREFIX)) continue;
+        const size=(insp.photoSizes||{})[ref];
+        if(size){ bytes+=size; sized++; } else unsized++;
+      }
+    }
+  }
+  return {bytes,sized,unsized};
+}
+
+async function renderArchiveCard(){
+  const el=document.getElementById('dash-archive-status');
+  if(!el) return;
+
+  if(!archiveSupported()){
+    el.innerHTML='<span class="badge ba">Archiving needs Chrome or Edge on desktop — this browser cannot write to a folder</span>';
+    return;
+  }
+
+  const dirHandle=await getArchiveDirectory();
+  const all=await dbGetAll('inspections').catch(()=>[]);
+  const live=all.filter(i=>!i.pendingDelete);
+  const archived=live.filter(i=>i.archivedAt);
+  const pending=live.filter(i=>i.synced && !i.archivedAt && !i.photosPurgedAt);
+  const purged=live.filter(i=>i.photosPurgedAt);
+  const lastArchive=archived.map(i=>i.archivedAt).sort().pop();
+
+  const bits=[];
+  bits.push(dirHandle
+    ? '<span class="badge bg">Archive folder connected</span>'
+    : '<span class="badge br">No archive folder — nothing is being backed up</span>');
+
+  if(lastArchive) bits.push('<span class="badge">Last archive '+escapeHtml(formatDateNZ(new Date(lastArchive)))+'</span>');
+  bits.push('<span class="badge'+(pending.length?' ba':'')+'">'+pending.length+' waiting to archive</span>');
+  bits.push('<span class="badge">'+archived.length+' archived · '+purged.length+' purged</span>');
+
+  const usage=await storageUsageEstimate();
+  const pct=Math.round((usage.bytes/STORAGE_CAP_BYTES)*100);
+  bits.push('<span class="badge'+(pct>=70?' br':pct>=40?' ba':'')+'">Cloud storage ~'+formatBytes(usage.bytes)
+    +' of '+formatBytes(STORAGE_CAP_BYTES)+' ('+pct+'%)'
+    +(usage.unsized?' · '+usage.unsized+' not sized':'')+'</span>');
+
+  // Anything already past the purge window but still holding photos is either
+  // waiting for the drive or has failed verification. Either way it is the
+  // thing standing between this and the storage cap, so it goes up front.
+  const cutoff=Date.now()-ARCHIVE_PURGE_AFTER_DAYS*86400000;
+  const overdue=live.filter(i=>i.archivedAt && !i.photosPurgedAt && new Date(i.archivedAt).getTime()<=cutoff);
+  if(overdue.length){
+    bits.push('<span class="badge ba">'+overdue.length+' due to purge — connect the drive</span>');
   }
 
   el.innerHTML=bits.join(' ');

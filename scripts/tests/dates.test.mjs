@@ -13,7 +13,7 @@ const parseAndFormat = (raw) => {
   return d === null ? null : formatDateNZ(d);
 };
 
-export default ({ test, app, eq }) => {
+export default ({ test, app, eq, deepEq, ok }) => {
   test('formats a date in the NZ convention with a padded day', async () => {
     eq(await app(() => formatDateNZ(new Date(2026, 7, 5))), '05 Aug 2026');
     eq(await app(() => formatDateNZ(new Date(2026, 11, 31))), '31 Dec 2026');
@@ -67,17 +67,58 @@ export default ({ test, app, eq }) => {
     eq(await app((d) => addDaysToDateStr(d, 0), '2026-08-05'), '05 Aug 2026');
   });
 
-  test('CURRENT BEHAVIOUR: an unreadable date silently becomes today', async () => {
-    // Documented in docs/REVIEW-2026-08.md as finding 14. addDaysToDateStr
-    // falls back to `new Date()` when parseFlexibleDate returns null, so a
-    // typo in an invoice issue date does not error — it quietly re-dates the
-    // invoice to today. This test pins the behaviour as it stands so the fix
-    // is a deliberate, visible change rather than an accident.
+  // Formerly pinned here as "CURRENT BEHAVIOUR: an unreadable date silently
+  // becomes today" — docs/REVIEW-2026-08.md finding 14: a typo in an invoice
+  // issue date reached this fallback and quietly re-dated the invoice to
+  // today, with nothing telling the user it had happened.
+  //
+  // The fix is at the save boundary, not here: invoice-issue-date and
+  // statement-period-start/end are free-typed text (not a native
+  // <input type="date">), so validateDateField() now refuses to save when one
+  // of them is non-empty and unparseable — see saveInvoice()/saveStatement().
+  // addDaysToDateStr's own fallback is unchanged and stays correct for what
+  // it actually is: a low-level utility whose other callers already guarantee
+  // it a valid string (a fresh formatDateNZ(new Date()), or a value read back
+  // out of a record this app itself wrote). This case now pins that intent
+  // rather than flagging it as an open bug.
+  test('addDaysToDateStr falls back to today for a caller that hands it garbage directly', async () => {
     const expected = await app(() => {
       const d = new Date();
       d.setDate(d.getDate() + 7);
       return formatDateNZ(d);
     });
     eq(await app((d) => addDaysToDateStr(d, 7), 'not a date'), expected);
+  });
+
+  test('validateDateField accepts empty and any parseable format', async () => {
+    const r = await app(() => {
+      document.body.insertAdjacentHTML('beforeend', '<input id="test_date_field">');
+      const el = document.getElementById('test_date_field');
+      const results = ['', '2026-08-05', '5/8/2026', '5 Aug 2026'].map((v) => {
+        el.value = v;
+        return validateDateField('test_date_field', 'test field');
+      });
+      el.remove();
+      return results;
+    });
+    deepEq(r, [true, true, true, true]);
+  });
+
+  test('validateDateField refuses a non-empty unparseable date and alerts why', async () => {
+    const r = await app(() => {
+      document.body.insertAdjacentHTML('beforeend', '<input id="test_date_field" value="25 Jly 2026">'); // typo
+      const realAlert = window.alert;
+      let message = null;
+      window.alert = (m) => { message = m; };
+      try {
+        const ok = validateDateField('test_date_field', 'the issue date');
+        return { ok, message };
+      } finally {
+        window.alert = realAlert;
+        document.getElementById('test_date_field').remove();
+      }
+    });
+    eq(r.ok, false);
+    ok(/25 Jly 2026/.test(r.message) && /issue date/.test(r.message), r.message);
   });
 };

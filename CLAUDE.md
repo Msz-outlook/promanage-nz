@@ -18,12 +18,12 @@ signal and does not hand a third party a request on every page load.
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 6477 | The whole app — markup, CSS, PDF report modules, and every feature module |
-| `supabase/schema.sql` | 567 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention. Safe to re-run |
-| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v4'`), navigation falls back to cached `index.html` |
+| `index.html` | 7102 | The whole app — markup, CSS, PDF report modules, and every feature module |
+| `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
+| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v7'`), navigation falls back to cached `index.html` |
 | `vendor/` | — | supabase-js 2.111.0, jsPDF 2.5.2, jspdf-autotable 3.8.2, heic2any 0.0.4 |
 | `manifest.json` | — | PWA manifest |
-| `scripts/` | 983 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
+| `scripts/` | 1611 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
 | `.github/workflows/` | — | `ci.yml` runs both check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
 | `docs/REVIEW-2026-08.md` | — | Review ahead of scaling to ~6 properties: backup gap, photo sizing, quota projections |
 
@@ -368,7 +368,7 @@ runs exactly these:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (61 cases)
+node scripts/test.mjs           # the test suite (100 cases)
 ```
 
 `check-app.mjs` replaces the old manual `node --check` ritual and adds the
@@ -432,10 +432,21 @@ If the page throws while booting, the runner refuses to run rather than
 reporting a suite of misleading passes — hoisting would leave every function
 callable against a world that was never built.
 
-Two suites are named `CURRENT BEHAVIOUR:` — they pin bugs recorded in
-`docs/REVIEW-2026-08.md` (the silent `disbursement` fallback, and an
-unreadable date becoming today) so that fixing them is a deliberate, visible
-change rather than an accidental one. Update those cases as part of the fix.
+A case named `CURRENT BEHAVIOUR:` pins a bug recorded in
+`docs/REVIEW-2026-08.md` so that fixing it is a deliberate, visible change
+rather than an accidental one — currently `classifyStatementExpenseLine()`
+still defaulting an unrecognised line to `disbursement` (finding 13; mitigated
+by the "Unreviewed lines" panel on Financials, not changed, since redefining
+what counts as a disbursement is a bigger call than making the miscount
+visible). Update the case as part of any fix that changes it.
+
+The other pinned case — an unreadable date silently becoming today (finding
+14) — is fixed: `validateDateField()` now refuses to save a non-empty,
+unparseable `invoice-issue-date`/`invoice-due-date`/
+`statement-period-start`/`statement-period-end`. `dates.test.mjs` keeps a
+case pinning `addDaysToDateStr`'s own fallback, reframed as the intentional
+behaviour of a low-level utility whose other callers already guarantee it a
+valid string, not as a live bug.
 
 None of this replaces using the thing. Open `index.html` in a browser and
 exercise the affected module both online and offline (DevTools → Network →

@@ -91,4 +91,80 @@ export default ({ test, app, eq }) => {
     eq(await app(() => categorizeExpenseDescription('Management fee — ABC Property Ltd')),
        'Property management fees');
   });
+
+  // --- the "Unreviewed lines" panel: renderFinancials() end to end ---
+  //
+  // Fixes the CURRENT BEHAVIOUR case above from a silent miscount into a
+  // visible one. A line only belongs here if it matched NOTHING anywhere in
+  // the classifier — an ordinary, correctly-identified pass-through expense
+  // (a plumber's invoice matching 'repair') must not show up just because it
+  // landed in 'disbursement'; that classification is correct, not unreviewed.
+
+  test('a line matching no rule anywhere appears in the panel; a correctly-categorised disbursement does not', async () => {
+    const r = await app(async () => {
+      await dbClear('statements');
+      await dbPut('statements', {
+        id: 'test_fin1', statementNumber: 'STMT-TEST-0001', ownerName: 'Test Owner',
+        periodStart: '2026-01-01', periodEnd: '2026-01-31',
+        properties: [{
+          propertyId: '', propertyAddress: '12 Test St',
+          income: [{ description: 'Rent', amount: 500 }],
+          expenses: [
+            { description: 'Management fee', amount: 50 },                    // fee — excluded
+            { description: 'Lawn mowing', amount: 40 },                       // disbursement, categorised — excluded
+            { description: 'Some odd charge nobody wrote a rule for', amount: 15 } // disbursement, Other — included
+          ],
+          openingBalance: 0, totalIncome: 500, totalExpenses: 105, netAmount: 395, closingBalance: 395
+        }],
+        totalIncome: 500, totalExpenses: 105, netAmount: 395, closingBalance: 395,
+        synced: true, pendingDelete: false
+      });
+      try {
+        await renderFinancials();
+        return {
+          visible: document.getElementById('fin-unreviewed-card').style.display,
+          count: document.getElementById('fin-unreviewed-count').textContent,
+          rows: Array.from(document.querySelectorAll('#fin-unreviewed-body tr'))
+            .map((tr) => Array.from(tr.children).map((td) => td.textContent.trim()))
+        };
+      } finally {
+        await dbClear('statements');
+      }
+    });
+    eq(r.visible, 'block');
+    eq(r.count, '(1)');
+    eq(r.rows.length, 1);
+    eq(r.rows[0][0], 'STMT-TEST-0001');
+    eq(r.rows[0][1], '12 Test St');
+    eq(r.rows[0][2], 'Some odd charge nobody wrote a rule for');
+    eq(r.rows[0][3], '$15.00');
+  });
+
+  test('the panel stays hidden when every line matched a known category', async () => {
+    const r = await app(async () => {
+      await dbClear('statements');
+      await dbPut('statements', {
+        id: 'test_fin2', statementNumber: 'STMT-TEST-0002', ownerName: 'Test Owner',
+        periodStart: '2026-02-01', periodEnd: '2026-02-28',
+        properties: [{
+          propertyId: '', propertyAddress: '14 Test St',
+          income: [{ description: 'Rent', amount: 500 }],
+          expenses: [
+            { description: 'Management fee', amount: 50 },
+            { description: 'Lawn mowing', amount: 40 }
+          ],
+          openingBalance: 0, totalIncome: 500, totalExpenses: 90, netAmount: 410, closingBalance: 410
+        }],
+        totalIncome: 500, totalExpenses: 90, netAmount: 410, closingBalance: 410,
+        synced: true, pendingDelete: false
+      });
+      try {
+        await renderFinancials();
+        return document.getElementById('fin-unreviewed-card').style.display;
+      } finally {
+        await dbClear('statements');
+      }
+    });
+    eq(r, 'none');
+  });
 };

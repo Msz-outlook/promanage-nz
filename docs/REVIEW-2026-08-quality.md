@@ -24,12 +24,12 @@ right up until they aren't.
 
 | | Before | After |
 | --- | --- | --- |
-| Blocking JavaScript | 1,921 KB | **601 KB** |
-| First paint, throttled 3G phone | 11,788 ms | **5,292 ms** |
-| First paint, mid-range phone | 388 ms | **260 ms** |
+| Blocking JavaScript | 1,921 KB | **206 KB** |
+| First paint, throttled 3G phone | 11,788 ms | **2,792 ms** |
+| First paint, mid-range phone | 388 ms | **112 ms** |
 | Full sync, nothing changed, 300 ms RTT | 4,291 ms | **641 ms** |
 | Sync render tail, 6 properties | 38.6 ms | **5.4 ms** |
-| Test cases | 118 | **145** |
+| Test cases | 118 | **151** |
 
 The three headline findings:
 
@@ -38,9 +38,9 @@ The three headline findings:
    layer. Fixed.
 2. **A sync cost fourteen sequential HTTP round trips** even when nothing had
    changed, on every app open, focus and reconnect. Fixed.
-3. **69% of the JavaScript blocking the first paint was a HEIC converter** that
-   does nothing unless you generate an inspection PDF from an iPhone photo.
-   Fixed.
+3. **76% of the JavaScript blocking the first paint was never used on any
+   screen** — a HEIC converter, plus the entire PDF stack. None of it does
+   anything until a button is clicked. Both now load on demand. Fixed.
 
 What was *not* changed, deliberately: roughly 700 lines of duplicated module
 scaffolding. See [Redundant code](#redundant-code).
@@ -94,7 +94,7 @@ requests.
 > load-bearing, not incidental, and there is now a comment in
 > `fullSyncNowInner()` saying so.
 
-### Finding 2 — 69% of the blocking JavaScript was never used *(fixed)*
+### Finding 2 — 76% of the blocking JavaScript was never used *(fixed)*
 
 | Vendored library | Size | Share |
 | --- | --- | --- |
@@ -107,17 +107,23 @@ requests.
 `FindingsReport.normalizeToDataUrl`, and only when a photo is HEIC/HEIF. Nothing
 on any screen needs it until an inspection PDF is generated.
 
-It is now fetched on demand by `loadHeic2Any()`. **It remains in `SHELL_FILES`,
-so it is still pre-cached and HEIC conversion still works with no signal** —
-pre-caching a file and blocking the first paint on it are different things, and
-only the second was costing anything.
+It is now fetched on demand by `loadHeic2Any()`, and the whole PDF stack —
+`jspdf`, `jspdf-autotable` and the three report generators — by
+`loadPdfEngine()`, on the same reasoning: 438 KB that produces nothing until
+someone asks for a document. **supabase-js is the only library left blocking
+the first paint**, because auth runs at boot and nothing is on screen until it
+answers.
+
+**All four remain in `SHELL_FILES`, so they are still pre-cached and still work
+with no signal** — pre-caching a file and blocking the first paint on it are
+different things, and only the second was costing anything.
 
 | | Before | After |
 | --- | --- | --- |
-| Blocking JS | 1,921 KB | 601 KB |
-| FCP, desktop | 192 ms | 132 ms |
-| FCP, mid-range phone (4× CPU) | 388 ms | 260 ms |
-| FCP, slow phone on 3G (6× CPU, 1.6 Mbps) | 11,788 ms | 5,292 ms |
+| Blocking JS | 1,921 KB | 206 KB |
+| FCP, desktop | 192 ms | 56 ms |
+| FCP, mid-range phone (4× CPU) | 388 ms | 112 ms |
+| FCP, slow phone on 3G (6× CPU, 1.6 Mbps) | 11,788 ms | 2,792 ms |
 
 ### Finding 3 — a cold launch could hang on a weak connection *(fixed)*
 
@@ -353,7 +359,22 @@ user-triggered `await`s (`generateInspectionPDF`, `generateInvoicePDF`,
 `generateStatementPDF`, `archiveOneInspection`). **Nothing at boot depends on
 them.**
 
-### Recommended: one split, and it is small
+### Recommended: one split, and it is small — **now implemented**
+
+> **Implemented.** Blocking JavaScript went from 601 KB to **206 KB**, and
+> first paint on the throttled 3G profile from 5,292 ms to **2,792 ms**. The
+> prediction below said "~163 KB"; the real figure is 206 KB because that
+> estimate folded the 43 KB of inline report modules (part of `index.html`,
+> not a separate transfer) into the vendor total. Measured honestly the change
+> removed **438 KB of blocking bytes**: 395 KB of vendor JavaScript, plus
+> 43 KB off `index.html`, which fell from 370 KB to 333 KB.
+>
+> **The cost it introduces**, measured at the genuine worst case — slow 3G, no
+> service worker, nothing cached — is **3.2 s on the first PDF click of a
+> session**, paid once, on a screen where a document is already being awaited.
+> With the service worker active (every visit after the first) it is **74 ms**,
+> and every later click is 0 ms. Set against roughly 9 s removed from *every*
+> launch, on every device, forever.
 
 Move the three PDF modules out of `index.html` into a single
 `reports/pdf-reports.js`, and load it — together with `jspdf` and
@@ -471,9 +492,9 @@ PDF from a HEIC photo to exercise the lazy loader.
 
 ## Suggested order of work from here
 
-1. **Lazy-load the PDF machinery.** The largest remaining win by a wide margin:
-   601 KB → ~163 KB of blocking JavaScript, feasibility already confirmed, and
-   the `loadHeic2Any()` pattern to copy.
+1. ~~**Lazy-load the PDF machinery.**~~ **Done** — 601 KB → 206 KB blocking,
+   3G first paint 5,292 ms → 2,792 ms. See the section above for the measured
+   before/after and the first-click cost it trades against.
 2. **Collapse the six sync-banner wrappers.** Small, safe, self-contained.
 3. **Decide on Email Triage** — connect a mailbox or delete the 263 lines.
 4. **Collapse `pushXToBackend` / `syncPendingX`**, on its own, after lifting the

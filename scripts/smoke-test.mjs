@@ -37,26 +37,33 @@ check('no uncaught page errors', pageErrors.length === 0, pageErrors.join('\n   
 check('login gate is visible', await page.locator('#login-gate').isVisible());
 check('sign-in button is present', await page.locator('#login-btn').count() === 1);
 
-/* Every blocking vendored library loaded. Each is an independent <script src>
-   that can fail on its own, and a missing one has taken the whole app down
-   before. heic2any is deliberately absent from this list — see below. */
+/* supabase-js is now the ONLY library that blocks the first paint, because
+   auth runs at boot and nothing is on screen until it answers. It is an
+   independent <script src> that can fail on its own, and a missing one has
+   taken the whole app down before. */
+check(
+  'vendored supabase-js loaded',
+  await page.evaluate('typeof supabase === "object" && typeof supabase.createClient === "function"')
+);
+
+/* Everything else is the INVERSE assertion: it must NOT be loaded at boot.
+   Together these four were 1.76 MB — 76% of the JavaScript this app used to
+   block on — for output that does not exist until someone clicks a button.
+   Restoring a <script src> for any of them fails here rather than quietly
+   putting ~9s back on a cold 3G launch. */
 for (const [name, expr] of [
-  ['supabase-js', 'typeof supabase === "object" && typeof supabase.createClient === "function"'],
-  ['jsPDF', '!!(window.jspdf && window.jspdf.jsPDF)'],
-  ['jspdf-autotable', 'typeof (window.jspdf && window.jspdf.jsPDF && new window.jspdf.jsPDF().autoTable) === "function"']
+  ['heic2any', 'typeof heic2any === "undefined"'],
+  ['jsPDF', '!window.jspdf'],
+  ['FindingsReport', 'typeof window.FindingsReport === "undefined"'],
+  ['InvoiceReport', 'typeof window.InvoiceReport === "undefined"'],
+  ['StatementReport', 'typeof window.StatementReport === "undefined"']
 ]) {
-  check(`vendored ${name} loaded`, await page.evaluate(expr));
+  check(`${name} NOT loaded at boot`, await page.evaluate(expr));
 }
 
-/* heic2any is the inverse assertion: it must NOT be loaded at boot. It is
-   1.32 MB, nothing on any screen needs it until an inspection PDF is generated
-   from a HEIC photo, and blocking the first paint on it cost ~11.8s of a cold
-   3G launch. Re-adding a <script src> for it would fail here rather than
-   quietly making every launch slow again. */
-check('heic2any NOT loaded at boot', await page.evaluate('typeof heic2any === "undefined"'));
-
-/* …and that the on-demand path actually works, so the assertion above is
-   pinning a working lazy load rather than a broken one. */
+/* …and that each on-demand path actually works, so the assertions above are
+   pinning a working lazy load rather than a broken one. Without these, deleting
+   the loader entirely would pass every "NOT loaded at boot" check above. */
 check(
   'heic2any loads on demand',
   await page.evaluate(`(async () => {
@@ -70,10 +77,30 @@ check(
   })()`)
 );
 
-/* The three PDF modules each end their IIFE by assigning to global — proof
-   that script block 0 ran to completion, not merely that it was parsed. */
-for (const name of ['FindingsReport', 'InvoiceReport', 'StatementReport']) {
-  check(`${name} registered`, await page.evaluate(`typeof window.${name} === "object"`));
+/* loadPdfEngine() has to bring up all three files in the right order and end
+   with every global defined. Its own post-load guard would throw otherwise, so
+   this resolving at all is the assertion; the explicit checks below say which
+   piece is missing when it doesn't. autoTable is instantiated for real, since
+   jspdf-autotable registering itself is exactly what load order protects. */
+{
+  const r = await page.evaluate(`(async () => {
+    try { await loadPdfEngine(); } catch (e) { return { e: String(e) }; }
+    return {
+      jspdf: !!(window.jspdf && window.jspdf.jsPDF),
+      autoTable: typeof (window.jspdf && new window.jspdf.jsPDF().autoTable) === 'function',
+      findings: typeof window.FindingsReport === 'object',
+      invoice: typeof window.InvoiceReport === 'object',
+      statement: typeof window.StatementReport === 'object'
+    };
+  })()`);
+  check('PDF engine loads on demand', !r.e, r.e || '');
+  if (!r.e) {
+    check('  jsPDF defined after load', r.jspdf);
+    check('  autoTable registered on jsPDF', r.autoTable);
+    check('  FindingsReport registered', r.findings);
+    check('  InvoiceReport registered', r.invoice);
+    check('  StatementReport registered', r.statement);
+  }
 }
 
 /* The exact regression from the CLAUDE.md incident: a vendored library 404s,

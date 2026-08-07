@@ -4,26 +4,35 @@ Guidance for Claude Code working in this repository.
 
 ## What this is
 
-A property-management app for a Christchurch, NZ property manager. It is a
-**single-file offline-first PWA**: essentially all of the app lives in
-`index.html` (~7.5k lines), backed by Supabase (Postgres + Auth + private
-Storage) and IndexedDB for local state.
+A property-management app for a Christchurch, NZ property manager. It is an
+**offline-first PWA in essentially one file**: every feature module lives in
+`index.html` (~6.7k lines), with only the PDF generators split out into
+`reports/pdf-reports.js` — and that split was made to stop them blocking the
+first paint, not to tidy anything up. Backed by Supabase (Postgres + Auth +
+private Storage) and IndexedDB for local state.
 
 **There is no build step and no package.json.** You edit `index.html` directly
 and open it in a browser. There *is* a test suite, but it runs against the real
 page in a real browser rather than importing modules — see "Verifying a change".
-Third-party libraries are
-vendored into `vendor/` rather than pulled from a CDN, so the app works with no
-signal and does not hand a third party a request on every page load.
+Third-party libraries are vendored into `vendor/` rather than pulled from a CDN,
+so the app works with no signal and does not hand a third party a request on
+every page load.
+
+**Splitting a file here is a performance decision, not a housekeeping one.**
+The duplication is what makes this codebase expensive to change, and scattering
+it across more files does not reduce it — see the file-splitting section of
+`docs/REVIEW-2026-08-quality.md` before moving anything else out, and note that
+ES modules would break all 151 tests.
 
 ## Files
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 7752 | The whole app — markup, CSS, PDF report modules, and every feature module |
+| `index.html` | 6675 | The app — markup, CSS, and every feature module. **supabase-js is the only library it blocks on**; see "Loading strategy" |
+| `reports/pdf-reports.js` | 1111 | The three PDF generators (`FindingsReport`, `InvoiceReport`, `StatementReport`), lifted out of `index.html` and fetched by `loadPdfEngine()` when a report is asked for |
 | `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
-| `sw.js` | 187 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v9'`), navigation falls back to cached `index.html` |
-| `vendor/` | — | supabase-js 2.111.0, jsPDF 2.5.2, jspdf-autotable 3.8.2, heic2any 0.0.4 |
+| `sw.js` | 190 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v10'`), navigation falls back to cached `index.html` on a 3s deadline |
+| `vendor/` | — | supabase-js 2.111.0 (blocking), jsPDF 2.5.2 + jspdf-autotable 3.8.2 + heic2any 0.0.4 (all on demand) |
 | `manifest.json` | — | PWA manifest |
 | `scripts/` | 2400 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
 | `.github/workflows/` | — | `ci.yml` runs all three check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
@@ -48,21 +57,36 @@ grep -n "^\s*\(async \)\?function \|^const \|^let \|^/\* =" index.html
 What follows is the part grep cannot tell you: the order of the file, and what
 is unusual about each piece.
 
-### Block 0 — head and PDF report modules
+### Loading strategy — one blocking library, everything else on demand
 
-All CSS is inline, above `</head>`. Then the vendored `<script src>` tags
-(supabase-js, jsPDF, jspdf-autotable) — **not heic2any, which
-`FindingsReport.loadHeic2Any()` fetches on demand**; see "Things not to
-simplify".
+All CSS is inline, above `</head>`. Below it there is now exactly **one**
+`<script src>`: supabase-js. Auth runs at boot and nothing is on screen until
+it answers, so that one is load-bearing.
 
-Then three PDF generators: `FindingsReport` (inspection report),
-`InvoiceReport`, `StatementReport`. Each is an IIFE taking `global`, depends
-only on the globals loaded above it, and exposes a single
-`generate(data, options)`. Each ends by assigning to `global.<Name>`, which is
-what the smoke test checks — proof the block ran to completion, not merely that
-it parsed.
+Everything else is fetched when it is first needed. Between them they were 76%
+of the JavaScript this app used to block the first paint, for output that does
+not exist until a button is clicked:
 
-### Block 1 — the app
+| Fetched by | What | Size |
+| --- | --- | --- |
+| `FindingsReport.loadHeic2Any()` | heic2any | 1.32 MB |
+| `loadPdfEngine()` | jsPDF, jspdf-autotable, `reports/pdf-reports.js` | 438 KB |
+
+First paint on a throttled 3G phone went from **11.8s to 2.8s**. All four files
+stay in `SHELL_FILES`, so they are still pre-cached and still work offline —
+pre-caching a file and blocking the first paint on it are different things.
+
+`reports/pdf-reports.js` holds the three generators: `FindingsReport`
+(inspection report), `InvoiceReport`, `StatementReport`. Each is an IIFE taking
+`global`, exposes a single `generate(data, options)`, and ends by assigning to
+`global.<Name>` — which is what the smoke test checks after calling
+`loadPdfEngine()`, proof the file ran to completion rather than merely parsing.
+
+**`index.html` is now a single inline script block.** It used to be two, and
+`check-app.mjs` still checks every block it finds, so adding another is fine —
+but the "block 0 / block 1" split referred to throughout this file is gone.
+
+### The app block
 
 In file order:
 
@@ -147,8 +171,8 @@ value, so running them on a sync would clear a half-filled form.
 
 ## Top-level code in the script block
 
-The whole app is two inline `<script>` blocks. **A statement that throws at the
-top level of one abandons every line after it in that block** — and because the
+The whole app is one inline `<script>` block. **A statement that throws at its
+top level abandons every line after it** — and because the
 markup is already on screen and function declarations are hoisted before any
 statement runs, the page looks completely normal while nothing behind it is
 wired up. Clicks reach handlers that exist but operate on a half-built world.
@@ -268,13 +292,28 @@ When adding a new vendored library, add its guard at the same time as the
   inspections and invoices carry a foreign key to `properties`. Do not
   "consistency-fix" the pushes to match the pulls.
 - **The vendored libraries.** Do not swap them back to CDN `<script>` tags.
-- **`heic2any` loaded on demand, not as a `<script src>`.** It is 1.32 MB —
-  69% of the JavaScript that used to block the first paint — for a library that
-  does nothing until an inspection PDF is built from a HEIC photo. It stays in
-  `SHELL_FILES` so it is still pre-cached and still works offline; pre-caching
-  a file and blocking on it are different things. `smoke-test.mjs` asserts it is
-  **absent** at boot, so re-adding a tag fails rather than quietly costing every
-  launch ~6s on a slow connection.
+- **`heic2any` and the PDF engine loaded on demand, not as `<script src>`.**
+  Between them, 1.76 MB — 76% of the JavaScript that used to block the first
+  paint — for code that does nothing until a button is clicked. heic2any is
+  fetched by `FindingsReport.loadHeic2Any()`; jsPDF, jspdf-autotable and
+  `reports/pdf-reports.js` by `loadPdfEngine()`. All four stay in `SHELL_FILES`
+  so they are still pre-cached and still work offline; pre-caching a file and
+  blocking on it are different things. `smoke-test.mjs` asserts every one is
+  **absent** at boot *and* that each on-demand path works, so re-adding a tag
+  fails rather than quietly putting ~9s back on a cold 3G launch — and deleting
+  a loader fails too, rather than passing the absence checks.
+- **The order inside `PDF_ENGINE_FILES`, and that `loadPdfEngine()` awaits each
+  file in turn.** `jspdf-autotable` patches jsPDF's prototype to add
+  `doc.autoTable`, so evaluating it first registers nothing and every table in
+  every report silently disappears — a broken PDF, not an error. `Promise.all`
+  here would be a race that passes most of the time.
+- **`archiveOneInspection()` returning before it creates a folder when
+  `loadPdfEngine()` fails.** It uses `loadPdfEngine()` directly rather than
+  `ensurePdfEngine()` — no alert per inspection, a reason string for the
+  summary — and it must fail *closed*. An inspection marked archived is one
+  whose photos become eligible for permanent deletion 180 days later, so a
+  report that was never generated must never look like one that was.
+  `pdf-engine.test.mjs` pins this, and the case fails if the guard is removed.
 - **The 3s deadline on the service worker's navigation fetch.** Network-first
   with no timeout is not the same as network-first: "unreachable" rejects,
   "answering very slowly" does not, and the second one hung a cold launch on a
@@ -316,13 +355,14 @@ runs exactly these:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (145 cases)
+node scripts/test.mjs           # the test suite (151 cases)
 ```
 
 `check-app.mjs` replaces the old manual `node --check` ritual and adds the
 assertions that ritual could not make: that every `<script src>` exists on
-disk, that `SHELL_FILES` in `sw.js` covers them, and that no service-role key
-has landed in `index.html`. Pass `--base origin/main` (CI does this on pull
+disk, that every lazily-loaded `vendor/` or `reports/` path does too, that
+`SHELL_FILES` in `sw.js` covers them, and that no service-role key has landed
+in `index.html`. Pass `--base origin/main` (CI does this on pull
 requests) to also assert that a change to a shell file came with a `CACHE_NAME`
 bump — installed clients keep serving the old shell otherwise.
 
@@ -336,7 +376,7 @@ It checks **side effects of top-level statements**, not the presence of
 functions — declarations are hoisted, so `typeof saveInspection === 'function'`
 stays true even when the block defining it threw on its first line. The last
 assertion is that the service worker registered, which is the final top-level
-statement in block 1: if that ran, the whole block ran. This is the specific
+statement in the app block: if that ran, the whole block ran. This is the specific
 regression described in "Top-level code in the script block" above, and
 removing a file from `vendor/` is a quick way to confirm the test still
 catches it.

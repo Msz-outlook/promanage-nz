@@ -10,7 +10,7 @@
 // version), update SHELL_FILES below and bump CACHE_NAME so installed clients
 // discard the stale copy instead of serving it forever.
 
-const CACHE_NAME = 'promanage-shell-v9';
+const CACHE_NAME = 'promanage-shell-v10';
 
 // How long a cold launch waits for the network before serving the cached shell.
 // Navigation is network-first so a deploy is picked up promptly, but "the
@@ -31,7 +31,10 @@ const SHELL_FILES = [
   './vendor/supabase-js-2.111.0.umd.js',
   './vendor/jspdf-2.5.2.umd.min.js',
   './vendor/jspdf-autotable-3.8.2.min.js',
-  './vendor/heic2any-0.0.4.min.js'
+  './vendor/heic2any-0.0.4.min.js',
+  // Loaded on demand by loadPdfEngine() in index.html, not by a <script src>.
+  // Still pre-cached here: that is what keeps offline PDF generation working.
+  './reports/pdf-reports.js'
 ];
 
 // Absolute URLs for the shell, resolved once against the worker's scope so

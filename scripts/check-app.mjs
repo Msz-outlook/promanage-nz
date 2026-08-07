@@ -30,15 +30,31 @@ const BASE_REF = baseIndex !== -1 ? process.argv[baseIndex + 1] : null;
 const indexHtml = read('index.html');
 const swJs = read('sw.js');
 
+/* index.html with every HTML comment blanked out, for the checks below that
+   scan for markup or paths.
+ *
+ * index.html documents its own loading strategy in prose, and that prose
+ * naturally contains things like "<script src>" and vendor paths. Scanning the
+ * raw file, the block-parse check matched a tag named inside a comment as a
+ * real opening tag, swallowed everything to the next closing tag, and reported
+ * a syntax error on a line holding nothing but English. A comment that
+ * mentions a tag must not behave like one.
+ *
+ * Comment bodies become whitespace rather than disappearing, so every line
+ * number this script reports still maps to the same line of index.html. */
+const INDEX_CODE = indexHtml.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ' '));
+
 /* ------------------------------------------------------------------ *
  * 1. Both inline <script> blocks parse.
  *
  * The whole app is two inline blocks. A syntax error in either one is a
  * blank app for every user, and there is no build step that would have
  * caught it. This is the manual ritual from CLAUDE.md, made non-optional.
+ *
+ * Uses INDEX_CODE (comments blanked) — see its definition above for why.
  * ------------------------------------------------------------------ */
 {
-  const blocks = [...indexHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)];
+  const blocks = [...INDEX_CODE.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)];
 
   if (blocks.length === 0) {
     fail('inline scripts parse', 'found no inline <script> blocks — has the markup changed shape?');
@@ -77,7 +93,7 @@ const swJs = read('sw.js');
  * independently and silently. A missing one took the whole app down once
  * already — see CLAUDE.md, "Top-level code in the script block".
  * ------------------------------------------------------------------ */
-const scriptSrcs = [...indexHtml.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)].map((m) => m[1]);
+const scriptSrcs = [...INDEX_CODE.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)].map((m) => m[1]);
 
 if (scriptSrcs.length === 0) {
   fail('<script src> tags present', 'found none — the vendored libraries should be here');
@@ -89,31 +105,39 @@ if (scriptSrcs.length === 0) {
 }
 
 /* ------------------------------------------------------------------ *
- * 2b. Vendored files loaded from JS rather than a <script src> exist too.
+ * 2b. Scripts loaded from JS rather than a <script src> exist too.
  *
- * heic2any is 1.32 MB and is fetched on demand by FindingsReport instead of
- * blocking the first paint, so check 2 above can no longer see it — there is
- * no tag to find. Without this, renaming or re-versioning the file would pass
- * every check here and only surface as a failed HEIC conversion, months later,
- * on the one inspection that happened to be photographed with an iPhone.
+ * Most of this app's JavaScript is now fetched on demand rather than blocking
+ * the first paint: heic2any by FindingsReport, and jsPDF + jspdf-autotable +
+ * reports/pdf-reports.js by loadPdfEngine(). Check 2 above cannot see any of
+ * them — there is no tag to find. Without this, renaming or re-versioning one
+ * would pass every check here and surface only as a dead PDF button, or as a
+ * failed HEIC conversion months later on the one inspection that happened to
+ * be photographed with an iPhone.
  *
- * Matches any "vendor/…" string literal in the file, so a new lazily-loaded
- * library is covered the moment its path is written, with nothing to remember.
+ * Matches any "vendor/…" or "reports/…" string literal in the file, so a newly
+ * lazily-loaded script is covered the moment its path is written, with nothing
+ * to remember.
  * ------------------------------------------------------------------ */
 {
   const tagged = new Set(
-    [...indexHtml.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)].map((m) => m[1])
+    [...INDEX_CODE.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)].map((m) => m[1])
   );
   const referenced = [
-    ...new Set([...indexHtml.matchAll(/["'](vendor\/[A-Za-z0-9._-]+\.js)["']/g)].map((m) => m[1]))
+    ...new Set(
+      [...INDEX_CODE.matchAll(/["']((?:vendor|reports)\/[A-Za-z0-9._-]+\.js)["']/g)].map((m) => m[1])
+    )
   ].filter((p) => !tagged.has(p));
 
   if (referenced.length === 0) {
-    ok('lazily-loaded vendor files exist', 'none referenced from JS');
+    fail(
+      'lazily-loaded scripts exist',
+      'no lazily-loaded script paths found in index.html — heic2any and the PDF engine are both supposed to be loaded this way, so this check has probably stopped matching'
+    );
   } else {
     for (const src of referenced) {
-      if (existsSync(join(ROOT, src))) ok('lazily-loaded vendor file exists', src);
-      else fail('lazily-loaded vendor file exists', `index.html loads ${src} at runtime, which is not in the repo`);
+      if (existsSync(join(ROOT, src))) ok('lazily-loaded script exists', src);
+      else fail('lazily-loaded script exists', `index.html loads ${src} at runtime, which is not in the repo`);
     }
   }
 }

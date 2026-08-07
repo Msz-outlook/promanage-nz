@@ -89,6 +89,36 @@ if (scriptSrcs.length === 0) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 2b. Vendored files loaded from JS rather than a <script src> exist too.
+ *
+ * heic2any is 1.32 MB and is fetched on demand by FindingsReport instead of
+ * blocking the first paint, so check 2 above can no longer see it — there is
+ * no tag to find. Without this, renaming or re-versioning the file would pass
+ * every check here and only surface as a failed HEIC conversion, months later,
+ * on the one inspection that happened to be photographed with an iPhone.
+ *
+ * Matches any "vendor/…" string literal in the file, so a new lazily-loaded
+ * library is covered the moment its path is written, with nothing to remember.
+ * ------------------------------------------------------------------ */
+{
+  const tagged = new Set(
+    [...indexHtml.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)].map((m) => m[1])
+  );
+  const referenced = [
+    ...new Set([...indexHtml.matchAll(/["'](vendor\/[A-Za-z0-9._-]+\.js)["']/g)].map((m) => m[1]))
+  ].filter((p) => !tagged.has(p));
+
+  if (referenced.length === 0) {
+    ok('lazily-loaded vendor files exist', 'none referenced from JS');
+  } else {
+    for (const src of referenced) {
+      if (existsSync(join(ROOT, src))) ok('lazily-loaded vendor file exists', src);
+      else fail('lazily-loaded vendor file exists', `index.html loads ${src} at runtime, which is not in the repo`);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * 3. sw.js SHELL_FILES covers those scripts, and every entry exists.
  *
  * A vendored file that index.html loads but SHELL_FILES omits is not

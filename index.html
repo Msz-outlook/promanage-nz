@@ -188,7 +188,12 @@ textarea:focus{border-color:var(--text)}
 <script src="vendor/supabase-js-2.111.0.umd.js"></script>
 <script src="vendor/jspdf-2.5.2.umd.min.js"></script>
 <script src="vendor/jspdf-autotable-3.8.2.min.js"></script>
-<script src="vendor/heic2any-0.0.4.min.js"></script>
+<!-- heic2any is deliberately NOT loaded here. It is 1.32 MB — more than the
+     other three libraries combined — and nothing on any screen needs it until
+     someone generates an inspection PDF from a HEIC photo. FindingsReport
+     fetches it on demand (loadHeic2Any). It stays in SHELL_FILES in sw.js so
+     it is still pre-cached and still works offline; what changed is that the
+     first paint no longer waits for it. -->
 <script>
 /* ---- Findings Report generator (embedded, single-file) ---- */
 /*
@@ -199,10 +204,20 @@ textarea:focus{border-color:var(--text)}
  * generator (generate_report.py): same A4 layout, same 3:4 portrait crop, same
  * EXIF-orientation handling, same bidirectional finding <-> photo links.
  *
- * Depends on three globals, loaded via <script> before this file:
+ * Depends on two globals, loaded via <script> before this file:
  *   - jsPDF            (window.jspdf.jsPDF)
  *   - jspdf-autotable  (registers doc.autoTable)
+ *
+ * And loads one on demand:
  *   - heic2any         (window.heic2any) — only used if a photo is HEIC/HEIF
+ *
+ * heic2any is 1.32 MB, which was 69% of the 1.92 MB of JavaScript this app
+ * blocked on before it could paint anything — for a library that does nothing
+ * unless someone generates an inspection PDF from an iPhone photo. It is now
+ * fetched by loadHeic2Any() at the top of generate() instead. The service
+ * worker still pre-caches it (SHELL_FILES in sw.js), so the offline path is
+ * unchanged: pre-caching a file and blocking the first paint on it are
+ * different things, and only the second one was buying us anything.
  *
  * Public API:
  *   await FindingsReport.generate(data, options)
@@ -267,6 +282,34 @@ textarea:focus{border-color:var(--text)}
     if (t.indexOf("heic") !== -1 || t.indexOf("heif") !== -1) return true;
     var n = (name || "").toLowerCase();
     return /\.(heic|heif)$/.test(n);
+  }
+
+  /* Loads heic2any the first time a report is generated, then never again.
+     The path must stay in sync with SHELL_FILES in sw.js — check-app.mjs
+     asserts this file exists on disk, which is what stops the path rotting
+     silently now that there is no <script src> for it to check.
+
+     The promise is cached including its rejection: a second attempt after a
+     genuine failure would fail the same way, and re-injecting a script tag per
+     photo is worse than reporting it once. */
+  var heic2anyPromise = null;
+  var HEIC2ANY_SRC = "vendor/heic2any-0.0.4.min.js";
+
+  function loadHeic2Any() {
+    if (global.heic2any) return Promise.resolve(global.heic2any);
+    if (heic2anyPromise) return heic2anyPromise;
+    heic2anyPromise = new Promise(function (resolve, reject) {
+      var el = document.createElement("script");
+      el.src = HEIC2ANY_SRC;
+      el.async = true;
+      el.onload = function () {
+        if (global.heic2any) resolve(global.heic2any);
+        else reject(new Error(HEIC2ANY_SRC + " loaded but did not define heic2any"));
+      };
+      el.onerror = function () { reject(new Error(HEIC2ANY_SRC + " failed to load")); };
+      document.head.appendChild(el);
+    });
+    return heic2anyPromise;
   }
 
   // Center-crop source dimensions to a target width/height ratio (cover fit),
@@ -361,6 +404,15 @@ textarea:focus{border-color:var(--text)}
 
     if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
     var JsPDF = global.jspdf.jsPDF;
+
+    // Best-effort: a HEIC photo needs this, every other format does not, and
+    // we cannot tell which we have until each blob is inspected. Failing to
+    // load it must not fail the whole report — normalizeToDataUrl() already
+    // handles the library being absent, and says so for the one photo that
+    // actually needed it.
+    await loadHeic2Any().catch(function (err) {
+      console.warn("[report] heic2any could not be loaded — HEIC photos will fail to convert", err);
+    });
 
     var title = data.title || "Findings Report";
     var meta = data.meta || {};
@@ -2964,21 +3016,42 @@ function mapRemoteStatement(row){
   };
 }
 
+/* The seven pulls run concurrently, and that is a deliberate difference from
+   the pushes in fullSyncNowInner(), which must stay sequential.
+
+   Pulling is per-table and independent: each pullAndMerge() reads one remote
+   table, merges it into one local store, and keeps its own cursor. Nothing it
+   does depends on another table having been pulled first, and it catches its
+   own errors, so one table failing can't reject the others.
+
+   Run in series it was the slowest thing the app does. A table needs two
+   requests to be walked (an empty page is what proves the walk reached the
+   end — see fetchRemoteTablePaged), so a sync with nothing changed still cost
+   fourteen round trips end to end: measured at 4.3s against a 300ms mobile
+   latency, on a six-property portfolio, every time the app was opened, focused
+   or reconnected. Concurrently it is one round trip's worth of waiting.
+
+   The PUSH side is ordered for a reason and is not a candidate for the same
+   treatment: tenants, maintenance, inspections and invoices all carry a
+   foreign key to properties, so a property has to land on the server before
+   anything referencing it. */
 async function pullAllAndMerge(options){
   options=options||{};
-  await pullAndMerge('properties','properties',mapRemoteProperty,options);
-  await pullAndMerge('tenants','tenants',mapRemoteTenant,options);
-  await pullAndMerge('maintenance','maintenance',mapRemoteMaintenance,options);
-  await pullAndMerge('inspections','inspections',mapRemoteInspection,options);
-  await pullAndMerge('invoices','invoices',mapRemoteInvoice,options);
-  await pullAndMerge('statements','statements',mapRemoteStatement,options);
-  // The activity log is the one table pulled through a retention window. The
-  // filter has to match pruneLocalActivityLog() exactly: if the pull reached
-  // further back than the local prune does, a full pull would re-download the
-  // rows the prune had just removed and the two would undo each other on
-  // every sync, forever.
-  await pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
-    {...options,minCreatedAt:activityLogCutoffISO()});
+  await Promise.all([
+    pullAndMerge('properties','properties',mapRemoteProperty,options),
+    pullAndMerge('tenants','tenants',mapRemoteTenant,options),
+    pullAndMerge('maintenance','maintenance',mapRemoteMaintenance,options),
+    pullAndMerge('inspections','inspections',mapRemoteInspection,options),
+    pullAndMerge('invoices','invoices',mapRemoteInvoice,options),
+    pullAndMerge('statements','statements',mapRemoteStatement,options),
+    // The activity log is the one table pulled through a retention window. The
+    // filter has to match pruneLocalActivityLog() exactly: if the pull reached
+    // further back than the local prune does, a full pull would re-download the
+    // rows the prune had just removed and the two would undo each other on
+    // every sync, forever.
+    pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
+      {...options,minCreatedAt:activityLogCutoffISO()})
+  ]);
   await renderPropertiesList();  updatePropSyncBanner();
   await renderTenantsList();     updateTenantSyncBanner();
   await renderMaintenanceList(); updateMaintSyncBanner();

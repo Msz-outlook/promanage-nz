@@ -37,15 +37,38 @@ check('no uncaught page errors', pageErrors.length === 0, pageErrors.join('\n   
 check('login gate is visible', await page.locator('#login-gate').isVisible());
 check('sign-in button is present', await page.locator('#login-btn').count() === 1);
 
-/* Every vendored library loaded. Each is an independent <script src> that can
-   fail on its own, and a missing one has taken the whole app down before. */
+/* Every blocking vendored library loaded. Each is an independent <script src>
+   that can fail on its own, and a missing one has taken the whole app down
+   before. heic2any is deliberately absent from this list — see below. */
 for (const [name, expr] of [
   ['supabase-js', 'typeof supabase === "object" && typeof supabase.createClient === "function"'],
   ['jsPDF', '!!(window.jspdf && window.jspdf.jsPDF)'],
-  ['heic2any', 'typeof heic2any === "function"']
+  ['jspdf-autotable', 'typeof (window.jspdf && window.jspdf.jsPDF && new window.jspdf.jsPDF().autoTable) === "function"']
 ]) {
   check(`vendored ${name} loaded`, await page.evaluate(expr));
 }
+
+/* heic2any is the inverse assertion: it must NOT be loaded at boot. It is
+   1.32 MB, nothing on any screen needs it until an inspection PDF is generated
+   from a HEIC photo, and blocking the first paint on it cost ~11.8s of a cold
+   3G launch. Re-adding a <script src> for it would fail here rather than
+   quietly making every launch slow again. */
+check('heic2any NOT loaded at boot', await page.evaluate('typeof heic2any === "undefined"'));
+
+/* …and that the on-demand path actually works, so the assertion above is
+   pinning a working lazy load rather than a broken one. */
+check(
+  'heic2any loads on demand',
+  await page.evaluate(`(async () => {
+    const el = document.createElement('script');
+    el.src = 'vendor/heic2any-0.0.4.min.js';
+    const ok = await new Promise((res) => {
+      el.onload = () => res(true); el.onerror = () => res(false);
+      document.head.appendChild(el);
+    });
+    return ok && typeof heic2any === 'function';
+  })()`)
+);
 
 /* The three PDF modules each end their IIFE by assigning to global — proof
    that script block 0 ran to completion, not merely that it was parsed. */

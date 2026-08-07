@@ -311,10 +311,122 @@ real and haven't changed. The thing to watch is not the line count of
 expensive. When a new module means copying 60 lines of sync scaffolding for the
 eighth time, that is the signal to collapse it, not to adopt a bundler.
 
-If the file does eventually need splitting, the low-risk seam is the three PDF
-report modules (lines 224–1220). They are already self-contained IIFEs with a
-single entry point each and no dependency on app state, so they could move to
-`vendor/`-style separate files with no restructuring at all.
+---
+
+## Should the app be spread over multiple files?
+
+**Yes — for exactly one reason, and it is not maintainability.** Split to make
+code lazy-loadable. Do not split to make it tidier.
+
+### The thing splitting does not fix
+
+Start here, because it is the assumption most likely to be wrong: **splitting
+files does not remove duplication.** The seven near-identical
+`pushXToBackend`/`syncPendingX` pairs are not duplicated because they lack file
+boundaries — they are duplicated because they lack an abstraction. Putting each
+one in `invoices.js`, `tenants.js` and so on leaves exactly the same 390 lines,
+now harder to compare side by side. Collapsing them into a table-driven helper
+works just as well inside one file and is the change actually worth making.
+
+So the maintainability case for splitting is weaker than it looks. What is left
+is a real performance case.
+
+### What the payload is actually made of
+
+After this review, 601 KB of JavaScript still blocks the first paint:
+
+| | Size | Needed at boot? |
+| --- | --- | --- |
+| `jspdf` | 357 KB | **No** — only to generate a PDF |
+| `jspdf-autotable` | 38 KB | **No** — same |
+| PDF report modules (in `index.html`, ~1,083 lines) | 43 KB | **No** — same |
+| `supabase-js` | 206 KB | Yes — auth runs at boot |
+
+**438 KB — 73% of what still blocks — exists to generate PDFs**, which happens
+when someone clicks a button, not on every launch. That is a bigger lever than
+anything left in this review, and it is the same pattern already proven here on
+`heic2any`.
+
+Feasibility is confirmed, not assumed: `FindingsReport`, `InvoiceReport` and
+`StatementReport` are touched at exactly four call sites, all inside
+user-triggered `await`s (`generateInspectionPDF`, `generateInvoicePDF`,
+`generateStatementPDF`, `archiveOneInspection`). **Nothing at boot depends on
+them.**
+
+### Recommended: one split, and it is small
+
+Move the three PDF modules out of `index.html` into a single
+`reports/pdf-reports.js`, and load it — together with `jspdf` and
+`jspdf-autotable` — on demand, the way `loadHeic2Any()` already does.
+
+- Blocking JS: **601 KB → ~163 KB**, a further 73% cut.
+- `index.html` drops from 7,752 to ~6,670 lines as a side effect.
+- The PDF button gets slower the first time it is pressed, once per session,
+  on a screen where the user is already waiting for a document to render.
+- All three files stay in `SHELL_FILES`, so offline PDF generation is unaffected.
+
+Cost: the smoke test's `FindingsReport registered` assertions must be inverted
+the way `heic2any`'s were, and `check-app.mjs`'s existing lazily-loaded-vendor
+check already covers the new path.
+
+### Not recommended: splitting the app itself
+
+If `index.html` keeps growing, block 1 could be split into several **classic**
+`<script src>` files. This is the safe form, and it is worth knowing why:
+classic scripts share one global scope, so `escapeHtml` defined in one file is
+callable from another *and* stays reachable as a bare identifier inside
+`page.evaluate()`. The 145-case test suite keeps working untouched.
+
+**ES modules would break all 145 tests.** Module top-level declarations are
+module-scoped, not properties of `window`, so `app(() => escapeHtml(...))` stops
+resolving — as does `page-render.test.mjs` reading `staleModules` and swapping
+entries in `MODULE_RENDERERS`. You would have to either export everything to
+`window` by hand (defeating the point) or rewrite the runner to import modules,
+which tests a copy rather than the page. `CLAUDE.md` records that this is the
+whole reason the runner is browser-based.
+
+Even in its safe form, do the deduplication first. Splitting an eight-fold
+duplication across eight files makes it permanent.
+
+### Risk register
+
+| Risk | Severity | Notes |
+| --- | --- | --- |
+| **ES modules break the test suite** | **High** | 145 cases stop resolving bare identifiers. This is the single strongest argument against a module refactor |
+| **More `<script src>` = more independent silent failures** | **Medium** | Each tag fails on its own, and a missing one has already taken this app down once — see CLAUDE.md. `check-app.mjs` and `SHELL_FILES` mitigate it, but the surface grows with every file |
+| **A build step costs "the repo is the deploy root"** | **Medium** | Push-and-it's-live is a real property of this project. A bundler means CI has to build before Pages serves, and adds a class of failure that currently cannot happen |
+| **More files, more `CACHE_NAME` discipline** | **Low** | Every new shell file must join `SHELL_FILES` and every change must bump the cache. Already enforced by `check-app.mjs --base` |
+| **More requests on a cold load** | **Low** | HTTP/2 multiplexes, and the service worker pre-caches after the first visit |
+| **Lazy PDF: first click is slower** | **Low** | ~395 KB fetched once per session, on a screen where a document is already being awaited. Pre-cached, so offline is unaffected |
+
+### Pros and cons, plainly
+
+**Pros of splitting**
+
+- Rarely-used code can be lazy-loaded — the only argument that pays measurably
+  here, and it is worth 438 KB.
+- A throw at the top of one file no longer abandons the rest of the app; the
+  blast radius of the failure mode CLAUDE.md documents gets smaller.
+- Smaller diffs, and review that fits on a screen.
+
+**Cons of splitting**
+
+- Does nothing about the duplication, which is the actual maintainability
+  problem.
+- Multiplies the independent-load-failure surface that has already bitten this
+  project once.
+- With ES modules specifically: costs the test suite its design.
+- With a bundler: costs the deploy model.
+- Merge-conflict and parallel-work benefits do not apply — there is one
+  developer.
+
+### Verdict
+
+Split the PDF machinery out and lazy-load it: **438 KB, verified feasible,
+same pattern as `heic2any`.** Leave the rest of `index.html` in one piece and
+spend the effort on the ~700 lines of duplication instead. Revisit only if a
+second developer joins or the file passes ~10k lines — and if you do, use
+classic scripts, not ES modules.
 
 ---
 
@@ -359,9 +471,15 @@ PDF from a HEIC photo to exercise the lazy loader.
 
 ## Suggested order of work from here
 
-1. **Collapse the six sync-banner wrappers.** Small, safe, self-contained.
-2. **Decide on Email Triage** — connect a mailbox or delete the 263 lines.
-3. **Collapse `pushXToBackend` / `syncPendingX`**, on its own, after lifting the
+1. **Lazy-load the PDF machinery.** The largest remaining win by a wide margin:
+   601 KB → ~163 KB of blocking JavaScript, feasibility already confirmed, and
+   the `loadHeic2Any()` pattern to copy.
+2. **Collapse the six sync-banner wrappers.** Small, safe, self-contained.
+3. **Decide on Email Triage** — connect a mailbox or delete the 263 lines.
+4. **Collapse `pushXToBackend` / `syncPendingX`**, on its own, after lifting the
    property-delete 409 handling out first.
-4. Leave the unpaginated Dashboard and Compliance cards alone until there is a
+5. Leave the unpaginated Dashboard and Compliance cards alone until there is a
    portfolio that makes them slow. There isn't one, and there won't be soon.
+
+Not on this list, deliberately: splitting `index.html` for its own sake, and
+anything involving a bundler. See the section above for why.

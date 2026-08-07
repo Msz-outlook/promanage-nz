@@ -10,7 +10,18 @@
 // version), update SHELL_FILES below and bump CACHE_NAME so installed clients
 // discard the stale copy instead of serving it forever.
 
-const CACHE_NAME = 'promanage-shell-v8';
+const CACHE_NAME = 'promanage-shell-v10';
+
+// How long a cold launch waits for the network before serving the cached shell.
+// Navigation is network-first so a deploy is picked up promptly, but "the
+// network is unreachable" and "the network is answering, very slowly" are
+// different failures and only the first one rejects. On a weak connection —
+// which for this app means standing inside someone's rental — fetch() neither
+// resolves nor rejects for as long as the browser is willing to wait, and the
+// app hangs on a blank page with a perfectly good copy of itself in the cache.
+// Three seconds is longer than any healthy connection needs and far shorter
+// than the browser's own timeout.
+const NAVIGATION_NETWORK_TIMEOUT_MS = 3000;
 
 const SHELL_FILES = [
   './index.html',
@@ -20,7 +31,10 @@ const SHELL_FILES = [
   './vendor/supabase-js-2.111.0.umd.js',
   './vendor/jspdf-2.5.2.umd.min.js',
   './vendor/jspdf-autotable-3.8.2.min.js',
-  './vendor/heic2any-0.0.4.min.js'
+  './vendor/heic2any-0.0.4.min.js',
+  // Loaded on demand by loadPdfEngine() in index.html, not by a <script src>.
+  // Still pre-cached here: that is what keeps offline PDF generation working.
+  './reports/pdf-reports.js'
 ];
 
 // Absolute URLs for the shell, resolved once against the worker's scope so
@@ -99,6 +113,44 @@ async function cacheFirstRevalidate(request) {
   }
 }
 
+/* Network-first with a deadline, falling back to the cached shell.
+ *
+ * The timer does NOT abort the request — the network copy is still worth
+ * having, so it keeps running and refreshes the cache whenever it lands, ready
+ * for the next launch. All the deadline decides is how long the user waits
+ * before being handed the copy we already have.
+ *
+ * Like every other branch in this file, every path here must resolve to a
+ * Response: respondWith() on a promise resolving to undefined fails the
+ * navigation outright, which for a cold launch is a blank page.
+ */
+async function navigateWithTimeout(request) {
+  const cache = await caches.open(CACHE_NAME);
+
+  const network = fetch(request)
+    .then((response) => {
+      if (response && response.ok) cache.put(INDEX_URL, response.clone());
+      return response;
+    });
+  // The network arm can reject (offline). Swallow it here so the race below
+  // settles on the timeout rather than on an unhandled rejection, and so a
+  // rejection with nothing cached still falls through to the check underneath.
+  const networkOrNull = network.catch(() => null);
+
+  const timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), NAVIGATION_NETWORK_TIMEOUT_MS));
+
+  const winner = await Promise.race([networkOrNull, timeout]);
+  if (winner && winner !== 'timeout') return winner;
+
+  // Either the network lost the race or it failed. Prefer the cached shell.
+  const cached = await cache.match(INDEX_URL);
+  if (cached) return cached;
+
+  // Nothing cached — we have no choice but to wait for the network after all.
+  const late = await networkOrNull;
+  return late || Response.error();
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
 
@@ -115,17 +167,7 @@ self.addEventListener('fetch', (event) => {
   // back to the cached index.html — this is what makes a cold offline launch
   // (and the installed PWA icon) work at all.
   if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response && response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(INDEX_URL, clone));
-          }
-          return response;
-        })
-        .catch(() => caches.match(INDEX_URL).then((cached) => cached || Response.error()))
-    );
+    event.respondWith(navigateWithTimeout(request));
     return;
   }
 

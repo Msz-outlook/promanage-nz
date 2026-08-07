@@ -186,1046 +186,27 @@ textarea:focus{border-color:var(--text)}
      under its versioned name, update the src below AND the SHELL_FILES list in
      sw.js, then bump CACHE_NAME in sw.js so clients pick the new files up. -->
 <script src="vendor/supabase-js-2.111.0.umd.js"></script>
-<script src="vendor/jspdf-2.5.2.umd.min.js"></script>
-<script src="vendor/jspdf-autotable-3.8.2.min.js"></script>
-<script src="vendor/heic2any-0.0.4.min.js"></script>
-<script>
-/* ---- Findings Report generator (embedded, single-file) ---- */
-/*
- * findingsReport.js — client-side findings-report PDF generator.
- *
- * Builds a findings table + a portrait photo grid with two-way clickable links,
- * entirely in the browser. This is a faithful JS port of the validated Python
- * generator (generate_report.py): same A4 layout, same 3:4 portrait crop, same
- * EXIF-orientation handling, same bidirectional finding <-> photo links.
- *
- * Depends on three globals, loaded via <script> before this file:
- *   - jsPDF            (window.jspdf.jsPDF)
- *   - jspdf-autotable  (registers doc.autoTable)
- *   - heic2any         (window.heic2any) — only used if a photo is HEIC/HEIF
- *
- * Public API:
- *   await FindingsReport.generate(data, options)
- *
- *   data = {
- *     title: "Site Findings Report",
- *     meta:  { Site: "...", Reference: "...", Date: "...", "Prepared by": "..." }, // optional
- *     findings: [
- *       {
- *         item: "Cracked concrete slab",
- *         description: "…",
- *         photos: [ url | { url, name } | Blob | { blob, name } ]   // 0..n
- *       }
- *     ]
- *   }
- *
- *   options = {
- *     fileName: "findings-report.pdf",   // download name
- *     download: true,                    // auto-trigger a download
- *   }
- *
- * Returns: Promise<Blob> (the PDF), so callers can also upload it to Supabase.
- */
-(function (global) {
-  "use strict";
-
-  // ---- Layout constants (points; A4). Mirrors generate_report.py. ----------
-  var PAGE_W = 595.28, PAGE_H = 841.89;
-  var MARGIN = 43.2;                 // 0.6 inch
-  var USABLE_W = PAGE_W - 2 * MARGIN;
-  var GRID_COLS = 3;
-  var PHOTO_RATIO = 3 / 4;           // vertical iPhone photo: width / height
-  var MAX_IMAGE_DIM = 1600;
-  var JPEG_QUALITY = 0.85;
-
-  var COLORS = {
-    header: "#37474F",
-    grid: "#CCCCCC",
-    altRow: "#F7F7F7",
-    link: "#1155CC",
-    missingBg: "#F2F2F2",
-    missingBorder: "#CCCCCC",
-    footer: "#666666",
-    note: "#555555",
-    text: "#000000",
-  };
-
-  var FS = { body: 9.5, caption: 8.5, note: 8.5, footer: 8, title: 20, heading: 15 };
-  var CELL_PADDING = 5;              // autotable cell padding (pt)
-
-  // Findings table column widths (fractions match the Python version).
-  var COL_W = [0.06, 0.20, 0.54, 0.20].map(function (f) { return USABLE_W * f; });
-
-  // ---- Small helpers -------------------------------------------------------
-  function hexToRgb(hex) {
-    var h = hex.replace("#", "");
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  }
-
-  function looksHeic(blob, name) {
-    var t = (blob && blob.type || "").toLowerCase();
-    if (t.indexOf("heic") !== -1 || t.indexOf("heif") !== -1) return true;
-    var n = (name || "").toLowerCase();
-    return /\.(heic|heif)$/.test(n);
-  }
-
-  // Center-crop source dimensions to a target width/height ratio (cover fit),
-  // returning the source rectangle to copy. Mirrors Python crop_to_ratio().
-  function coverCrop(w, h, ratio) {
-    var current = w / h;
-    if (current > ratio) {                 // too wide -> trim sides
-      var newW = Math.round(h * ratio);
-      return { sx: Math.floor((w - newW) / 2), sy: 0, sw: newW, sh: h };
-    }
-    if (current < ratio) {                 // too tall -> trim top/bottom
-      var newH = Math.round(w / ratio);
-      return { sx: 0, sy: Math.floor((h - newH) / 2), sw: w, sh: newH };
-    }
-    return { sx: 0, sy: 0, sw: w, sh: h };
-  }
-
-  function resolveEntry(entry) {
-    // Normalise a photo entry into { src, blob, name } where exactly one of
-    // src (URL string) / blob (Blob) is set.
-    if (entry == null) return { name: "" };
-    if (typeof entry === "string") return { src: entry, name: entry.split("/").pop() };
-    if (entry instanceof Blob) return { blob: entry, name: "" };
-    if (entry.blob instanceof Blob) return { blob: entry.blob, name: entry.name || "" };
-    if (entry.url) return { src: entry.url, name: entry.name || String(entry.url).split("/").pop() };
-    return { name: entry.name || "" };
-  }
-
-  // Fetch (if needed), decode (HEIC-aware), EXIF-correct, crop to portrait,
-  // downscale, and return a JPEG data URL. Throws on any failure so the caller
-  // can fall back to a "photo not found" placeholder.
-  async function normalizeToDataUrl(entry) {
-    var resolved = resolveEntry(entry);
-    var blob = resolved.blob;
-
-    if (!blob) {
-      if (!resolved.src) throw new Error("no source");
-      var resp = await fetch(resolved.src);
-      if (!resp.ok) throw new Error("fetch failed: " + resp.status);
-      blob = await resp.blob();
-    }
-
-    if (looksHeic(blob, resolved.name)) {
-      if (!global.heic2any) throw new Error("HEIC photo but heic2any not loaded");
-      blob = await global.heic2any({ blob: blob, toType: "image/jpeg", quality: 0.9 });
-      if (Array.isArray(blob)) blob = blob[0];
-    }
-
-    var bitmap;
-    try {
-      // { imageOrientation: 'from-image' } applies EXIF rotation on decode —
-      // this is the browser equivalent of PIL's ImageOps.exif_transpose().
-      bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
-    } catch (e) {
-      // Some browsers reject the options bag, or the blob was undeclared HEIC.
-      if (global.heic2any && !looksHeic(blob, resolved.name)) {
-        try {
-          var conv = await global.heic2any({ blob: blob, toType: "image/jpeg", quality: 0.9 });
-          blob = Array.isArray(conv) ? conv[0] : conv;
-        } catch (ignored) { /* fall through to a plain decode */ }
-      }
-      bitmap = await createImageBitmap(blob);
-    }
-
-    var crop = coverCrop(bitmap.width, bitmap.height, PHOTO_RATIO);
-    var scale = Math.min(1, MAX_IMAGE_DIM / Math.max(crop.sw, crop.sh));
-    var outW = Math.max(1, Math.round(crop.sw * scale));
-    var outH = Math.max(1, Math.round(crop.sh * scale));
-
-    var canvas = document.createElement("canvas");
-    canvas.width = outW;
-    canvas.height = outH;
-    var ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
-    if (bitmap.close) bitmap.close();
-    return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
-  }
-
-  function getAutoTable(doc) {
-    if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
-    if (global.jspdf && typeof global.jspdf.autoTable === "function") {
-      return function (opts) { return global.jspdf.autoTable(doc, opts); };
-    }
-    throw new Error("jspdf-autotable is not loaded");
-  }
-
-  // ---- Main entry ----------------------------------------------------------
-  async function generate(data, options) {
-    options = options || {};
-    var fileName = options.fileName || "findings-report.pdf";
-    var doDownload = options.download !== false;
-
-    if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
-    var JsPDF = global.jspdf.jsPDF;
-
-    var title = data.title || "Findings Report";
-    var meta = data.meta || {};
-    var findings = data.findings || [];
-
-    // Flat, ordered list of photo references: one per (finding, photo) pair.
-    // record = { n, m, label, entry, item }
-    var records = [];
-    var refsByFinding = {};   // n -> [{ m, label }]
-    findings.forEach(function (f, i) {
-      var n = i + 1;
-      refsByFinding[n] = [];
-      (f.photos || []).forEach(function (entry, j) {
-        var m = j + 1;
-        var label = n + "." + m;
-        records.push({ n: n, m: m, label: label, entry: entry, item: f.item || "" });
-        refsByFinding[n].push({ m: m, label: label });
-      });
-    });
-
-    // Pre-normalise every image up front (in parallel) so the layout pass is
-    // synchronous and page/position bookkeeping is deterministic.
-    await Promise.all(records.map(async function (rec) {
-      try {
-        rec.dataUrl = await normalizeToDataUrl(rec.entry);
-        rec.ok = true;
-      } catch (err) {
-        rec.ok = false;
-        rec.missingLabel = resolveEntry(rec.entry).name || String(rec.entry) || "(no source)";
-        if (global.console) console.warn("findingsReport: photo " + rec.label + " unavailable:", err && err.message);
-      }
-    }));
-
-    var doc = new JsPDF({ unit: "pt", format: "a4" });
-    doc.setProperties({ title: title });
-    var autoTable = getAutoTable(doc);
-
-    var findingAnchors = {};   // n -> { page, y }        (target of a back-link)
-    var photosCellInfo = {};   // n -> { page, x, y, w, h } (source of forward-links)
-    var photoTargets = {};     // label -> { page, y }    (target of a forward-link)
-    var backLinks = [];        // { page, x, y, w, h, targetN }
-
-    // --- Header block -------------------------------------------------------
-    var y = MARGIN + 6;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.title);
-    setText(doc, COLORS.text);
-    doc.text(title, PAGE_W / 2, y + FS.title, { align: "center" });
-    y += FS.title + 14;
-
-    var metaKeys = Object.keys(meta);
-    if (metaKeys.length) {
-      doc.setFontSize(FS.body);
-      var labelX = MARGIN, valueX = MARGIN + 95, lineH = 14;
-      metaKeys.forEach(function (k) {
-        doc.setFont("helvetica", "bold");
-        doc.text(String(k) + ":", labelX, y + FS.body);
-        doc.setFont("helvetica", "normal");
-        doc.text(String(meta[k]), valueX, y + FS.body);
-        y += lineH;
-      });
-      y += 8;
-    }
-
-    var totalPhotos = records.length;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(FS.note);
-    setText(doc, COLORS.note);
-    doc.text("Total findings: " + findings.length + "     |     Total photos: " + totalPhotos, MARGIN, y + FS.note);
-    y += FS.note + 12;
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.heading);
-    setText(doc, COLORS.text);
-    doc.text("Findings", MARGIN, y + FS.heading);
-    y += FS.heading + 6;
-
-    // --- Findings table -----------------------------------------------------
-    var body = findings.map(function (f, i) {
-      var n = i + 1;
-      var refText = refsByFinding[n].map(function (r) { return r.label; }).join(", ") || "—";
-      return [String(n), f.item || "", f.description || "", refText];
-    });
-
-    autoTable({
-      startY: y,
-      head: [["#", "Item", "Description", "Photos"]],
-      body: body,
-      theme: "grid",
-      styles: {
-        font: "helvetica", fontSize: FS.body, cellPadding: CELL_PADDING, valign: "top",
-        lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5, textColor: hexToRgb(COLORS.text),
-        overflow: "linebreak",
-      },
-      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
-      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
-      columnStyles: {
-        0: { cellWidth: COL_W[0], halign: "center", fontStyle: "bold" },
-        1: { cellWidth: COL_W[1], fontStyle: "bold" },
-        2: { cellWidth: COL_W[2] },
-        3: { cellWidth: COL_W[3], textColor: hexToRgb(COLORS.link) },
-      },
-      margin: { left: MARGIN, right: MARGIN },
-      didDrawCell: function (d) {
-        if (d.section !== "body") return;
-        var n = d.row.index + 1;
-        var page = doc.internal.getCurrentPageInfo().pageNumber;
-        if (d.column.index === 0) {
-          findingAnchors[n] = { page: page, y: d.cell.y };
-        } else if (d.column.index === 3) {
-          photosCellInfo[n] = { page: page, x: d.cell.x, y: d.cell.y, w: d.cell.width, h: d.cell.height };
-        }
-      },
-    });
-
-    // --- Attachments (portrait photo grid) ----------------------------------
-    if (records.length) {
-      doc.addPage();
-      var ay = MARGIN + 6;
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.heading);
-      setText(doc, COLORS.text);
-      doc.text("Attachments", MARGIN, ay + FS.heading);
-      ay += FS.heading + 6;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.note);
-      setText(doc, COLORS.note);
-      var intro = "Each photo caption links back to its finding; each “Photos” reference in the table links to the photo here.";
-      doc.splitTextToSize(intro, USABLE_W).forEach(function (line) {
-        doc.text(line, MARGIN, ay + FS.note);
-        ay += FS.note + 3;
-      });
-      ay += 6;
-
-      var colW = USABLE_W / GRID_COLS;
-      var imgW = colW - 16;
-      var imgH = imgW / PHOTO_RATIO;
-      var padTop = 8, gapImgCap = 6, captionH = 34, padBottom = 8;
-      var rowH = padTop + imgH + gapImgCap + captionH + padBottom;
-      var bottomLimit = PAGE_H - MARGIN - 24;
-
-      var rowTopY = ay;
-      var currentPage = doc.internal.getCurrentPageInfo().pageNumber;
-
-      records.forEach(function (rec, i) {
-        var col = i % GRID_COLS;
-        if (col === 0) {
-          if (i !== 0) rowTopY += rowH;
-          if (rowTopY + rowH > bottomLimit) { doc.addPage(); currentPage += 1; rowTopY = MARGIN; }
-        }
-        var cellX = MARGIN + col * colW;
-        var imgX = cellX + (colW - imgW) / 2;
-        var imgY = rowTopY + padTop;
-
-        // uniform cell border
-        setDraw(doc, COLORS.missingBorder);
-        doc.setLineWidth(0.5);
-        doc.rect(cellX, rowTopY, colW, rowH);
-
-        if (rec.ok) {
-          doc.addImage(rec.dataUrl, "JPEG", imgX, imgY, imgW, imgH);
-        } else {
-          setFill(doc, COLORS.missingBg);
-          setDraw(doc, COLORS.missingBorder);
-          doc.rect(imgX, imgY, imgW, imgH, "FD");
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(FS.caption);
-          setText(doc, COLORS.text);
-          var msg = doc.splitTextToSize("Photo not found:\n" + rec.missingLabel, imgW - 12);
-          var startY = imgY + imgH / 2 - (msg.length - 1) * (FS.caption + 2) / 2;
-          msg.forEach(function (line, k) {
-            doc.text(line, imgX + imgW / 2, startY + k * (FS.caption + 2), { align: "center" });
-          });
-        }
-
-        photoTargets[rec.label] = { page: currentPage, y: imgY };
-
-        // caption: a clickable "Photo n.m" line + the item text below it
-        var capBaseY = imgY + imgH + gapImgCap;
-        var centerX = cellX + colW / 2;
-        var prefix = "Photo " + rec.label;
-
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(FS.caption);
-        setText(doc, COLORS.link);
-        doc.text(prefix, centerX, capBaseY + FS.caption, { align: "center" });
-        var prefixW = doc.getTextWidth(prefix);
-        // underline + record the hotspot for the back-link
-        doc.setLineWidth(0.4);
-        setDraw(doc, COLORS.link);
-        doc.line(centerX - prefixW / 2, capBaseY + FS.caption + 1.5, centerX + prefixW / 2, capBaseY + FS.caption + 1.5);
-        backLinks.push({
-          page: currentPage, x: centerX - prefixW / 2, y: capBaseY,
-          w: prefixW, h: FS.caption + 3, targetN: rec.n,
-        });
-
-        setText(doc, COLORS.text);
-        var itemLines = doc.splitTextToSize(rec.item || "", colW - 8).slice(0, 2);
-        itemLines.forEach(function (line, k) {
-          doc.text(line, centerX, capBaseY + FS.caption + 12 + k * (FS.caption + 2), { align: "center" });
-        });
-      });
-    }
-
-    // --- Wire up the links --------------------------------------------------
-    // Back-links: photo caption -> its finding row.
-    backLinks.forEach(function (bl) {
-      var target = findingAnchors[bl.targetN];
-      if (!target) return;
-      doc.setPage(bl.page);
-      doc.link(bl.x, bl.y, bl.w, bl.h, { pageNumber: target.page, top: target.y });
-    });
-
-    // Forward-links: each "n.m" ref in a finding's Photos cell -> that photo.
-    // The ref text is laid out by autotable inside the cell; we overlay
-    // invisible clickable hotspots along the first line(s), wrapping within
-    // the cell just as the drawn text does.
-    doc.setFontSize(FS.body);
-    doc.setFont("helvetica", "normal");
-    Object.keys(photosCellInfo).forEach(function (nKey) {
-      var n = parseInt(nKey, 10);
-      var cell = photosCellInfo[n];
-      var refs = refsByFinding[n];
-      if (!refs || !refs.length) return;
-
-      var lineH = FS.body * 1.15;
-      var left = cell.x + CELL_PADDING;
-      var right = cell.x + cell.w - CELL_PADDING;
-      var x = left;
-      var lineY = cell.y + CELL_PADDING;
-      var sepW = doc.getTextWidth(", ");
-
-      doc.setPage(cell.page);
-      refs.forEach(function (r, idx) {
-        var tokenW = doc.getTextWidth(r.label);
-        if (x + tokenW > right && x > left) { x = left; lineY += lineH; }
-        var target = photoTargets[r.label];
-        if (target) doc.link(x, lineY, tokenW, FS.body + 2, { pageNumber: target.page, top: target.y });
-        x += tokenW;
-        if (idx < refs.length - 1) x += sepW;
-      });
-    });
-
-    // --- Footer: "Page X of Y" on every page --------------------------------
-    var totalPages = doc.internal.getNumberOfPages();
-    for (var p = 1; p <= totalPages; p++) {
-      doc.setPage(p);
-      setDraw(doc, COLORS.missingBorder);
-      doc.setLineWidth(0.5);
-      doc.line(MARGIN, PAGE_H - 37, PAGE_W - MARGIN, PAGE_H - 37);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.footer);
-      setText(doc, COLORS.footer);
-      doc.text(title, MARGIN, PAGE_H - 26);
-      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, { align: "right" });
-    }
-
-    var blob = doc.output("blob");
-    if (doDownload) doc.save(fileName);
-    return blob;
-  }
-
-  // color setters (jsPDF wants numeric r,g,b for cross-version safety)
-  function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
-  function setFill(doc, hex) { var c = hexToRgb(hex); doc.setFillColor(c[0], c[1], c[2]); }
-  function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
-
-  global.FindingsReport = { generate: generate, normalizeToDataUrl: normalizeToDataUrl };
-})(typeof window !== "undefined" ? window : this);
-
-/*
- * InvoiceReport — client-side NZ tax-invoice PDF generator.
- *
- * Ported from msz's invoice_generator.py (reportlab) so the on-screen PDF
- * matches that layout: accent-teal "TAX INVOICE" header with an optional
- * logo, sender block top-right, Bill To + a meta table (invoice #,
- * reference, dates, terms), a line-item table with hairline row rules and
- * an accent header bar, an emphasised total bar, a Payment Details block,
- * notes, and a footer credit line. Pure browser JS (jsPDF + jspdf-autotable)
- * — no server/Python involved at generation time. invoice_generator.py +
- * invoice_data.json remain a valid offline path too; paste that JSON into
- * the "Import invoice (JSON)" box on the Invoices page to load it straight
- * into this same form/PDF.
- *
- * Public API: await InvoiceReport.generate(data, options)
- *   data = {
- *     invoiceNumber, reference, issueDate, dueDate, paymentTermsDays, status,
- *     from:   { name, address:[lines], email, phone, gstNumber, logoPath,
- *               bank: { accountName, bankName, accountNumber, referenceNote } },
- *     billTo: { name, attention, address, email },   // address: string or [lines]
- *     items:  [{ description, quantity, unitPrice, amount }],
- *     gstMode: 'exclusive' | 'inclusive' | 'none',
- *     subtotal, gst, total,
- *     notes
- *   }
- *   options = { fileName, download }
- *   Returns: Promise<Blob>
- */
-(function (global) {
-  "use strict";
-
-  var PAGE_W = 595.28, PAGE_H = 841.89;
-  var MARGIN = 43.2;
-  var USABLE_W = PAGE_W - 2 * MARGIN;
-  var MM = 2.834645669; // 1mm in pt — used for the logo max-size box
-
-  var COLORS = { accent: "#1f4e5f", grey: "#666666", rule: "#dddddd", text: "#000000", white: "#ffffff" };
-  var FS = { title: 26, titleWithLogo: 20, label: 10, body: 9.5, small: 9, footer: 8 };
-
-  function hexToRgb(hex) {
-    var h = hex.replace("#", "");
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  }
-  function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
-  function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
-  function setFill(doc, hex) { var c = hexToRgb(hex); doc.setFillColor(c[0], c[1], c[2]); }
-  function money(n) { return "$" + (Number(n) || 0).toLocaleString("en-NZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-
-  function getAutoTable(doc) {
-    if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
-    if (global.jspdf && typeof global.jspdf.autoTable === "function") {
-      return function (opts) { return global.jspdf.autoTable(doc, opts); };
-    }
-    throw new Error("jspdf-autotable is not loaded");
-  }
-
-  // Best-effort logo fetch — mirrors the Python script's try/except: a
-  // missing path, a 404, or a decode failure just means the invoice prints
-  // without a logo. It never blocks generation. Only works for a logo file
-  // hosted alongside index.html (e.g. logo.png on GitHub Pages), since the
-  // browser can't read an arbitrary local filesystem path.
-  async function loadLogo(path) {
-    if (!path) return null;
-    try {
-      var res = await fetch(path);
-      if (!res.ok) return null;
-      var blob = await res.blob();
-      var bitmap = await createImageBitmap(blob);
-      var canvas = document.createElement("canvas");
-      canvas.width = bitmap.width; canvas.height = bitmap.height;
-      canvas.getContext("2d").drawImage(bitmap, 0, 0);
-      if (bitmap.close) bitmap.close();
-      return { dataUrl: canvas.toDataURL("image/png"), w: canvas.width, h: canvas.height };
-    } catch (err) {
-      if (global.console) console.warn("InvoiceReport: logo unavailable:", err && err.message);
-      return null;
-    }
-  }
-
-  async function generate(data, options) {
-    options = options || {};
-    var fileName = options.fileName || "invoice.pdf";
-    var doDownload = options.download !== false;
-
-    if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
-    var JsPDF = global.jspdf.jsPDF;
-
-    var from = data.from || {};
-    var bank = from.bank || {};
-    var billTo = data.billTo || {};
-    var items = data.items || [];
-    var fromAddress = Array.isArray(from.address) ? from.address : (from.address ? [from.address] : []);
-    var billAddress = Array.isArray(billTo.address) ? billTo.address : (billTo.address ? String(billTo.address).split("\n").filter(Boolean) : []);
-
-    var logo = await loadLogo(from.logoPath);
-
-    var doc = new JsPDF({ unit: "pt", format: "a4" });
-    doc.setProperties({ title: "Invoice " + (data.invoiceNumber || "") });
-    var autoTable = getAutoTable(doc);
-
-    var left = MARGIN, right = PAGE_W - MARGIN;
-    var y = MARGIN + 4;
-
-    // --- Logo + "TAX INVOICE" title (top-left) ---
-    var titleBottom;
-    if (logo) {
-      var maxW = 50 * MM, maxH = 22 * MM;
-      var scale = Math.min(maxW / logo.w, maxH / logo.h, 1);
-      var dw = logo.w * scale, dh = logo.h * scale;
-      doc.addImage(logo.dataUrl, "PNG", left, y, dw, dh);
-      setText(doc, COLORS.accent);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.titleWithLogo);
-      doc.text("TAX INVOICE", left, y + dh + 18);
-      titleBottom = y + dh + 24;
-    } else {
-      setText(doc, COLORS.accent);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.title);
-      doc.text("TAX INVOICE", left, y + FS.title);
-      titleBottom = y + FS.title + 6;
-    }
-
-    // --- Sender block (top-right) ---
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    setText(doc, COLORS.text);
-    doc.text(from.name || "—", right, y + 11, { align: "right" });
-    var sy = y + 11 + 14;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(FS.small);
-    setText(doc, COLORS.grey);
-    fromAddress.forEach(function (line) { doc.text(line, right, sy, { align: "right" }); sy += 12; });
-    if (from.email) { doc.text(from.email, right, sy, { align: "right" }); sy += 12; }
-    if (from.phone) { doc.text(from.phone, right, sy, { align: "right" }); sy += 12; }
-    if (from.gstNumber) { doc.text("GST No: " + from.gstNumber, right, sy, { align: "right" }); sy += 12; }
-
-    y = Math.max(titleBottom, sy) + 26;
-
-    // --- Bill To (left) / meta table (right) ---
-    var colW = USABLE_W / 2 - 10;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.label);
-    setText(doc, COLORS.accent);
-    doc.text("BILL TO", left, y);
-    var by = y + 14;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(FS.body);
-    setText(doc, COLORS.text);
-    doc.text(billTo.name || "—", left, by); by += 12;
-    if (billTo.attention) { doc.text("Attn: " + billTo.attention, left, by); by += 12; }
-    billAddress.forEach(function (line) {
-      doc.splitTextToSize(line, colW).forEach(function (l) { doc.text(l, left, by); by += 12; });
-    });
-    if (billTo.email) { setText(doc, COLORS.grey); doc.text(billTo.email, left, by); by += 12; setText(doc, COLORS.text); }
-
-    var meta = [["Invoice number", data.invoiceNumber || "—"]];
-    if (data.reference) meta.push(["Reference", data.reference]);
-    meta.push(["Invoice date", data.issueDate || "—"]);
-    if (data.paymentTermsDays != null && data.paymentTermsDays !== "") meta.push(["Payment terms", data.paymentTermsDays + " days"]);
-    if (data.dueDate) meta.push(["Due date", data.dueDate]);
-    if (data.status) meta.push(["Status", data.status]);
-
-    var my = y;
-    meta.forEach(function (row) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.small);
-      setText(doc, COLORS.grey);
-      doc.text(row[0], right - colW, my);
-      doc.setFont("helvetica", "bold");
-      setText(doc, COLORS.text);
-      doc.text(String(row[1]), right, my, { align: "right" });
-      my += 14;
-    });
-
-    y = Math.max(by, my) + 22;
-
-    // --- Line items table (hairline row rules, accent header bar) ---
-    var body = items.map(function (it) {
-      var amt = it.amount != null ? it.amount : (it.quantity || 0) * (it.unitPrice || 0);
-      return [it.description || "", String(it.quantity != null ? it.quantity : ""), money(it.unitPrice), money(amt)];
-    });
-
-    autoTable({
-      startY: y,
-      head: [["Description", "Qty", "Unit price", "Amount (excl. GST)"]],
-      body: body,
-      theme: "plain",
-      styles: { font: "helvetica", fontSize: FS.body, cellPadding: { top: 6, bottom: 6, left: 4, right: 4 }, textColor: hexToRgb(COLORS.text) },
-      headStyles: { fillColor: hexToRgb(COLORS.accent), textColor: [255, 255, 255], fontStyle: "bold", fontSize: FS.small },
-      columnStyles: {
-        0: { cellWidth: USABLE_W * 0.5 },
-        1: { cellWidth: USABLE_W * 0.12, halign: "right" },
-        2: { cellWidth: USABLE_W * 0.19, halign: "right" },
-        3: { cellWidth: USABLE_W * 0.19, halign: "right" }
-      },
-      margin: { left: MARGIN, right: MARGIN },
-      didDrawCell: function (d) {
-        if (d.section !== "body") return;
-        setDraw(doc, COLORS.rule);
-        doc.setLineWidth(0.5);
-        doc.line(d.cell.x, d.cell.y + d.cell.height, d.cell.x + d.cell.width, d.cell.y + d.cell.height);
-      }
-    });
-
-    var afterTableY = doc.lastAutoTable.finalY + 16;
-
-    // --- Totals (right-aligned; total row emphasised with an accent bar) ---
-    var boxW = 220;
-    var totalRows = [["Subtotal (excl. GST)", money(data.subtotal)]];
-    if (data.gstMode !== "none") totalRows.push(["GST (15%)", money(data.gst)]);
-    totalRows.push([(data.gstMode === "none" ? "Total" : "Total (incl. GST)") + " NZD", money(data.total)]);
-
-    if (afterTableY + totalRows.length * 20 + 150 > PAGE_H - MARGIN) { doc.addPage(); afterTableY = MARGIN; }
-
-    var boxX = right - boxW;
-    var ty = afterTableY;
-    totalRows.forEach(function (row, i) {
-      var isLast = i === totalRows.length - 1;
-      if (isLast) {
-        setFill(doc, COLORS.accent);
-        doc.rect(boxX - 4, ty - 2, boxW + 4, 20, "F");
-        setText(doc, COLORS.white);
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(FS.label + 1);
-      } else {
-        setText(doc, COLORS.text);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(FS.body);
-      }
-      doc.text(row[0], boxX, ty + 12);
-      doc.text(row[1], boxX + boxW, ty + 12, { align: "right" });
-      ty += isLast ? 22 : 18;
-    });
-
-    // --- Payment details (only shown once at least one bank field is set) ---
-    var hasBank = bank.accountName || bank.bankName || bank.accountNumber || bank.referenceNote;
-    var py = ty + 24;
-    if (hasBank) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.label);
-      setText(doc, COLORS.accent);
-      doc.text("PAYMENT DETAILS", left, py);
-      py += 14;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.body);
-      setText(doc, COLORS.text);
-      if (bank.accountName) { doc.text("Account name: " + bank.accountName, left, py); py += 12; }
-      if (bank.bankName) { doc.text("Bank: " + bank.bankName, left, py); py += 12; }
-      if (bank.accountNumber) { doc.text("Account number: " + bank.accountNumber, left, py); py += 12; }
-      if (bank.referenceNote) { setText(doc, COLORS.grey); doc.text(bank.referenceNote, left, py); py += 14; setText(doc, COLORS.text); }
-    }
-
-    // --- Notes ---
-    if (data.notes) {
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(FS.body);
-      setText(doc, COLORS.text);
-      doc.splitTextToSize(data.notes, USABLE_W).forEach(function (line) { doc.text(line, left, py); py += 12; });
-    }
-
-    // --- Footer on every page ---
-    var totalPages = doc.internal.getNumberOfPages();
-    var footerBits = [from.name || "Invoice"];
-    if (from.gstNumber) footerBits.push("GST No: " + from.gstNumber);
-    var generatedOn = new Date().toLocaleDateString("en-NZ", { day: "2-digit", month: "short", year: "numeric" });
-    for (var p = 1; p <= totalPages; p++) {
-      doc.setPage(p);
-      setDraw(doc, COLORS.rule);
-      doc.setLineWidth(0.5);
-      doc.line(MARGIN, PAGE_H - 34, PAGE_W - MARGIN, PAGE_H - 34);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.footer);
-      setText(doc, COLORS.grey);
-      doc.text(footerBits.join("  |  ") + "  |  Generated " + generatedOn, PAGE_W / 2, PAGE_H - 22, { align: "center" });
-      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 22, { align: "right" });
-    }
-
-    var blob = doc.output("blob");
-    if (doDownload) doc.save(fileName);
-    return blob;
-  }
-
-  global.InvoiceReport = { generate: generate };
-})(typeof window !== "undefined" ? window : this);
-
-/*
- * StatementReport — client-side monthly owner-statement PDF generator,
- * same pattern as InvoiceReport/FindingsReport above (pure browser JS,
- * jsPDF + jspdf-autotable, no server).
- *
- * NOTE FOR msz: this is a working placeholder so the Statements section
- * is functional today, in the same spirit as the InvoiceReport note
- * above. Once your monthly-statement JSON generator exists, either feed
- * its output through window.importStatementJSON(data) (see the comment
- * above loadStatementJSON() in the STATEMENTS MODULE script) to reuse
- * this layout as-is, or port your own layout logic into generate()
- * below — keep the same data shape so nothing else in the app needs
- * to change.
- *
- * Public API: await StatementReport.generate(data, options)
- *   data = {
- *     statementNumber, periodStart, periodEnd, status,
- *     from:  { name, address, gstNumber, email, phone, bankAccount },
- *     owner: { name, email },
- *     properties: [{
- *       propertyAddress,
- *       openingBalance,
- *       income:   [{ date, description, amount }],
- *       expenses: [{ date, description, amount }],
- *       totalIncome, totalExpenses, netAmount, closingBalance,
- *       notes
- *     }],
- *     openingBalance, totalIncome, totalExpenses, netAmount, closingBalance, // combined across all properties
- *     notes
- *   }
- *   options = { fileName, download }
- *   Returns: Promise<Blob>
- */
-(function (global) {
-  "use strict";
-
-  var PAGE_W = 595.28, PAGE_H = 841.89;
-  var MARGIN = 43.2;
-  var USABLE_W = PAGE_W - 2 * MARGIN;
-
-  var COLORS = {
-    header: "#37474F", grid: "#CCCCCC", altRow: "#F7F7F7",
-    text: "#000000", muted: "#666666", accent: "#185FA5",
-    income: "#3B6D11", expense: "#A32D2D"
-  };
-  var FS = { title: 20, heading: 12, body: 9.5, small: 8.5, footer: 8 };
-
-  function hexToRgb(hex) {
-    var h = hex.replace("#", "");
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  }
-  function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
-  function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
-  function money(n) { return "$" + (Number(n) || 0).toLocaleString("en-NZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-
-  function getAutoTable(doc) {
-    if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
-    if (global.jspdf && typeof global.jspdf.autoTable === "function") {
-      return function (opts) { return global.jspdf.autoTable(doc, opts); };
-    }
-    throw new Error("jspdf-autotable is not loaded");
-  }
-
-  async function generate(data, options) {
-    options = options || {};
-    var fileName = options.fileName || "statement.pdf";
-    var doDownload = options.download !== false;
-
-    if (!global.jspdf || !global.jspdf.jsPDF) throw new Error("jsPDF is not loaded");
-    var JsPDF = global.jspdf.jsPDF;
-
-    var from = data.from || {};
-    var owner = data.owner || {};
-    var properties = (data.properties && data.properties.length) ? data.properties : [{}];
-
-    var doc = new JsPDF({ unit: "pt", format: "a4" });
-    doc.setProperties({ title: "Owner Statement " + (data.statementNumber || "") });
-    var autoTable = getAutoTable(doc);
-
-    var y = MARGIN;
-
-    // --- Title + statement meta (top-right) ---
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.title);
-    setText(doc, COLORS.text);
-    doc.text("OWNER STATEMENT", MARGIN, y + FS.title);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(FS.body);
-    var metaLines = [
-      ["Statement #", data.statementNumber || "—"],
-      ["Period", (data.periodStart || "—") + " – " + (data.periodEnd || "—")],
-      ["Status", data.status || "—"]
-    ];
-    var metaY = y;
-    metaLines.forEach(function (row) {
-      setText(doc, COLORS.muted);
-      doc.text(row[0] + ":", PAGE_W - MARGIN - 200, metaY, { align: "left" });
-      setText(doc, COLORS.text);
-      doc.setFont("helvetica", "bold");
-      doc.text(String(row[1]), PAGE_W - MARGIN, metaY, { align: "right" });
-      doc.setFont("helvetica", "normal");
-      metaY += 14;
-    });
-    y += FS.title + 24;
-
-    // --- From (manager) / Owner / Property ---
-    var colW = USABLE_W / 2 - 10;
-    function addressBlock(label, name, addressLines, extra, x) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.small);
-      setText(doc, COLORS.muted);
-      doc.text(label.toUpperCase(), x, y);
-      var by = y + 14;
-      doc.setFontSize(FS.body);
-      setText(doc, COLORS.text);
-      doc.text(name || "—", x, by);
-      by += 13;
-      doc.setFont("helvetica", "normal");
-      (addressLines || []).forEach(function (line) {
-        if (!line) return;
-        doc.splitTextToSize(line, colW).forEach(function (l) {
-          doc.text(l, x, by);
-          by += 12;
-        });
-      });
-      (extra || []).forEach(function (line) {
-        setText(doc, COLORS.muted);
-        doc.text(line, x, by);
-        by += 12;
-      });
-      return by;
-    }
-    var fromExtra = [];
-    if (from.gstNumber) fromExtra.push("GST #: " + from.gstNumber);
-    if (from.email) fromExtra.push(from.email);
-    if (from.phone) fromExtra.push(from.phone);
-    var y1 = addressBlock("Property manager", from.name, [from.address], fromExtra, MARGIN);
-
-    var ownerExtra = [];
-    if (owner.email) ownerExtra.push(owner.email);
-    var propertyNames = properties.map(function (p) { return p.propertyAddress; }).filter(Boolean);
-    var ownerAddressLines = propertyNames.length
-      ? [propertyNames.length + " propert" + (propertyNames.length > 1 ? "ies" : "y") + ":"].concat(propertyNames)
-      : [];
-    var y2 = addressBlock("Statement for", owner.name, ownerAddressLines, ownerExtra, MARGIN + colW + 20);
-
-    y = Math.max(y1, y2) + 18;
-
-    function itemTable(title, items, color) {
-      if (y > PAGE_H - 200) { doc.addPage(); y = MARGIN; }
-      setText(doc, color);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.heading);
-      doc.text(title, MARGIN, y);
-      y += 10;
-      var body = (items || []).map(function (it) {
-        return [it.date || "", it.description || "", money(it.amount)];
-      });
-      if (!body.length) body = [["—", "No " + title.toLowerCase() + " recorded this period", money(0)]];
-      autoTable({
-        startY: y,
-        head: [["Date", "Description", "Amount"]],
-        body: body,
-        theme: "grid",
-        styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
-        headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
-        alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
-        columnStyles: {
-          0: { cellWidth: USABLE_W * 0.18 },
-          1: { cellWidth: USABLE_W * 0.57 },
-          2: { cellWidth: USABLE_W * 0.25, halign: "right" }
-        },
-        margin: { left: MARGIN, right: MARGIN }
-      });
-      y = doc.lastAutoTable.finalY + 16;
-    }
-
-    function propertyTotalsBox(prop) {
-      if (y > PAGE_H - 110) { doc.addPage(); y = MARGIN; }
-      var boxW = 230, rowH = 14;
-      var rows = [
-        ["Opening balance", money(prop.openingBalance)],
-        ["Net amount", money(prop.netAmount)],
-        ["Closing balance", money(prop.closingBalance)]
-      ];
-      var boxX = PAGE_W - MARGIN - boxW;
-      var by = y;
-      rows.forEach(function (row, i) {
-        var isLast = i === rows.length - 1;
-        doc.setFont("helvetica", isLast ? "bold" : "normal");
-        doc.setFontSize(FS.small);
-        setText(doc, isLast ? COLORS.text : COLORS.muted);
-        doc.text(row[0], boxX, by + 10);
-        doc.text(row[1], boxX + boxW, by + 10, { align: "right" });
-        by += rowH;
-      });
-      y = by + 6;
-    }
-
-    // --- Per-property sections: each property gets its own income/expenses/subtotal ---
-    properties.forEach(function (prop, idx) {
-      if (y > PAGE_H - 220) { doc.addPage(); y = MARGIN; }
-      setText(doc, COLORS.text);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.heading + 1);
-      doc.text(prop.propertyAddress || ("Property " + (idx + 1)), MARGIN, y);
-      y += 6;
-      setDraw(doc, COLORS.grid);
-      doc.setLineWidth(0.75);
-      doc.line(MARGIN, y, PAGE_W - MARGIN, y);
-      y += 16;
-
-      itemTable("Income", prop.income, COLORS.income);
-      itemTable("Expenses", prop.expenses, COLORS.expense);
-      propertyTotalsBox(prop);
-
-      if (prop.notes) {
-        setText(doc, COLORS.muted);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(FS.small);
-        doc.splitTextToSize(prop.notes, USABLE_W).forEach(function (line) {
-          doc.text(line, MARGIN, y);
-          y += 11;
-        });
-      }
-      y += 18;
-    });
-
-    // --- Combined totals box (bottom-right) ---
-    if (y > PAGE_H - 160) { doc.addPage(); y = MARGIN; }
-    setText(doc, COLORS.text);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.heading);
-    doc.text("Combined totals — all properties", MARGIN, y);
-    var afterTableY = y + 6;
-    var boxW = 230, rowH = 16;
-    var totalRows = [
-      ["Opening balance", money(data.openingBalance)],
-      ["Total income", money(data.totalIncome)],
-      ["Total expenses", money(data.totalExpenses)],
-      ["Net amount", money(data.netAmount)],
-      ["Closing balance", money(data.closingBalance)]
-    ];
-
-    var boxX = PAGE_W - MARGIN - boxW;
-    var by = afterTableY;
-    totalRows.forEach(function (row, i) {
-      var isLast = i === totalRows.length - 1;
-      if (isLast) {
-        setDraw(doc, COLORS.grid);
-        doc.setLineWidth(0.5);
-        doc.line(boxX, by, boxX + boxW, by);
-        by += 6;
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(FS.heading);
-      } else {
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(FS.body);
-      }
-      setText(doc, COLORS.text);
-      doc.text(row[0], boxX, by + 10);
-      doc.text(row[1], boxX + boxW, by + 10, { align: "right" });
-      by += rowH;
-    });
-
-    // --- Notes / payment details ---
-    var noteY = Math.max(by, afterTableY) + 20;
-    if (data.notes || from.bankAccount) {
-      if (noteY > PAGE_H - 80) { doc.addPage(); noteY = MARGIN; }
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.small);
-      setText(doc, COLORS.muted);
-      doc.text("NOTES", MARGIN, noteY);
-      noteY += 14;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.body);
-      setText(doc, COLORS.text);
-      var noteText = (data.notes || "") + (from.bankAccount ? (data.notes ? "\n" : "") + "Bank account: " + from.bankAccount : "");
-      doc.splitTextToSize(noteText, USABLE_W).forEach(function (line) {
-        doc.text(line, MARGIN, noteY);
-        noteY += 12;
-      });
-    }
-
-    // --- Footer on every page ---
-    var totalPages = doc.internal.getNumberOfPages();
-    for (var p = 1; p <= totalPages; p++) {
-      doc.setPage(p);
-      setDraw(doc, COLORS.grid);
-      doc.setLineWidth(0.5);
-      doc.line(MARGIN, PAGE_H - 37, PAGE_W - MARGIN, PAGE_H - 37);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.footer);
-      setText(doc, COLORS.muted);
-      doc.text((from.name || "Owner Statement") + " — " + (data.statementNumber || ""), MARGIN, PAGE_H - 26);
-      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, { align: "right" });
-    }
-
-    var blob = doc.output("blob");
-    if (doDownload) doc.save(fileName);
-    return blob;
-  }
-
-  global.StatementReport = { generate: generate };
-})(typeof window !== "undefined" ? window : this);
-
-</script>
+<!-- supabase-js is the ONLY library loaded up front, because auth runs at boot
+     and nothing is on screen until it answers.
+
+     Everything else is fetched on demand, and between them they were 76% of
+     the JavaScript this app used to block the first paint:
+
+       heic2any (1.32 MB)  — only if an inspection PDF has a HEIC photo in it.
+                             FindingsReport.loadHeic2Any() fetches it.
+       jsPDF (357 KB)      — only when a PDF is generated.
+       autotable (38 KB)   — same.
+       the three report
+       generators (43 KB)  — same; they used to be an inline <script> block
+                             right here. See reports/pdf-reports.js.
+
+     The last three are fetched together by loadPdfEngine() in the app block
+     below, at the moment a report is actually asked for.
+
+     All of them stay in SHELL_FILES in sw.js, so they are still pre-cached and
+     still work with no signal. Pre-caching a file and blocking the first paint
+     on it are different things, and only the second one was costing anything:
+     first paint on a throttled 3G phone went from 11.8s to 2.6s. -->
 <body>
 
 <!-- LOGIN GATE -->
@@ -1310,7 +291,7 @@ textarea:focus{border-color:var(--text)}
   <div id="dash-alerts"></div>
 
   <div class="card">
-    <div class="card-head">Urgent maintenance <button class="btn btn-sm" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])">View maintenance →</button></div>
+    <div class="card-head">Urgent maintenance <button class="btn btn-sm" onclick="nav('maintenance',null)">View maintenance →</button></div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead>
       <tbody id="dash-maint"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -1366,13 +347,13 @@ textarea:focus{border-color:var(--text)}
 
   <div class="two-col">
     <div class="card">
-      <div class="card-head">Properties not compliant <button class="btn btn-sm" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8])">View compliance →</button></div>
+      <div class="card-head">Properties not compliant <button class="btn btn-sm" onclick="nav('compliance',null)">View compliance →</button></div>
       <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Overdue items</th><th></th></tr></thead>
         <tbody id="dash-noncompliant"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
     </div>
     <div class="card">
-      <div class="card-head">Next inspection per property <button class="btn btn-sm" onclick="nav('inspections',document.querySelectorAll('.nav-item')[4])">View inspections →</button></div>
+      <div class="card-head">Next inspection per property <button class="btn btn-sm" onclick="nav('inspections',null)">View inspections →</button></div>
       <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Last inspected</th><th>Next due</th><th>Status</th></tr></thead>
         <tbody id="dash-inspections"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
@@ -1389,10 +370,10 @@ textarea:focus{border-color:var(--text)}
   <div class="card">
     <div class="card-head">Quick links</div>
     <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="nav('properties',document.querySelectorAll('.nav-item')[1]);togglePropForm(true)">🏠 Add property</button>
-      <button class="btn" onclick="nav('tenants',document.querySelectorAll('.nav-item')[2]);toggleTenantForm(true)">👤 Add tenant</button>
-      <button class="btn" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3]);toggleMaintForm(true)">🔧 New maintenance request</button>
-      <button class="btn" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8])">✅ Compliance check</button>
+      <button class="btn" onclick="nav('properties',null);togglePropForm(true)">🏠 Add property</button>
+      <button class="btn" onclick="nav('tenants',null);toggleTenantForm(true)">👤 Add tenant</button>
+      <button class="btn" onclick="nav('maintenance',null);toggleMaintForm(true)">🔧 New maintenance request</button>
+      <button class="btn" onclick="nav('compliance',null)">✅ Compliance check</button>
     </div>
   </div>
 </div>
@@ -1611,7 +592,7 @@ textarea:focus{border-color:var(--text)}
 
 <!-- FINANCIALS -->
 <div class="page" id="page-financials">
-  <div class="alert alert-blue">ℹ️ <div><strong>Agency view — what ProManage earns, not what the owners earn</strong> — revenue is the fee lines you charged on your saved owner statements (management, letting, inspection, admin). Rent collected and tradie costs are owner money passing through and are reported separately below. <span id="fin-banner-detail"></span> <a href="#" onclick="nav('statements',document.querySelectorAll('.nav-item')[7]);return false" style="color:inherit;text-decoration:underline">Go to Owner Statements →</a></div></div>
+  <div class="alert alert-blue">ℹ️ <div><strong>Agency view — what ProManage earns, not what the owners earn</strong> — revenue is the fee lines you charged on your saved owner statements (management, letting, inspection, admin). Rent collected and tradie costs are owner money passing through and are reported separately below. <span id="fin-banner-detail"></span> <a href="#" onclick="nav('statements',null);return false" style="color:inherit;text-decoration:underline">Go to Owner Statements →</a></div></div>
 
   <div id="fin-controls" style="display:none">
     <div class="controls" style="align-items:flex-end;margin-bottom:.5rem">
@@ -1626,7 +607,7 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card" id="fin-empty" style="display:none">
     <div class="card-body" style="text-align:center;color:var(--text3);padding:2rem">
-      No owner statements saved yet. <a href="#" onclick="nav('statements',document.querySelectorAll('.nav-item')[7]);return false">Add one on the Owner Statements page</a> to see financials here.
+      No owner statements saved yet. <a href="#" onclick="nav('statements',null);return false">Add one on the Owner Statements page</a> to see financials here.
     </div>
   </div>
 
@@ -1959,17 +940,19 @@ function nav(id,el,fromPopState){
   if(navEl) navEl.classList.add('active');
   document.getElementById('topbar-title').textContent=pages[id]||id;
   if(window.innerWidth<=768) toggleSidebar(false);
+  // Form dropdowns, not list state. Deliberately refreshed on entry only and
+  // left out of the module registry: both rebuild the <select> without
+  // preserving its current value, so running them on every sync would clear a
+  // half-filled form under the user.
   if(id==='inspections') populateInspectionPropertyDropdown();
   if(id==='maintenance') populateMaintenancePropertyDropdown();
-  if(id==='dashboard') renderDashboard();
-  if(id==='activity') renderActivityLog();
-  if(id==='compliance') renderComplianceLive();
-  if(id==='invoices') renderInvoicesList();
-  if(id==='statements') renderStatementsList();
-  if(id==='financials') renderFinancials();
-  if(id==='email-triage') renderEmailTriageList();
   if(!fromPopState && id!==currentPageId) history.pushState({page:id},'','#'+id);
   currentPageId=id;
+  // Set currentPageId first — renderCurrentPage() reads it. Not awaited: nav()
+  // is called straight from inline onclick handlers, and the page switch above
+  // has already happened, so the content fills in a frame later exactly as it
+  // did when these were nine separate unawaited calls.
+  renderCurrentPage();
 }
 window.addEventListener('popstate',e=>{
   const id=(e.state&&e.state.page)||'dashboard';
@@ -2059,6 +1042,88 @@ const BUSINESS_INFO = {
 // the single source of truth for when it was last checked against current
 // legislation — update it (and the content) whenever you re-verify.
 const LAW_UPDATES_LAST_VERIFIED = '21 Jul 2026';
+
+/* ============================================================
+   PDF ENGINE — loaded on demand, never at boot.
+
+   jsPDF (357 KB), jspdf-autotable (38 KB) and the three report
+   generators (43 KB) were 438 KB of the 601 KB blocking the
+   first paint, for output that does not exist until someone
+   clicks a PDF button. They are fetched here instead, the first
+   time a report is actually asked for.
+
+   ORDER IS LOAD-BEARING and this function owns it. jspdf-autotable
+   patches jsPDF's prototype to add doc.autoTable, so it cannot be
+   evaluated before jsPDF exists; pdf-reports.js reads neither at
+   parse time, but is kept last so there is one rule rather than
+   three exceptions. Sequential, not Promise.all.
+
+   All three are in SHELL_FILES (sw.js), so after the first visit
+   these resolve from the cache and the offline path is unchanged.
+   Pre-caching a file and blocking the first paint on it are
+   different things.
+
+   The promise is cached including its rejection: a second attempt
+   after a genuine failure fails the same way, and re-injecting
+   script tags per click is worse than reporting it once. This
+   mirrors FindingsReport.loadHeic2Any() — same problem, same
+   shape, deliberately.
+   ============================================================ */
+const PDF_ENGINE_FILES = [
+  'vendor/jspdf-2.5.2.umd.min.js',
+  'vendor/jspdf-autotable-3.8.2.min.js',
+  'reports/pdf-reports.js'
+];
+const PDF_ENGINE_UNAVAILABLE_MESSAGE =
+  'The PDF generator could not be loaded. If this is the first PDF on this device since installing, reconnect briefly and try again — after that it works offline.';
+let pdfEnginePromise = null;
+
+function loadScriptOnce(src){
+  return new Promise((resolve,reject)=>{
+    // Already present from an earlier call, or restored by a reload.
+    if(document.querySelector(`script[data-pdf-engine="${src}"]`)) return resolve();
+    const el=document.createElement('script');
+    el.src=src;
+    el.async=false; // irrelevant while we await each one, but says the intent
+    el.dataset.pdfEngine=src;
+    el.onload=()=>resolve();
+    el.onerror=()=>{
+      // Leave nothing behind that would make the next attempt think it loaded.
+      el.remove();
+      reject(new Error(src+' failed to load'));
+    };
+    document.head.appendChild(el);
+  });
+}
+
+function loadPdfEngine(){
+  if(pdfEnginePromise) return pdfEnginePromise;
+  pdfEnginePromise=(async()=>{
+    for(const src of PDF_ENGINE_FILES) await loadScriptOnce(src);
+    // Prove the globals actually arrived rather than trusting onload. A file
+    // served as HTML by a misconfigured host fires onload and defines nothing,
+    // which would otherwise surface later as an unrelated TypeError.
+    if(!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF did not define window.jspdf.jsPDF');
+    for(const name of ['FindingsReport','InvoiceReport','StatementReport']){
+      if(!window[name]) throw new Error('reports/pdf-reports.js did not define '+name);
+    }
+  })();
+  return pdfEnginePromise;
+}
+
+/* Wraps the load for the six PDF buttons: returns true when the engine is
+   ready, and tells the user in words when it is not. Callers that get false
+   must not proceed — every generator dereferences these globals. */
+async function ensurePdfEngine(){
+  try{
+    await loadPdfEngine();
+    return true;
+  }catch(err){
+    console.error('PDF engine failed to load:',err);
+    alert(PDF_ENGINE_UNAVAILABLE_MESSAGE);
+    return false;
+  }
+}
 
 /* ============================================================
    AUTH — Supabase Auth gates access to the app and its data.
@@ -2233,25 +1298,97 @@ function describeAuthFailure(err){
    used to drift apart (see the registration checklist in CLAUDE.md). Each entry
    is run in isolation: one module throwing must not stop the rest from
    rendering, and must never abort the sync that follows. */
-const APP_RENDERERS=[
-  ['inspections',async()=>{await renderInspectionList();updateSyncBanner();}],
-  ['properties', async()=>{await renderPropertiesList();updatePropSyncBanner();}],
-  ['tenants',    async()=>{await renderTenantsList();updateTenantSyncBanner();}],
-  ['maintenance',async()=>{await renderMaintenanceList();updateMaintSyncBanner();}],
-  ['invoices',   async()=>{await renderInvoicesList();updateInvoiceSyncBanner();}],
-  ['statements', async()=>{await renderStatementsList();updateStatementSyncBanner();}],
-  ['dashboard',  async()=>{await renderDashboard();}],
-  ['activity',   async()=>{await renderActivityLog();}],
-  ['compliance', async()=>{await renderComplianceLive();}],
-  ['backup',     async()=>{await renderBackupCard();}],
-  ['archive',    async()=>{await renderArchiveCard();}]
-];
+/* ============================================================
+   MODULE REGISTRY — one entry per thing that draws itself from
+   IndexedDB, and the pages each one appears on.
 
-async function renderAllModules(){
-  for(const [name,run] of APP_RENDERERS){
+   A sync used to end by re-rendering every module, whichever
+   page was on screen: ten renders and twenty-three separate
+   full-store reads to update the one page the user could
+   actually see. Now it draws the current page and marks the
+   rest stale, and nav() catches a page up on entry.
+
+   The trap this has to avoid — and the reason PAGE_MODULES is a
+   table rather than a handful of `if (id === ...)` lines in
+   nav() — is that nav() did NOT re-render properties, tenants,
+   maintenance or inspections. Those four only ever refreshed
+   BECAUSE the sync re-rendered everything unconditionally.
+   Dropping the blanket re-render without giving them a path
+   back would have left them showing whatever was on screen when
+   the page was last drawn, indefinitely, and only on a device
+   syncing changes made elsewhere — which is exactly the kind of
+   staleness nobody reports as a bug because it looks like the
+   data simply hasn't changed.
+
+   So both directions are table-driven and have to stay that
+   way: a module missing from every PAGE_MODULES entry never
+   redraws after a sync, and a page missing from PAGE_MODULES
+   draws nothing on entry.
+   ============================================================ */
+const MODULE_RENDERERS={
+  inspections:    async()=>{await renderInspectionList();  await updateSyncBanner();},
+  properties:     async()=>{await renderPropertiesList();  await updatePropSyncBanner();},
+  tenants:        async()=>{await renderTenantsList();     await updateTenantSyncBanner();},
+  maintenance:    async()=>{await renderMaintenanceList(); await updateMaintSyncBanner();},
+  invoices:       async()=>{await renderInvoicesList();    await updateInvoiceSyncBanner();},
+  statements:     async()=>{await renderStatementsList();  await updateStatementSyncBanner();},
+  financials:     async()=>{await renderFinancials();},
+  dashboard:      async()=>{await renderDashboard();},
+  activity:       async()=>{await renderActivityLog();},
+  compliance:     async()=>{await renderComplianceLive();},
+  'email-triage': async()=>{await renderEmailTriageList();},
+  // Both cards live on the dashboard — they render into dash-* elements.
+  backup:         async()=>{await renderBackupCard();},
+  archive:        async()=>{await renderArchiveCard();}
+};
+
+const PAGE_MODULES={
+  dashboard:      ['dashboard','backup','archive'],
+  properties:     ['properties'],
+  tenants:        ['tenants'],
+  maintenance:    ['maintenance'],
+  inspections:    ['inspections'],
+  financials:     ['financials'],
+  invoices:       ['invoices'],
+  statements:     ['statements'],
+  compliance:     ['compliance'],
+  activity:       ['activity'],
+  'email-triage': ['email-triage']
+};
+
+// Modules whose data has moved since they were last drawn.
+const staleModules=new Set();
+
+async function runModuleRenderers(names){
+  for(const name of names){
+    const run=MODULE_RENDERERS[name];
+    if(!run) continue;
+    // Clear the flag first: a renderer that throws has still consumed the
+    // current data, and leaving it stale would retry the same failure on every
+    // navigation back to the page.
+    staleModules.delete(name);
     try{ await run(); }
     catch(err){ console.error('Could not render '+name+':',err); }
   }
+}
+
+// Everything, whatever page is showing. Correct at first load, at sign-in and
+// after a restore, where nothing has been drawn yet and every page is empty.
+async function renderAllModules(){
+  await runModuleRenderers(Object.keys(MODULE_RENDERERS));
+}
+
+// Draws whatever the current page needs and has not drawn since it went stale.
+async function renderCurrentPage(){
+  const names=(PAGE_MODULES[currentPageId]||[]).filter(n=>staleModules.has(n));
+  if(names.length) await runModuleRenderers(names);
+}
+
+// Data moved underneath every page at once — what a completed sync means.
+// Draw the page in front of the user now; the others catch up when visited.
+async function renderVisibleAndDeferRest(){
+  for(const name of Object.keys(MODULE_RENDERERS)) staleModules.add(name);
+  await renderCurrentPage();
 }
 
 // Shared by both ways into the app: a fresh sign-in and an existing session.
@@ -2964,31 +2101,43 @@ function mapRemoteStatement(row){
   };
 }
 
+/* The seven pulls run concurrently, and that is a deliberate difference from
+   the pushes in fullSyncNowInner(), which must stay sequential.
+
+   Pulling is per-table and independent: each pullAndMerge() reads one remote
+   table, merges it into one local store, and keeps its own cursor. Nothing it
+   does depends on another table having been pulled first, and it catches its
+   own errors, so one table failing can't reject the others.
+
+   Run in series it was the slowest thing the app does. A table needs two
+   requests to be walked (an empty page is what proves the walk reached the
+   end — see fetchRemoteTablePaged), so a sync with nothing changed still cost
+   fourteen round trips end to end: measured at 4.3s against a 300ms mobile
+   latency, on a six-property portfolio, every time the app was opened, focused
+   or reconnected. Concurrently it is one round trip's worth of waiting.
+
+   The PUSH side is ordered for a reason and is not a candidate for the same
+   treatment: tenants, maintenance, inspections and invoices all carry a
+   foreign key to properties, so a property has to land on the server before
+   anything referencing it. */
 async function pullAllAndMerge(options){
   options=options||{};
-  await pullAndMerge('properties','properties',mapRemoteProperty,options);
-  await pullAndMerge('tenants','tenants',mapRemoteTenant,options);
-  await pullAndMerge('maintenance','maintenance',mapRemoteMaintenance,options);
-  await pullAndMerge('inspections','inspections',mapRemoteInspection,options);
-  await pullAndMerge('invoices','invoices',mapRemoteInvoice,options);
-  await pullAndMerge('statements','statements',mapRemoteStatement,options);
-  // The activity log is the one table pulled through a retention window. The
-  // filter has to match pruneLocalActivityLog() exactly: if the pull reached
-  // further back than the local prune does, a full pull would re-download the
-  // rows the prune had just removed and the two would undo each other on
-  // every sync, forever.
-  await pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
-    {...options,minCreatedAt:activityLogCutoffISO()});
-  await renderPropertiesList();  updatePropSyncBanner();
-  await renderTenantsList();     updateTenantSyncBanner();
-  await renderMaintenanceList(); updateMaintSyncBanner();
-  await renderInspectionList();  updateSyncBanner();
-  await renderInvoicesList();    updateInvoiceSyncBanner();
-  await renderStatementsList();  updateStatementSyncBanner();
-  await renderActivityLog();
-  await renderDashboard();
-  await renderComplianceLive();
-  await renderFinancials();
+  await Promise.all([
+    pullAndMerge('properties','properties',mapRemoteProperty,options),
+    pullAndMerge('tenants','tenants',mapRemoteTenant,options),
+    pullAndMerge('maintenance','maintenance',mapRemoteMaintenance,options),
+    pullAndMerge('inspections','inspections',mapRemoteInspection,options),
+    pullAndMerge('invoices','invoices',mapRemoteInvoice,options),
+    pullAndMerge('statements','statements',mapRemoteStatement,options),
+    // The activity log is the one table pulled through a retention window. The
+    // filter has to match pruneLocalActivityLog() exactly: if the pull reached
+    // further back than the local prune does, a full pull would re-download the
+    // rows the prune had just removed and the two would undo each other on
+    // every sync, forever.
+    pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
+      {...options,minCreatedAt:activityLogCutoffISO()})
+  ]);
+  await renderVisibleAndDeferRest();
 }
 
 /* ============================================================
@@ -3312,7 +2461,7 @@ async function renderActivityLog(){
   const tbody=document.getElementById('activity-log-list');
   if(!tbody) return;
   const all=await dbGetAll('activityLog').catch(()=>[]);
-  all.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+  all.sort((a,b)=>(b.timestamp||'').localeCompare(a.timestamp||''));
   const countEl=document.getElementById('activity-log-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -3327,7 +2476,7 @@ async function renderActivityLog(){
   };
   tbody.innerHTML=pageItems.map(l=>`
     <tr>
-      <td style="white-space:nowrap">${formatLogTime(l.timestamp)}</td>
+      <td style="white-space:nowrap">${escapeHtml(formatLogTime(l.timestamp))}</td>
       <td>${escapeHtml(l.entity)}</td>
       <td>${actionBadge(l.action)}</td>
       <td>${escapeHtml(l.detail)}</td>
@@ -3703,7 +2852,7 @@ async function renderInspectionList(){
   const all=(await dbGetAll('inspections')).filter(i=>!i.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('insp-list');
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -3713,15 +2862,17 @@ async function renderInspectionList(){
   }
   const pageItems=getListPage('inspections',all);
   tbody.innerHTML=pageItems.map(insp=>{
-    const photoCount=insp.areas.reduce((n,a)=>n+a.photos.length,0);
-    const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
+    const areas=Array.isArray(insp.areas)?insp.areas:[];
+    const photoCount=areas.reduce((n,a)=>n+((a&&a.photos)?a.photos.length:0),0);
+    const areaSummary=areas.map(a=>(a&&a.name)+': '+(a&&a.status)).slice(0,2).join(', ')+(areas.length>2?'…':'');
+    const id=escapeJsAttr(insp.id);
     return `<tr>
       <td>${escapeHtml(addressOf(insp))}</td>
       <td>${escapeHtml(insp.date)}</td>
       <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${id}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
@@ -3785,6 +2936,10 @@ async function generateInspectionPDF(id,btn){
   if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
 
   try{
+    // Inside the try, so the button's "Generating…" state covers the fetch and
+    // the finally restores it whichever way this goes. ensurePdfEngine() has
+    // already told the user if it failed.
+    if(!await ensurePdfEngine()) return;
     await FindingsReport.generate(data,{ fileName:inspectionReportFileName(insp,siteAddress), download:true });
   }catch(err){
     alert('Could not generate report: '+(err && err.message));
@@ -4119,8 +3274,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
   checkSession();
   resetInspectionForm();
-  renderAllModules();
-  renderEmailTriageList();
+  renderAllModules(); // includes email-triage and financials — see MODULE_RENDERERS
   updateEmailTriageModeBanner();
   // Only auto-runs in demo mode — otherwise MOCK_INBOX would auto-create fake
   // maintenance requests on top of real data on every load.
@@ -4209,8 +3363,8 @@ async function openComplianceModal(id){
         <div><label>Status</label><select class="ci-status" data-key="${it.key}">
           ${['Compliant','Overdue','Not assessed','N/A'].map(s=>`<option${s===it.status?' selected':''}>${s}</option>`).join('')}
         </select></div>
-        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${it.lastChecked}"></div>
-        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${it.nextDue}"></div>
+        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${escapeAttr(it.lastChecked)}"></div>
+        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${escapeAttr(it.nextDue)}"></div>
       </div>
       <label style="margin-top:8px">Notes / comments</label>
       <textarea class="ci-notes" data-key="${it.key}" placeholder="Optional notes for this item..." style="min-height:36px">${escapeHtml(it.notes)}</textarea>
@@ -4279,10 +3433,11 @@ async function renderComplianceLive(){
       const iconClass=s.overdue>0?'ci-r':(s.notAssessed>0?'ci-a':'ci-g');
       let desc;
       if(!s.total) desc='No properties track this item yet.';
-      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${s.overdueAddrs.slice(0,2).join(', ')}${s.overdueAddrs.length>2?'…':''}`;
+      // Addresses are user input, so this branch is the one that has to escape.
+      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${escapeHtml(s.overdueAddrs.slice(0,2).join(', '))}${s.overdueAddrs.length>2?'…':''}`;
       else if(s.notAssessed>0) desc=`${s.notAssessed} of ${s.total} not yet assessed.`;
       else desc=`All ${s.total-s.na} compliant.`+(s.dueSoon?` ${s.dueSoon} due for re-check within 30 days.`:'');
-      return `<div class="comp-item"><div class="comp-icon ${iconClass}">${def.icon}</div><div><div class="comp-name">${def.label}</div><div class="comp-desc">${desc}</div><div class="prog"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>`;
+      return `<div class="comp-item"><div class="comp-icon ${iconClass}">${escapeHtml(def.icon)}</div><div><div class="comp-name">${escapeHtml(def.label)}</div><div class="comp-desc">${desc}</div><div class="prog"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>`;
     }).join('');
   }
 
@@ -4315,10 +3470,10 @@ async function renderComplianceLive(){
     if(!properties.length){
       propList.innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:14px">No properties yet</td></tr>';
     }else{
-      const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
+      const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${escapeHtml(t)}</span>`:`<span class="st">${escapeHtml(t)}</span>`;
       propList.innerHTML=properties.map(p=>`
         <tr>
-          <td style="cursor:pointer" ondblclick="openComplianceModal('${escapeAttr(p.id)}')" title="Double-click to update compliance"><strong>${escapeHtml(p.address)}</strong></td>
+          <td style="cursor:pointer" ondblclick="openComplianceModal('${escapeJsAttr(p.id)}')" title="Double-click to update compliance"><strong>${escapeHtml(p.address)}</strong></td>
           <td>${tenancyBadge(p.tenancy)}</td>
           <td>${complianceSummaryBadge(p)}</td>
         </tr>`).join('');
@@ -4401,7 +3556,7 @@ async function saveProperty(){
 
 async function renderPropertiesList(){
   const all=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('prop-list');
   document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -4410,16 +3565,16 @@ async function renderPropertiesList(){
     return;
   }
   const pageItems=getListPage('properties',all);
-  const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
+  const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${escapeHtml(t)}</span>`:`<span class="st">${escapeHtml(t)}</span>`;
   const statusBadge=s=>{
     const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(p=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editProperty('${escapeAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m² · ${p.parking||0} parking</span></td>
+      <td style="cursor:pointer" ondblclick="editProperty('${escapeJsAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${escapeHtml(p.bedrooms)} bed · ${escapeHtml(p.bathrooms)} bath · ${escapeHtml(p.floorArea)}m² · ${escapeHtml(p.parking||0)} parking</span></td>
       <td>${tenancyBadge(p.tenancy)}</td>
-      <td>$${p.rentPerWeek}</td>
+      <td>$${escapeHtml(p.rentPerWeek)}</td>
       <td>${statusBadge(p.status)}</td>
       <td>${complianceSummaryBadge(p)}</td>
       <td>${p.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
@@ -4705,7 +3860,7 @@ async function renderTenantsList(){
   const all=(await dbGetAll('tenants')).filter(t=>!t.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('tenant-list');
   document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -4715,19 +3870,19 @@ async function renderTenantsList(){
   }
   const pageItems=getListPage('tenants',all);
   const statusBadge=(t)=>{
-    if(t.status==='Arrears') return `<span class="badge br">Arrears $${t.arrearsAmount}</span>`;
+    if(t.status==='Arrears') return `<span class="badge br">Arrears $${escapeHtml(t.arrearsAmount)}</span>`;
     if(t.status==='Renewal due') return '<span class="badge ba">Renewal due</span>';
     if(t.status==='Vacated') return '<span class="badge bgr">Vacated</span>';
     return '<span class="badge bg">Current</span>';
   };
   tbody.innerHTML=pageItems.map(t=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editTenant('${escapeAttr(t.id)}')" title="Double-click to edit"><strong>${escapeHtml(t.tenantName)}</strong></td>
+      <td style="cursor:pointer" ondblclick="editTenant('${escapeJsAttr(t.id)}')" title="Double-click to edit"><strong>${escapeHtml(t.tenantName)}</strong></td>
       <td>${escapeHtml(addressOf(t))}</td>
-      <td>${t.leaseStart||'—'}</td>
-      <td>${t.leaseEnd||'—'}</td>
+      <td>${escapeHtml(t.leaseStart)||'—'}</td>
+      <td>${escapeHtml(t.leaseEnd)||'—'}</td>
       <td>${t.bondLodged?'<span class="badge bg">✓ TS</span>':'<span class="badge ba">Not lodged</span>'}</td>
-      <td>$${t.rentPerWeek}</td>
+      <td>$${escapeHtml(t.rentPerWeek)}</td>
       <td>${statusBadge(t)}</td>
       <td>${t.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
     </tr>`).join('');
@@ -4913,7 +4068,7 @@ async function renderMaintenanceList(){
   const all=(await dbGetAll('maintenance')).filter(m=>!m.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('maint-list');
   document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -4924,15 +4079,15 @@ async function renderMaintenanceList(){
   const pageItems=getListPage('maintenance',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
-    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
   };
   const statusBadge=s=>{
     const map={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(m=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editMaintenance('${escapeAttr(m.id)}')" title="Double-click to edit"><strong>${escapeHtml(m.issue)}</strong></td>
+      <td style="cursor:pointer" ondblclick="editMaintenance('${escapeJsAttr(m.id)}')" title="Double-click to edit"><strong>${escapeHtml(m.issue)}</strong></td>
       <td>${escapeHtml(addressOf(m))}</td>
       <td>${escapeHtml(m.reportedDate)}</td>
       <td>${priorityDot(m.priority)}</td>
@@ -5263,7 +4418,7 @@ async function renderEmailTriageList(){
   const tbody=document.getElementById('triage-list');
   if(!tbody) return;
   const all=await dbGetAll('emailTriage').catch(()=>[]);
-  all.sort((a,b)=>b.receivedAt.localeCompare(a.receivedAt));
+  all.sort((a,b)=>(b.receivedAt||'').localeCompare(a.receivedAt||''));
   const countEl=document.getElementById('triage-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -5274,23 +4429,25 @@ async function renderEmailTriageList(){
   const pageItems=getListPage('triage',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
-    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
   };
   const statusCell=rec=>{
+    const id=escapeJsAttr(rec.id);
     if(rec.status==='auto-created') return {badge:'<span class="badge bg">✓ Auto-created</span>',action:'—'};
     if(rec.status==='created') return {badge:'<span class="badge bg">✓ Created</span>',action:'—'};
-    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
-    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
+    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${id}')">Create request</button>`};
+    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${id}')">Create request</button>`};
     return {badge:'<span class="badge ba">Needs review</span>',
-      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${rec.id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${rec.id}')">Dismiss</button>`};
+      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${id}')">Dismiss</button>`};
   };
   tbody.innerHTML=pageItems.map(rec=>{
     const sc=statusCell(rec);
+    const body=String(rec.body||'');
     const received=new Date(rec.receivedAt).toLocaleString('en-NZ',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
     return `<tr>
-      <td>${received}</td>
+      <td>${escapeHtml(received)}</td>
       <td>${escapeHtml(rec.from)}</td>
-      <td><strong>${escapeHtml(rec.subject)}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${escapeHtml(rec.body.slice(0,80))}${rec.body.length>80?'…':''}</div></td>
+      <td><strong>${escapeHtml(rec.subject)}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${escapeHtml(body.slice(0,80))}${body.length>80?'…':''}</div></td>
       <td>${escapeHtml(rec.matchedPropertyAddress)}</td>
       <td>${priorityDot(rec.suggestedPriority)}</td>
       <td>${sc.badge}</td>
@@ -5324,12 +4481,6 @@ function roundMoney(dollars){ return fromCents(toCents(dollars)); }
 
 let editingInvoiceId=null;
 let invoiceItemRowCounter=0;
-
-function dateAddDaysStr(days){
-  const d=new Date();
-  d.setDate(d.getDate()+days);
-  return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
-}
 
 // --- Flexible date helpers for invoices (payment-terms auto-fill + JSON
 // import, which supplies ISO 'YYYY-MM-DD' dates like invoice_generator.py) ---
@@ -5397,19 +4548,52 @@ function invoiceItemRowHtml(rowId,item){
   item=item||{};
   return `<tr id="${rowId}">
       <td><input type="text" class="item-input item-desc" value="${escapeAttr(item.description||'')}" placeholder="e.g. Property management fee — July"></td>
-      <td><input type="number" class="item-input item-qty" value="${item.quantity!=null?item.quantity:1}" min="0" step="1" oninput="recalcInvoiceTotals()"></td>
-      <td><input type="number" class="item-input item-price" value="${item.unitPrice!=null?item.unitPrice:0}" min="0" step="0.01" oninput="recalcInvoiceTotals()"></td>
+      <td><input type="number" class="item-input item-qty" value="${escapeAttr(item.quantity!=null?item.quantity:1)}" min="0" step="1" oninput="recalcInvoiceTotals()"></td>
+      <td><input type="number" class="item-input item-price" value="${escapeAttr(item.unitPrice!=null?item.unitPrice:0)}" min="0" step="0.01" oninput="recalcInvoiceTotals()"></td>
       <td class="tr item-amount">$0.00</td>
       <td><button type="button" class="item-remove" onclick="removeInvoiceItemRow('${rowId}')" title="Remove line">✕</button></td>
     </tr>`;
 }
 
-// For values dropped into an HTML attribute. Single quotes matter as much as
-// double: several handlers here are written as onclick="fn('${id}')", so an
-// apostrophe would close the JS string and everything after it becomes code.
+// For values dropped into a plain HTML attribute — value="${...}", data-*, and
+// the like. Single quotes are escaped as well as double so the helper is safe
+// whichever quoting style the attribute uses.
+//
+// NOT sufficient for an inline event handler: see escapeJsAttr below.
 function escapeAttr(str){
   if(str===null||str===undefined) return '';
   return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
+}
+
+/* For a value that lands INSIDE an inline event handler — onclick="fn('${id}')".
+   This is a different job from escapeAttr and the difference is not cosmetic.
+
+   An event-handler attribute is decoded twice: the HTML parser unescapes the
+   attribute value first, and only then is the result compiled as JavaScript.
+   escapeAttr turns an apostrophe into &#39;, the parser turns it straight back
+   into an apostrophe, and the JS compiler sees a closed string — so escaping
+   for HTML alone buys nothing here. An id of
+
+     x'); doSomething(); ('
+
+   ran as code with escapeAttr applied. Verified, not theorised.
+
+   So escape for the inner context first (JS string literal) and the outer one
+   second (HTML attribute). After the parser has undone the HTML layer, what
+   reaches the compiler is still a correctly escaped string literal. The order
+   is load-bearing: HTML-escaping last is what stops a pre-encoded &#39; in the
+   stored value from surviving the parser as a real quote. */
+function escapeJsAttr(str){
+  if(str===null||str===undefined) return '';
+  const js=String(str)
+    .replace(/\\/g,'\\\\')
+    .replace(/'/g,"\\'")
+    .replace(/"/g,'\\"')
+    .replace(/\r/g,'\\r')
+    .replace(/\n/g,'\\n')
+    .replace(/\u2028/g,'\\u2028')
+    .replace(/\u2029/g,'\\u2029');
+  return js.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function addInvoiceItemRow(item){
@@ -5570,7 +4754,7 @@ async function saveInvoice(){
 
 async function renderInvoicesList(){
   const all=(await dbGetAll('invoices').catch(()=>[])).filter(i=>!i.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('invoice-list');
   if(!tbody) return;
   const countEl=document.getElementById('invoice-count');
@@ -5583,19 +4767,19 @@ async function renderInvoicesList(){
   const pageItems=getListPage('invoices',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg',Overdue:'br'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(inv=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editInvoice('${inv.id}')" title="Double-click to edit"><strong>${inv.invoiceNumber}</strong></td>
+      <td style="cursor:pointer" ondblclick="editInvoice('${escapeJsAttr(inv.id)}')" title="Double-click to edit"><strong>${escapeHtml(inv.invoiceNumber)}</strong></td>
       <td>${escapeHtml(inv.billToName)}</td>
       <td>${escapeHtml(inv.propertyAddress||'—')}</td>
-      <td>${inv.issueDate||'—'}</td>
-      <td>${inv.dueDate||'—'}</td>
-      <td class="tr">$${(inv.total||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td>${escapeHtml(inv.issueDate)||'—'}</td>
+      <td>${escapeHtml(inv.dueDate)||'—'}</td>
+      <td class="tr">$${(Number(inv.total)||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(inv.status)}</td>
       <td>${inv.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${inv.id}')">📄 PDF</button></td>
+      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${escapeJsAttr(inv.id)}')">📄 PDF</button></td>
     </tr>`).join('');
 }
 
@@ -5724,6 +4908,7 @@ async function generateInvoicePDF(id){
   if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
 
   try{
+    if(!await ensurePdfEngine()) return;
     await InvoiceReport.generate({
       invoiceNumber:inv.invoiceNumber,
       reference:inv.reference,
@@ -5863,7 +5048,7 @@ function statementPropertyBlockHtml(blockId,optionsHtml,propBlock){
           <select class="stmt-prop-select" style="width:100%" onchange="if(this.value)this.closest('.stmt-property-block').querySelector('.stmt-prop-address').value=this.options[this.selectedIndex].textContent">${optionsHtml}</select>
         </div>
         <div style="flex:1;min-width:220px"><label>Property address</label><input type="text" class="stmt-prop-address" value="${escapeAttr(propBlock.propertyAddress||'')}" placeholder="e.g. 12 Example St" style="width:100%"></div>
-        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${propBlock.openingBalance||0}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
+        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${escapeAttr(propBlock.openingBalance||0)}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
         <button type="button" class="btn btn-sm btn-danger" onclick="removeStatementPropertyBlock('${blockId}')">✕ Remove property</button>
       </div>
 
@@ -5924,7 +5109,7 @@ function statementItemRowHtml(rowId,item){
   return `<tr id="${rowId}">
       <td><input type="text" class="item-input stmt-date" value="${escapeAttr(item.date||'')}" placeholder="e.g. 05 Jul 2026"></td>
       <td><input type="text" class="item-input stmt-desc" value="${escapeAttr(item.description||'')}" placeholder="e.g. Rent received"></td>
-      <td><input type="number" class="item-input stmt-amount" value="${item.amount!=null?item.amount:0}" min="0" step="0.01" oninput="recalcStatementTotals()"></td>
+      <td><input type="number" class="item-input stmt-amount" value="${escapeAttr(item.amount!=null?item.amount:0)}" min="0" step="0.01" oninput="recalcStatementTotals()"></td>
       <td><button type="button" class="item-remove" onclick="removeStatementItemRow('${rowId}')" title="Remove line">✕</button></td>
     </tr>`;
 }
@@ -6214,17 +5399,17 @@ async function renderStatementsList(){
   const pageItems=getListPage('statements',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(s=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
-      <td>${escapeHtml((s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', '))||'—'}</td>
-      <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
-      <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="cursor:pointer" ondblclick="editStatement('${escapeJsAttr(s.id)}')" title="Double-click to edit"><strong>${escapeHtml(s.statementNumber)}</strong></td>
+      <td>${escapeHtml((Array.isArray(s.properties)?s.properties:[]).map(p=>p&&p.propertyAddress).filter(Boolean).join(', '))||'—'}</td>
+      <td>${escapeHtml(s.periodStart)||'—'} – ${escapeHtml(s.periodEnd)||'—'}</td>
+      <td class="tr">$${(Number(s.netAmount)||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(s.status)}</td>
       <td>${s.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateStatementPDF('${s.id}')">📄 PDF</button></td>
+      <td><button class="btn btn-sm" onclick="generateStatementPDF('${escapeJsAttr(s.id)}')">📄 PDF</button></td>
     </tr>`).join('');
 }
 
@@ -6348,6 +5533,7 @@ async function generateStatementPDF(id){
   if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
 
   try{
+    if(!await ensurePdfEngine()) return;
     await StatementReport.generate({
       statementNumber:s.statementNumber,
       periodStart:s.periodStart,periodEnd:s.periodEnd,status:s.status,
@@ -6934,6 +6120,43 @@ async function exportAllData(withPhotos,btn){
    mention; "Replace" makes the device match the file exactly. Replace is the
    one you want after a device is wiped, merge is the one you want after an
    accidental deletion — so the choice is explicit rather than guessed. */
+/* A backup file is the one place arbitrary shapes reach IndexedDB. Everything
+   else that writes a record built it from a form or from mapRemoteX(), so the
+   renderers were written assuming the fields they read exist. They don't have
+   to: this accepted any object carrying an id, and a record missing createdAt
+   made the list renderers' sort comparator throw, which left the whole page
+   blank rather than dropping one row.
+
+   The escaping fixes mean a hostile value can no longer execute, and these two
+   mean a malformed one can no longer take a page down. Both layers are wanted:
+   this normalises what a well-meaning hand-edited file gets wrong, and the
+   escaping covers what it deliberately gets wrong. */
+function isImportableRecord(r){
+  return !!r && typeof r==='object' && !Array.isArray(r)
+    && r.id!==undefined && r.id!==null && r.id!=='';
+}
+
+// Fields the renderers index into without checking. Kept deliberately narrow —
+// this fills in what would throw, it does not invent business data.
+const IMPORT_ARRAY_FIELDS={
+  inspections:['areas'],
+  invoices:['items'],
+  statements:['properties']
+};
+
+function normaliseImportedRecord(store,record){
+  const out={...record,id:String(record.id)};
+  // Sorting is the first thing every list renderer does, and it compares
+  // strings. An absent timestamp sorts last rather than throwing.
+  if(typeof out.createdAt!=='string') out.createdAt='';
+  if(store==='activityLog' && typeof out.timestamp!=='string') out.timestamp=out.createdAt;
+  if(store==='emailTriage' && typeof out.receivedAt!=='string') out.receivedAt=out.createdAt;
+  for(const field of (IMPORT_ARRAY_FIELDS[store]||[])){
+    if(!Array.isArray(out[field])) out[field]=[];
+  }
+  return out;
+}
+
 async function importAllData(file){
   if(!file) return;
   let payload;
@@ -6951,7 +6174,8 @@ async function importAllData(file){
 
   const incoming={};
   for(const store of LOCAL_STORES){
-    incoming[store]=Array.isArray(payload.data[store])?payload.data[store]:[];
+    const rows=Array.isArray(payload.data[store])?payload.data[store]:[];
+    incoming[store]=rows.filter(isImportableRecord).map(r=>normaliseImportedRecord(store,r));
   }
   const current={};
   for(const store of LOCAL_STORES) current[store]=await dbGetAll(store).catch(()=>[]);
@@ -7216,6 +6440,18 @@ async function archiveOneInspection(dirHandle,insp,siteAddress){
   const data=await buildInspectionReportData(insp,siteAddress);
   if(!data.findings.length) return {ok:false,reason:'No areas to report'};
 
+  /* loadPdfEngine(), not ensurePdfEngine(): this path reports failures as a
+     reason string for the archive summary and must not pop an alert per
+     inspection. It also must fail CLOSED — returning before any folder is
+     created, so nothing is marked archived and no photo becomes eligible for
+     purging on the strength of a report that was never written. The promise is
+     cached, so the loop pays for this once. */
+  try{
+    await loadPdfEngine();
+  }catch(err){
+    return {ok:false,reason:'PDF generator could not be loaded: '+((err&&err.message)||String(err))};
+  }
+
   const folderName=archiveFolderName(insp,siteAddress);
   const folder=await dirHandle.getDirectoryHandle(folderName,{create:true});
   const files=[];
@@ -7477,7 +6713,7 @@ async function renderDashboard(){
   let alertsHtml='';
   if(overdueProps.length){
     const names=overdueProps.map(p=>p.address).join(', ');
-    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${escapeHtml(names)}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
+    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${escapeHtml(names)}. <a href="#" onclick="nav('compliance',null);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
   }
   alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.<span style="display:block;font-size:11px;opacity:.7;margin-top:2px">Last verified ${LAW_UPDATES_LAST_VERIFIED}</span></div></div>`;
   alertsEl.innerHTML=alertsHtml;
@@ -7501,7 +6737,7 @@ async function renderDashboard(){
   document.getElementById('dm-inspections-sub').textContent=inspDueCount?'Due within 30 days':(properties.length?'None due soon':'No properties yet');
 
   document.getElementById('dash-inspections').innerHTML=inspRows.length
-    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',document.querySelectorAll('.nav-item')[4])" title="Double-click to open Inspections"><td>${escapeHtml(r.address)}</td><td>${escapeHtml(r.lastStr)}</td><td>${escapeHtml(r.nextStr)}</td><td>${r.statusBadge}</td></tr>`).join('')
+    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',null)" title="Double-click to open Inspections"><td>${escapeHtml(r.address)}</td><td>${escapeHtml(r.lastStr)}</td><td>${escapeHtml(r.nextStr)}</td><td>${r.statusBadge}</td></tr>`).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr>';
 
   // Properties not compliant
@@ -7509,7 +6745,7 @@ async function renderDashboard(){
     ? overdueProps.map(p=>{
         const items=getPropertyCompliance(p).filter(it=>isItemOverdue(it,today));
         const labels=items.map(it=>it.label).slice(0,2).join(', ')+(items.length>2?'…':'');
-        return `<tr style="cursor:pointer" ondblclick="nav('compliance',document.querySelectorAll('.nav-item')[8])" title="Double-click to open Compliance"><td>${escapeHtml(p.address)}</td><td style="font-size:12px;color:var(--text2)">${escapeHtml(labels)}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('compliance',null)" title="Double-click to open Compliance"><td>${escapeHtml(p.address)}</td><td style="font-size:12px;color:var(--text2)">${escapeHtml(labels)}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
       }).join('')
     : `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">${properties.length?'All properties compliant':'No properties yet'}</td></tr>`;
 
@@ -7522,14 +6758,14 @@ async function renderDashboard(){
   // Lease renewals due
   const renewals=tenants.filter(t=>t.status==='Renewal due');
   document.getElementById('dash-renewals').innerHTML=renewals.length
-    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${escapeHtml(addressOf(t))}</td><td>${escapeHtml(t.tenantName)}</td><td><span class="badge ba">${escapeHtml(t.leaseEnd||'—')}</span></td></tr>`).join('')
+    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',null)" title="Double-click to open Tenants"><td>${escapeHtml(addressOf(t))}</td><td>${escapeHtml(t.tenantName)}</td><td><span class="badge ba">${escapeHtml(t.leaseEnd||'—')}</span></td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
 
   // Urgent maintenance
   document.getElementById('dash-maint').innerHTML=urgentMaint.length
     ? urgentMaint.map(m=>{
         const statusMap={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])" title="Double-click to open Maintenance"><td>${escapeHtml(addressOf(m))}</td><td>${escapeHtml(m.issue)}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${escapeHtml(m.status)}</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',null)" title="Double-click to open Maintenance"><td>${escapeHtml(addressOf(m))}</td><td>${escapeHtml(m.issue)}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${escapeHtml(m.status)}</span></td></tr>`;
       }).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr>';
 }

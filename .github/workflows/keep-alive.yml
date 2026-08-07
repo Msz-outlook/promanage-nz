@@ -52,9 +52,24 @@ jobs:
           URL='${{ steps.config.outputs.url }}'
           KEY='${{ steps.config.outputs.key }}'
 
-          rest=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -H "apikey: $KEY" -H "Authorization: Bearer $KEY" "$URL/rest/v1/")
-          auth=$(curl -sS -o /dev/null -w '%{http_code}' "$URL/auth/v1/health")
+          # `apikey` ONLY — no Authorization header.
+          #
+          # CONFIG.SUPABASE_KEY is a modern publishable key (sb_publishable_…),
+          # and those are not JWTs. Supabase documents the exact failure this
+          # job hit on its first ever run: sending the key as
+          # `Authorization: Bearer sb_publishable_…` is forwarded when it
+          # matches the apikey header, and then "rejected as the value is not
+          # a JWT" — a 401 from PostgREST that looks identical to a paused
+          # project. The legacy anon key was a JWT, which is why the
+          # Bearer-and-apikey pattern is still everywhere in older examples.
+          #
+          # The app itself is unaffected: authHeader() sends a real session
+          # JWT in Authorization, not this key.
+          #
+          # /auth/v1/health needs the apikey header too. It was previously
+          # called with no headers at all, so it returned 401 every time.
+          rest=$(curl -sS -o /dev/null -w '%{http_code}' -H "apikey: $KEY" "$URL/rest/v1/")
+          auth=$(curl -sS -o /dev/null -w '%{http_code}' -H "apikey: $KEY" "$URL/auth/v1/health")
 
           echo "rest/v1/       -> $rest"
           echo "auth/v1/health -> $auth"
@@ -64,11 +79,24 @@ jobs:
           # is false, so the negative test would have passed the very outage
           # this job exists to detect. (set -e already catches a non-zero curl
           # exit; this covers the case where curl exits 0 with no response.)
+          # Say which failure this is. "The project may be paused" was the only
+          # message this job could produce, and it sent the first real failure
+          # straight to the wrong question — the project was ACTIVE_HEALTHY and
+          # the request was malformed. A 401 is never a pause: a paused project
+          # stops answering, it does not start rejecting credentials.
           for code in "$rest" "$auth"; do
             case "$code" in
               2[0-9][0-9]|3[0-9][0-9]) ;;
+              401|403)
+                echo "::error::Supabase answered $code — this is a credentials problem, NOT a paused project. Check the apikey header and that CONFIG.SUPABASE_KEY in index.html is still valid and enabled."
+                exit 1
+                ;;
+              000)
+                echo "::error::No response at all — DNS, TLS or a network failure reaching $URL."
+                exit 1
+                ;;
               *)
-                echo "::error::Supabase answered $code — the project may be paused."
+                echo "::error::Supabase answered $code — the project may be paused. Check the dashboard."
                 exit 1
                 ;;
             esac

@@ -14,7 +14,11 @@ statements/
 # deliberately no package.json — `npm install --no-save playwright` leaves this
 # directory behind, and since GitHub Pages serves everything in the branch,
 # committing it would publish ~19 MB of browser tooling to the live site.
+# Both spellings on purpose. The trailing slash matches a directory only, so a
+# `node_modules` SYMLINK — which is how you point the browser-based tests at an
+# install living somewhere else — slips straight past it and gets committed.
 node_modules/
+node_modules
 package-lock.json
 
 # Local scratch and editor/OS noise

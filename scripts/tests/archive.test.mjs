@@ -328,6 +328,9 @@ export default ({ test, app, eq, deepEq, ok }) => {
     const r = await app(async () => {
       const realAlert = window.alert;
       let message = null, generated = false;
+      // See the note in the next case: the PDF engine is lazily loaded, so
+      // FindingsReport has to be brought up before it can be stubbed.
+      await loadPdfEngine();
       const realGenerate = window.FindingsReport.generate;
       window.alert = (m) => { message = m; };
       window.FindingsReport = { ...window.FindingsReport, generate: async () => { generated = true; return new Blob([]); } };
@@ -355,6 +358,12 @@ export default ({ test, app, eq, deepEq, ok }) => {
   test('a non-purged inspection still generates normally', async () => {
     const r = await app(async () => {
       const realAlert = window.alert;
+      // The PDF engine is lazily loaded, so FindingsReport does not exist until
+      // something asks for a report. Bring it up first, then stub .generate on
+      // it: generateInspectionPDF() calls ensurePdfEngine(), whose promise is
+      // already resolved by then and so leaves the stub in place. Stubbing
+      // before the load would have the real file overwrite the stub.
+      await loadPdfEngine();
       const realGenerate = window.FindingsReport.generate;
       let generated = false;
       window.alert = () => {};

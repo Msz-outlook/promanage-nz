@@ -52,23 +52,35 @@ jobs:
           URL='${{ steps.config.outputs.url }}'
           KEY='${{ steps.config.outputs.key }}'
 
-          # `apikey` ONLY — no Authorization header.
+          # Two rules here, both learned the hard way by this job failing.
           #
-          # CONFIG.SUPABASE_KEY is a modern publishable key (sb_publishable_…),
-          # and those are not JWTs. Supabase documents the exact failure this
-          # job hit on its first ever run: sending the key as
-          # `Authorization: Bearer sb_publishable_…` is forwarded when it
-          # matches the apikey header, and then "rejected as the value is not
-          # a JWT" — a 401 from PostgREST that looks identical to a paused
-          # project. The legacy anon key was a JWT, which is why the
-          # Bearer-and-apikey pattern is still everywhere in older examples.
+          # 1. Do NOT ping /rest/v1/. That is PostgREST's OpenAPI root, and
+          #    Supabase restricts it: it answers
+          #      401 {"message":"Secret API key required",
+          #           "hint":"Only secret API keys can be used for this endpoint."}
+          #    No publishable key will ever satisfy it, with or without an
+          #    Authorization header — and a secret key must never land in this
+          #    repo (check-app.mjs fails the build if one does). Ping a real
+          #    table instead. That is also a strictly better liveness probe:
+          #    it reaches Postgres, which is the thing that auto-pauses,
+          #    whereas the OpenAPI root is served from PostgREST's schema
+          #    cache and would answer even with the database asleep.
           #
-          # The app itself is unaffected: authHeader() sends a real session
-          # JWT in Authorization, not this key.
+          #    RLS means the anon role sees no rows, so this returns 200 []
+          #    forever. That is correct and expected: only the status code is
+          #    being checked. Do not "fix" the empty body.
           #
-          # /auth/v1/health needs the apikey header too. It was previously
-          # called with no headers at all, so it returned 401 every time.
-          rest=$(curl -sS -o /dev/null -w '%{http_code}' -H "apikey: $KEY" "$URL/rest/v1/")
+          # 2. `apikey` ONLY — no Authorization header. CONFIG.SUPABASE_KEY is
+          #    a modern publishable key (sb_publishable_…) and those are not
+          #    JWTs; sending one as `Authorization: Bearer` is forwarded and
+          #    then rejected for not being a JWT. /auth/v1/health also needs
+          #    the apikey header — it was previously called with no headers at
+          #    all, which is why it returned 401 every time.
+          #
+          # The app itself was never affected: authHeader() sends a real
+          # session JWT in Authorization and this key in apikey.
+          rest=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "apikey: $KEY" "$URL/rest/v1/properties?select=id&limit=1")
           auth=$(curl -sS -o /dev/null -w '%{http_code}' -H "apikey: $KEY" "$URL/auth/v1/health")
 
           echo "rest/v1/       -> $rest"

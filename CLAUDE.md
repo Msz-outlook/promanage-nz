@@ -20,14 +20,15 @@ signal and does not hand a third party a request on every page load.
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 7545 | The whole app — markup, CSS, PDF report modules, and every feature module |
+| `index.html` | 7752 | The whole app — markup, CSS, PDF report modules, and every feature module |
 | `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
-| `sw.js` | 149 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v8'`), navigation falls back to cached `index.html` |
+| `sw.js` | 187 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v9'`), navigation falls back to cached `index.html` |
 | `vendor/` | — | supabase-js 2.111.0, jsPDF 2.5.2, jspdf-autotable 3.8.2, heic2any 0.0.4 |
 | `manifest.json` | — | PWA manifest |
-| `scripts/` | 2013 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
+| `scripts/` | 2400 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
 | `.github/workflows/` | — | `ci.yml` runs all three check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
 | `docs/REVIEW-2026-08.md` | — | Review ahead of scaling to ~6 properties: backup gap, photo sizing, quota projections |
+| `docs/REVIEW-2026-08-quality.md` | — | Quality/performance review: measured boot + sync latency, the escaping and import bugs, and the duplicated-scaffolding recommendation left unimplemented |
 
 **This repo is the deploy root.** GitHub Pages serves every committed file, and
 directories without an index are listable. Never commit real owner/tenant data,
@@ -47,7 +48,7 @@ grep -n "^\s*\(async \)\?function \|^const \|^let \|^/\* =" index.html
 | Line | Item |
 | --- | --- |
 | 174 | `</head>` — all CSS is inline above it |
-| 183–186 | Vendored `<script>` tags (supabase-js, jsPDF, autotable, heic2any) |
+| 183–186 | Vendored `<script>` tags (supabase-js, jsPDF, autotable). **heic2any is deliberately not among them** — `FindingsReport.loadHeic2Any()` fetches it on demand |
 | 224–627 | `FindingsReport` — inspection report PDF, ends `global.FindingsReport` at 627 |
 | 658–913 | `InvoiceReport` — invoice PDF, ends `global.InvoiceReport` at 913 |
 | 949–1220 | `StatementReport` — owner statement PDF, ends `global.StatementReport` at 1220 |
@@ -85,7 +86,7 @@ it, and exposes a single `generate(data, options)`.
 | 2363 | `fetchRemoteTablePaged(remoteTable, token, opts)` |
 | 2423 | `pullAndMerge(storeName, remoteTable, mapRemoteToLocal, options)` |
 | 2505–2552 | `mapRemote*` row mappers (property, tenant, maintenance, inspection, invoice, activity log, statement) |
-| 2565 | `pullAllAndMerge(options)` — pulls all tables, then re-renders every module |
+| 2565 | `pullAllAndMerge(options)` — pulls all tables concurrently, then renders the visible page and defers the rest |
 | 2594 | `fullSyncNow()` — push then pull; the **only** place that tells the user they are offline |
 
 ### Activity log (2617–2855)
@@ -265,17 +266,30 @@ that deletes from Supabase Storage on purpose.
 **A new module has to be registered in all of these places**, or it will look
 fine on its own page and be stale everywhere else:
 
-1. `pages` (1892) and the nav markup
-2. `nav()` (1894) — the per-page render call
-3. `pullAllAndMerge()` (2565) — pull + re-render
-4. `fullSyncNow()` (2594) — `syncPendingX()`
-5. `doLogin()` (2031) — render + banner
-6. `DOMContentLoaded` (3488) — render + banner
-7. The `online` / `offline` listeners (3484–3485) — banner
-8. `LIST_RENDERERS` (2779) if it paginates
+1. `pages` and the nav markup
+2. `MODULE_RENDERERS` — the module's render + banner
+3. `PAGE_MODULES` — which page(s) draw it
+4. `pullAllAndMerge()` — the `pullAndMerge(...)` line
+5. `fullSyncNow()` — `syncPendingX()`
+6. The `online` / `offline` listeners — banner
+7. `LIST_RENDERERS` if it paginates
 
-Missing 5–7 is easy to overlook because `nav()` re-renders the page on
-navigation, which masks the gap until a banner goes stale.
+Rendering is page-scoped: a completed sync draws the page on screen and marks
+every other module stale, and `nav()` draws a page's stale modules on entry.
+That makes 2 and 3 a matched pair — **a module missing from every
+`PAGE_MODULES` entry never redraws after a sync, and a page missing from
+`PAGE_MODULES` draws nothing on entry.** Both directions are asserted by
+`scripts/tests/page-render.test.mjs`, which is the cheapest way to find out.
+
+This replaced a blanket "re-render all ten modules after every sync", which
+masked a real gap for a long time: `nav()` did *not* re-render properties,
+tenants, maintenance or inspections, and those four stayed correct only because
+the sync redrew everything. That is the failure mode to keep in mind here —
+stale data that merely looks unchanged is not reported as a bug.
+
+The two `populateXPropertyDropdown()` calls stay in `nav()` and out of the
+registry on purpose: both rebuild their `<select>` without preserving its
+value, so running them on a sync would clear a half-filled form.
 
 ## Top-level code in the script block
 
@@ -368,9 +382,45 @@ When adding a new vendored library, add its guard at the same time as the
 - **Server-side `updated_at`** (schema.sql §1). Conflict resolution compares
   `updated_at`; letting clients write it means the device with the fastest clock
   wins. It also makes the incremental pull cursor meaningful.
-- **`escapeHtml` on every interpolated value** in list renderers. Addresses and
-  tenant names are user input.
+- **`escapeHtml` on every interpolated value** in list renderers — *every* one,
+  not just the obviously-textual ones. Numbers, dates, status labels and ids
+  all reach a renderer from `importAllData`, which is the one path where an
+  arbitrary shape gets into IndexedDB. Thirteen fields across five modules
+  executed injected markup because they looked too boring to escape.
+- **`escapeJsAttr`, not `escapeAttr`, for anything inside an inline handler**
+  (`onclick="fn('${id}')"`). These are not interchangeable and the difference
+  is not stylistic. An event-handler attribute is decoded **twice**: the HTML
+  parser unescapes it, and only then is the result compiled as JavaScript. So
+  `escapeAttr`'s `&#39;` is back to an apostrophe before the compiler sees it,
+  and an id of `x'); doSomething(); ('` runs — which it did, in all six
+  modules, three of which were already calling `escapeAttr` and looked handled.
+  `escapeJsAttr` escapes for the JS string literal first and the HTML attribute
+  second; **that order is load-bearing**, because HTML-escaping last is what
+  stops a pre-encoded `&#39;` in a stored value surviving the parser as a real
+  quote. Use `escapeAttr` for plain attributes (`value=`, `data-`), never here.
+- **Guarded sort comparators** — `(b.createdAt||'').localeCompare(a.createdAt||'')`.
+  The unguarded form throws on a record without `createdAt`, and the whole list
+  fails to render rather than dropping one row. It only reproduces at three or
+  more items, because below that V8 never puts the bad record in the `b`
+  position — which is exactly why it survived so long.
+- **The pulls run concurrently; the pushes do not.** The seven `pullAndMerge()`
+  calls are independent and run under one `Promise.all` — serially they cost
+  fourteen round trips, 4.3s on mobile latency, for a sync that found nothing.
+  The pushes in `fullSyncNowInner()` are ordered because tenants, maintenance,
+  inspections and invoices carry a foreign key to `properties`. Do not
+  "consistency-fix" the pushes to match the pulls.
 - **The vendored libraries.** Do not swap them back to CDN `<script>` tags.
+- **`heic2any` loaded on demand, not as a `<script src>`.** It is 1.32 MB —
+  69% of the JavaScript that used to block the first paint — for a library that
+  does nothing until an inspection PDF is built from a HEIC photo. It stays in
+  `SHELL_FILES` so it is still pre-cached and still works offline; pre-caching
+  a file and blocking on it are different things. `smoke-test.mjs` asserts it is
+  **absent** at boot, so re-adding a tag fails rather than quietly costing every
+  launch ~6s on a slow connection.
+- **The 3s deadline on the service worker's navigation fetch.** Network-first
+  with no timeout is not the same as network-first: "unreachable" rejects,
+  "answering very slowly" does not, and the second one hung a cold launch on a
+  blank page with a working shell sitting in the cache.
 - **Activity-log retention windows.** The pull filter and
   `pruneLocalActivityLog()` must use the same cutoff, or each undoes the other
   on every sync forever.
@@ -407,7 +457,7 @@ runs exactly these:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (118 cases)
+node scripts/test.mjs           # the test suite (145 cases)
 ```
 
 `check-app.mjs` replaces the old manual `node --check` ritual and adds the

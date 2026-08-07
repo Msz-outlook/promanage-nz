@@ -1310,7 +1310,7 @@ textarea:focus{border-color:var(--text)}
   <div id="dash-alerts"></div>
 
   <div class="card">
-    <div class="card-head">Urgent maintenance <button class="btn btn-sm" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])">View maintenance →</button></div>
+    <div class="card-head">Urgent maintenance <button class="btn btn-sm" onclick="nav('maintenance',null)">View maintenance →</button></div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead>
       <tbody id="dash-maint"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
@@ -1366,13 +1366,13 @@ textarea:focus{border-color:var(--text)}
 
   <div class="two-col">
     <div class="card">
-      <div class="card-head">Properties not compliant <button class="btn btn-sm" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8])">View compliance →</button></div>
+      <div class="card-head">Properties not compliant <button class="btn btn-sm" onclick="nav('compliance',null)">View compliance →</button></div>
       <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Overdue items</th><th></th></tr></thead>
         <tbody id="dash-noncompliant"><tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
     </div>
     <div class="card">
-      <div class="card-head">Next inspection per property <button class="btn btn-sm" onclick="nav('inspections',document.querySelectorAll('.nav-item')[4])">View inspections →</button></div>
+      <div class="card-head">Next inspection per property <button class="btn btn-sm" onclick="nav('inspections',null)">View inspections →</button></div>
       <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Last inspected</th><th>Next due</th><th>Status</th></tr></thead>
         <tbody id="dash-inspections"><tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr></tbody>
       </table></div><div class="scroll-fade"></div></div>
@@ -1389,10 +1389,10 @@ textarea:focus{border-color:var(--text)}
   <div class="card">
     <div class="card-head">Quick links</div>
     <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="nav('properties',document.querySelectorAll('.nav-item')[1]);togglePropForm(true)">🏠 Add property</button>
-      <button class="btn" onclick="nav('tenants',document.querySelectorAll('.nav-item')[2]);toggleTenantForm(true)">👤 Add tenant</button>
-      <button class="btn" onclick="nav('maintenance',document.querySelectorAll('.nav-item')[3]);toggleMaintForm(true)">🔧 New maintenance request</button>
-      <button class="btn" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8])">✅ Compliance check</button>
+      <button class="btn" onclick="nav('properties',null);togglePropForm(true)">🏠 Add property</button>
+      <button class="btn" onclick="nav('tenants',null);toggleTenantForm(true)">👤 Add tenant</button>
+      <button class="btn" onclick="nav('maintenance',null);toggleMaintForm(true)">🔧 New maintenance request</button>
+      <button class="btn" onclick="nav('compliance',null)">✅ Compliance check</button>
     </div>
   </div>
 </div>
@@ -1611,7 +1611,7 @@ textarea:focus{border-color:var(--text)}
 
 <!-- FINANCIALS -->
 <div class="page" id="page-financials">
-  <div class="alert alert-blue">ℹ️ <div><strong>Agency view — what ProManage earns, not what the owners earn</strong> — revenue is the fee lines you charged on your saved owner statements (management, letting, inspection, admin). Rent collected and tradie costs are owner money passing through and are reported separately below. <span id="fin-banner-detail"></span> <a href="#" onclick="nav('statements',document.querySelectorAll('.nav-item')[7]);return false" style="color:inherit;text-decoration:underline">Go to Owner Statements →</a></div></div>
+  <div class="alert alert-blue">ℹ️ <div><strong>Agency view — what ProManage earns, not what the owners earn</strong> — revenue is the fee lines you charged on your saved owner statements (management, letting, inspection, admin). Rent collected and tradie costs are owner money passing through and are reported separately below. <span id="fin-banner-detail"></span> <a href="#" onclick="nav('statements',null);return false" style="color:inherit;text-decoration:underline">Go to Owner Statements →</a></div></div>
 
   <div id="fin-controls" style="display:none">
     <div class="controls" style="align-items:flex-end;margin-bottom:.5rem">
@@ -1626,7 +1626,7 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card" id="fin-empty" style="display:none">
     <div class="card-body" style="text-align:center;color:var(--text3);padding:2rem">
-      No owner statements saved yet. <a href="#" onclick="nav('statements',document.querySelectorAll('.nav-item')[7]);return false">Add one on the Owner Statements page</a> to see financials here.
+      No owner statements saved yet. <a href="#" onclick="nav('statements',null);return false">Add one on the Owner Statements page</a> to see financials here.
     </div>
   </div>
 
@@ -3312,7 +3312,7 @@ async function renderActivityLog(){
   const tbody=document.getElementById('activity-log-list');
   if(!tbody) return;
   const all=await dbGetAll('activityLog').catch(()=>[]);
-  all.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+  all.sort((a,b)=>(b.timestamp||'').localeCompare(a.timestamp||''));
   const countEl=document.getElementById('activity-log-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -3327,7 +3327,7 @@ async function renderActivityLog(){
   };
   tbody.innerHTML=pageItems.map(l=>`
     <tr>
-      <td style="white-space:nowrap">${formatLogTime(l.timestamp)}</td>
+      <td style="white-space:nowrap">${escapeHtml(formatLogTime(l.timestamp))}</td>
       <td>${escapeHtml(l.entity)}</td>
       <td>${actionBadge(l.action)}</td>
       <td>${escapeHtml(l.detail)}</td>
@@ -3703,7 +3703,7 @@ async function renderInspectionList(){
   const all=(await dbGetAll('inspections')).filter(i=>!i.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('insp-list');
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -3713,15 +3713,17 @@ async function renderInspectionList(){
   }
   const pageItems=getListPage('inspections',all);
   tbody.innerHTML=pageItems.map(insp=>{
-    const photoCount=insp.areas.reduce((n,a)=>n+a.photos.length,0);
-    const areaSummary=insp.areas.map(a=>a.name+': '+a.status).slice(0,2).join(', ')+(insp.areas.length>2?'…':'');
+    const areas=Array.isArray(insp.areas)?insp.areas:[];
+    const photoCount=areas.reduce((n,a)=>n+((a&&a.photos)?a.photos.length:0),0);
+    const areaSummary=areas.map(a=>(a&&a.name)+': '+(a&&a.status)).slice(0,2).join(', ')+(areas.length>2?'…':'');
+    const id=escapeJsAttr(insp.id);
     return `<tr>
       <td>${escapeHtml(addressOf(insp))}</td>
       <td>${escapeHtml(insp.date)}</td>
       <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editInspection('${insp.id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${insp.id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${insp.id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${id}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
@@ -4209,8 +4211,8 @@ async function openComplianceModal(id){
         <div><label>Status</label><select class="ci-status" data-key="${it.key}">
           ${['Compliant','Overdue','Not assessed','N/A'].map(s=>`<option${s===it.status?' selected':''}>${s}</option>`).join('')}
         </select></div>
-        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${it.lastChecked}"></div>
-        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${it.nextDue}"></div>
+        <div><label>Last checked</label><input type="date" class="ci-last" data-key="${it.key}" value="${escapeAttr(it.lastChecked)}"></div>
+        <div><label>Next due</label><input type="date" class="ci-next" data-key="${it.key}" value="${escapeAttr(it.nextDue)}"></div>
       </div>
       <label style="margin-top:8px">Notes / comments</label>
       <textarea class="ci-notes" data-key="${it.key}" placeholder="Optional notes for this item..." style="min-height:36px">${escapeHtml(it.notes)}</textarea>
@@ -4279,10 +4281,11 @@ async function renderComplianceLive(){
       const iconClass=s.overdue>0?'ci-r':(s.notAssessed>0?'ci-a':'ci-g');
       let desc;
       if(!s.total) desc='No properties track this item yet.';
-      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${s.overdueAddrs.slice(0,2).join(', ')}${s.overdueAddrs.length>2?'…':''}`;
+      // Addresses are user input, so this branch is the one that has to escape.
+      else if(s.overdue>0) desc=`${s.overdue} of ${s.total} overdue — ${escapeHtml(s.overdueAddrs.slice(0,2).join(', '))}${s.overdueAddrs.length>2?'…':''}`;
       else if(s.notAssessed>0) desc=`${s.notAssessed} of ${s.total} not yet assessed.`;
       else desc=`All ${s.total-s.na} compliant.`+(s.dueSoon?` ${s.dueSoon} due for re-check within 30 days.`:'');
-      return `<div class="comp-item"><div class="comp-icon ${iconClass}">${def.icon}</div><div><div class="comp-name">${def.label}</div><div class="comp-desc">${desc}</div><div class="prog"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>`;
+      return `<div class="comp-item"><div class="comp-icon ${iconClass}">${escapeHtml(def.icon)}</div><div><div class="comp-name">${escapeHtml(def.label)}</div><div class="comp-desc">${desc}</div><div class="prog"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>`;
     }).join('');
   }
 
@@ -4315,10 +4318,10 @@ async function renderComplianceLive(){
     if(!properties.length){
       propList.innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:14px">No properties yet</td></tr>';
     }else{
-      const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
+      const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${escapeHtml(t)}</span>`:`<span class="st">${escapeHtml(t)}</span>`;
       propList.innerHTML=properties.map(p=>`
         <tr>
-          <td style="cursor:pointer" ondblclick="openComplianceModal('${escapeAttr(p.id)}')" title="Double-click to update compliance"><strong>${escapeHtml(p.address)}</strong></td>
+          <td style="cursor:pointer" ondblclick="openComplianceModal('${escapeJsAttr(p.id)}')" title="Double-click to update compliance"><strong>${escapeHtml(p.address)}</strong></td>
           <td>${tenancyBadge(p.tenancy)}</td>
           <td>${complianceSummaryBadge(p)}</td>
         </tr>`).join('');
@@ -4401,7 +4404,7 @@ async function saveProperty(){
 
 async function renderPropertiesList(){
   const all=(await dbGetAll('properties')).filter(p=>!p.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('prop-list');
   document.getElementById('prop-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -4410,16 +4413,16 @@ async function renderPropertiesList(){
     return;
   }
   const pageItems=getListPage('properties',all);
-  const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${t}</span>`:`<span class="st">${t}</span>`;
+  const tenancyBadge=t=>t==='Long-term'?`<span class="lt">${escapeHtml(t)}</span>`:`<span class="st">${escapeHtml(t)}</span>`;
   const statusBadge=s=>{
     const map={Occupied:'bg',Booked:'bg',Vacant:'bb',Arrears:'br'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(p=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editProperty('${escapeAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${p.bedrooms} bed · ${p.bathrooms} bath · ${p.floorArea}m² · ${p.parking||0} parking</span></td>
+      <td style="cursor:pointer" ondblclick="editProperty('${escapeJsAttr(p.id)}')" title="Double-click to edit"><strong>${escapeHtml(p.address)}</strong><br><span style="font-size:11px;color:var(--text2)">${escapeHtml(p.bedrooms)} bed · ${escapeHtml(p.bathrooms)} bath · ${escapeHtml(p.floorArea)}m² · ${escapeHtml(p.parking||0)} parking</span></td>
       <td>${tenancyBadge(p.tenancy)}</td>
-      <td>$${p.rentPerWeek}</td>
+      <td>$${escapeHtml(p.rentPerWeek)}</td>
       <td>${statusBadge(p.status)}</td>
       <td>${complianceSummaryBadge(p)}</td>
       <td>${p.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
@@ -4705,7 +4708,7 @@ async function renderTenantsList(){
   const all=(await dbGetAll('tenants')).filter(t=>!t.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('tenant-list');
   document.getElementById('tenant-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -4715,19 +4718,19 @@ async function renderTenantsList(){
   }
   const pageItems=getListPage('tenants',all);
   const statusBadge=(t)=>{
-    if(t.status==='Arrears') return `<span class="badge br">Arrears $${t.arrearsAmount}</span>`;
+    if(t.status==='Arrears') return `<span class="badge br">Arrears $${escapeHtml(t.arrearsAmount)}</span>`;
     if(t.status==='Renewal due') return '<span class="badge ba">Renewal due</span>';
     if(t.status==='Vacated') return '<span class="badge bgr">Vacated</span>';
     return '<span class="badge bg">Current</span>';
   };
   tbody.innerHTML=pageItems.map(t=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editTenant('${escapeAttr(t.id)}')" title="Double-click to edit"><strong>${escapeHtml(t.tenantName)}</strong></td>
+      <td style="cursor:pointer" ondblclick="editTenant('${escapeJsAttr(t.id)}')" title="Double-click to edit"><strong>${escapeHtml(t.tenantName)}</strong></td>
       <td>${escapeHtml(addressOf(t))}</td>
-      <td>${t.leaseStart||'—'}</td>
-      <td>${t.leaseEnd||'—'}</td>
+      <td>${escapeHtml(t.leaseStart)||'—'}</td>
+      <td>${escapeHtml(t.leaseEnd)||'—'}</td>
       <td>${t.bondLodged?'<span class="badge bg">✓ TS</span>':'<span class="badge ba">Not lodged</span>'}</td>
-      <td>$${t.rentPerWeek}</td>
+      <td>$${escapeHtml(t.rentPerWeek)}</td>
       <td>${statusBadge(t)}</td>
       <td>${t.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
     </tr>`).join('');
@@ -4913,7 +4916,7 @@ async function renderMaintenanceList(){
   const all=(await dbGetAll('maintenance')).filter(m=>!m.pendingDelete);
   const properties=await dbGetAll('properties').catch(()=>[]);
   const addressOf=resolvePropertyAddress(properties);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('maint-list');
   document.getElementById('maint-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -4924,15 +4927,15 @@ async function renderMaintenanceList(){
   const pageItems=getListPage('maintenance',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
-    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
   };
   const statusBadge=s=>{
     const map={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(m=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editMaintenance('${escapeAttr(m.id)}')" title="Double-click to edit"><strong>${escapeHtml(m.issue)}</strong></td>
+      <td style="cursor:pointer" ondblclick="editMaintenance('${escapeJsAttr(m.id)}')" title="Double-click to edit"><strong>${escapeHtml(m.issue)}</strong></td>
       <td>${escapeHtml(addressOf(m))}</td>
       <td>${escapeHtml(m.reportedDate)}</td>
       <td>${priorityDot(m.priority)}</td>
@@ -5263,7 +5266,7 @@ async function renderEmailTriageList(){
   const tbody=document.getElementById('triage-list');
   if(!tbody) return;
   const all=await dbGetAll('emailTriage').catch(()=>[]);
-  all.sort((a,b)=>b.receivedAt.localeCompare(a.receivedAt));
+  all.sort((a,b)=>(b.receivedAt||'').localeCompare(a.receivedAt||''));
   const countEl=document.getElementById('triage-count');
   if(countEl) countEl.textContent=all.length?`(${all.length})`:'';
   if(!all.length){
@@ -5274,23 +5277,25 @@ async function renderEmailTriageList(){
   const pageItems=getListPage('triage',all);
   const priorityDot=p=>{
     const map={Urgent:'dot-r',Medium:'dot-a',Low:'dot-g'};
-    return `<span class="dot ${map[p]||'dot-g'}"></span>${p}`;
+    return `<span class="dot ${map[p]||'dot-g'}"></span>${escapeHtml(p)}`;
   };
   const statusCell=rec=>{
+    const id=escapeJsAttr(rec.id);
     if(rec.status==='auto-created') return {badge:'<span class="badge bg">✓ Auto-created</span>',action:'—'};
     if(rec.status==='created') return {badge:'<span class="badge bg">✓ Created</span>',action:'—'};
-    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
-    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${rec.id}')">Create request</button>`};
+    if(rec.status==='dismissed') return {badge:'<span class="badge bgr">Dismissed</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${id}')">Create request</button>`};
+    if(rec.status==='ignored') return {badge:'<span class="badge bgr">Ignored</span>',action:`<button class="btn btn-sm" onclick="actionCreateFromEmail('${id}')">Create request</button>`};
     return {badge:'<span class="badge ba">Needs review</span>',
-      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${rec.id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${rec.id}')">Dismiss</button>`};
+      action:`<button class="btn btn-sm btn-primary" onclick="actionCreateFromEmail('${id}')">Create request</button> <button class="btn btn-sm" onclick="actionDismissEmail('${id}')">Dismiss</button>`};
   };
   tbody.innerHTML=pageItems.map(rec=>{
     const sc=statusCell(rec);
+    const body=String(rec.body||'');
     const received=new Date(rec.receivedAt).toLocaleString('en-NZ',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
     return `<tr>
-      <td>${received}</td>
+      <td>${escapeHtml(received)}</td>
       <td>${escapeHtml(rec.from)}</td>
-      <td><strong>${escapeHtml(rec.subject)}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${escapeHtml(rec.body.slice(0,80))}${rec.body.length>80?'…':''}</div></td>
+      <td><strong>${escapeHtml(rec.subject)}</strong><div style="font-size:11px;color:var(--text3);margin-top:2px">${escapeHtml(body.slice(0,80))}${body.length>80?'…':''}</div></td>
       <td>${escapeHtml(rec.matchedPropertyAddress)}</td>
       <td>${priorityDot(rec.suggestedPriority)}</td>
       <td>${sc.badge}</td>
@@ -5324,12 +5329,6 @@ function roundMoney(dollars){ return fromCents(toCents(dollars)); }
 
 let editingInvoiceId=null;
 let invoiceItemRowCounter=0;
-
-function dateAddDaysStr(days){
-  const d=new Date();
-  d.setDate(d.getDate()+days);
-  return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
-}
 
 // --- Flexible date helpers for invoices (payment-terms auto-fill + JSON
 // import, which supplies ISO 'YYYY-MM-DD' dates like invoice_generator.py) ---
@@ -5397,19 +5396,52 @@ function invoiceItemRowHtml(rowId,item){
   item=item||{};
   return `<tr id="${rowId}">
       <td><input type="text" class="item-input item-desc" value="${escapeAttr(item.description||'')}" placeholder="e.g. Property management fee — July"></td>
-      <td><input type="number" class="item-input item-qty" value="${item.quantity!=null?item.quantity:1}" min="0" step="1" oninput="recalcInvoiceTotals()"></td>
-      <td><input type="number" class="item-input item-price" value="${item.unitPrice!=null?item.unitPrice:0}" min="0" step="0.01" oninput="recalcInvoiceTotals()"></td>
+      <td><input type="number" class="item-input item-qty" value="${escapeAttr(item.quantity!=null?item.quantity:1)}" min="0" step="1" oninput="recalcInvoiceTotals()"></td>
+      <td><input type="number" class="item-input item-price" value="${escapeAttr(item.unitPrice!=null?item.unitPrice:0)}" min="0" step="0.01" oninput="recalcInvoiceTotals()"></td>
       <td class="tr item-amount">$0.00</td>
       <td><button type="button" class="item-remove" onclick="removeInvoiceItemRow('${rowId}')" title="Remove line">✕</button></td>
     </tr>`;
 }
 
-// For values dropped into an HTML attribute. Single quotes matter as much as
-// double: several handlers here are written as onclick="fn('${id}')", so an
-// apostrophe would close the JS string and everything after it becomes code.
+// For values dropped into a plain HTML attribute — value="${...}", data-*, and
+// the like. Single quotes are escaped as well as double so the helper is safe
+// whichever quoting style the attribute uses.
+//
+// NOT sufficient for an inline event handler: see escapeJsAttr below.
 function escapeAttr(str){
   if(str===null||str===undefined) return '';
   return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
+}
+
+/* For a value that lands INSIDE an inline event handler — onclick="fn('${id}')".
+   This is a different job from escapeAttr and the difference is not cosmetic.
+
+   An event-handler attribute is decoded twice: the HTML parser unescapes the
+   attribute value first, and only then is the result compiled as JavaScript.
+   escapeAttr turns an apostrophe into &#39;, the parser turns it straight back
+   into an apostrophe, and the JS compiler sees a closed string — so escaping
+   for HTML alone buys nothing here. An id of
+
+     x'); doSomething(); ('
+
+   ran as code with escapeAttr applied. Verified, not theorised.
+
+   So escape for the inner context first (JS string literal) and the outer one
+   second (HTML attribute). After the parser has undone the HTML layer, what
+   reaches the compiler is still a correctly escaped string literal. The order
+   is load-bearing: HTML-escaping last is what stops a pre-encoded &#39; in the
+   stored value from surviving the parser as a real quote. */
+function escapeJsAttr(str){
+  if(str===null||str===undefined) return '';
+  const js=String(str)
+    .replace(/\\/g,'\\\\')
+    .replace(/'/g,"\\'")
+    .replace(/"/g,'\\"')
+    .replace(/\r/g,'\\r')
+    .replace(/\n/g,'\\n')
+    .replace(/\u2028/g,'\\u2028')
+    .replace(/\u2029/g,'\\u2029');
+  return js.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function addInvoiceItemRow(item){
@@ -5570,7 +5602,7 @@ async function saveInvoice(){
 
 async function renderInvoicesList(){
   const all=(await dbGetAll('invoices').catch(()=>[])).filter(i=>!i.pendingDelete);
-  all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  all.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const tbody=document.getElementById('invoice-list');
   if(!tbody) return;
   const countEl=document.getElementById('invoice-count');
@@ -5583,19 +5615,19 @@ async function renderInvoicesList(){
   const pageItems=getListPage('invoices',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg',Overdue:'br'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(inv=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editInvoice('${inv.id}')" title="Double-click to edit"><strong>${inv.invoiceNumber}</strong></td>
+      <td style="cursor:pointer" ondblclick="editInvoice('${escapeJsAttr(inv.id)}')" title="Double-click to edit"><strong>${escapeHtml(inv.invoiceNumber)}</strong></td>
       <td>${escapeHtml(inv.billToName)}</td>
       <td>${escapeHtml(inv.propertyAddress||'—')}</td>
-      <td>${inv.issueDate||'—'}</td>
-      <td>${inv.dueDate||'—'}</td>
-      <td class="tr">$${(inv.total||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td>${escapeHtml(inv.issueDate)||'—'}</td>
+      <td>${escapeHtml(inv.dueDate)||'—'}</td>
+      <td class="tr">$${(Number(inv.total)||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(inv.status)}</td>
       <td>${inv.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${inv.id}')">📄 PDF</button></td>
+      <td><button class="btn btn-sm" onclick="generateInvoicePDF('${escapeJsAttr(inv.id)}')">📄 PDF</button></td>
     </tr>`).join('');
 }
 
@@ -5863,7 +5895,7 @@ function statementPropertyBlockHtml(blockId,optionsHtml,propBlock){
           <select class="stmt-prop-select" style="width:100%" onchange="if(this.value)this.closest('.stmt-property-block').querySelector('.stmt-prop-address').value=this.options[this.selectedIndex].textContent">${optionsHtml}</select>
         </div>
         <div style="flex:1;min-width:220px"><label>Property address</label><input type="text" class="stmt-prop-address" value="${escapeAttr(propBlock.propertyAddress||'')}" placeholder="e.g. 12 Example St" style="width:100%"></div>
-        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${propBlock.openingBalance||0}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
+        <div><label>Opening balance</label><input type="number" class="stmt-prop-opening" value="${escapeAttr(propBlock.openingBalance||0)}" step="0.01" oninput="recalcStatementTotals()" style="width:110px;text-align:right;padding:3px 6px"></div>
         <button type="button" class="btn btn-sm btn-danger" onclick="removeStatementPropertyBlock('${blockId}')">✕ Remove property</button>
       </div>
 
@@ -5924,7 +5956,7 @@ function statementItemRowHtml(rowId,item){
   return `<tr id="${rowId}">
       <td><input type="text" class="item-input stmt-date" value="${escapeAttr(item.date||'')}" placeholder="e.g. 05 Jul 2026"></td>
       <td><input type="text" class="item-input stmt-desc" value="${escapeAttr(item.description||'')}" placeholder="e.g. Rent received"></td>
-      <td><input type="number" class="item-input stmt-amount" value="${item.amount!=null?item.amount:0}" min="0" step="0.01" oninput="recalcStatementTotals()"></td>
+      <td><input type="number" class="item-input stmt-amount" value="${escapeAttr(item.amount!=null?item.amount:0)}" min="0" step="0.01" oninput="recalcStatementTotals()"></td>
       <td><button type="button" class="item-remove" onclick="removeStatementItemRow('${rowId}')" title="Remove line">✕</button></td>
     </tr>`;
 }
@@ -6214,17 +6246,17 @@ async function renderStatementsList(){
   const pageItems=getListPage('statements',all);
   const statusBadge=s=>{
     const map={Draft:'bgr',Sent:'bb',Paid:'bg'};
-    return `<span class="badge ${map[s]||'bgr'}">${s}</span>`;
+    return `<span class="badge ${map[s]||'bgr'}">${escapeHtml(s)}</span>`;
   };
   tbody.innerHTML=pageItems.map(s=>`
     <tr>
-      <td style="cursor:pointer" ondblclick="editStatement('${s.id}')" title="Double-click to edit"><strong>${s.statementNumber}</strong></td>
-      <td>${escapeHtml((s.properties||[]).map(p=>p.propertyAddress).filter(Boolean).join(', '))||'—'}</td>
-      <td>${s.periodStart||'—'} – ${s.periodEnd||'—'}</td>
-      <td class="tr">$${(s.netAmount||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="cursor:pointer" ondblclick="editStatement('${escapeJsAttr(s.id)}')" title="Double-click to edit"><strong>${escapeHtml(s.statementNumber)}</strong></td>
+      <td>${escapeHtml((Array.isArray(s.properties)?s.properties:[]).map(p=>p&&p.propertyAddress).filter(Boolean).join(', '))||'—'}</td>
+      <td>${escapeHtml(s.periodStart)||'—'} – ${escapeHtml(s.periodEnd)||'—'}</td>
+      <td class="tr">$${(Number(s.netAmount)||0).toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>${statusBadge(s.status)}</td>
       <td>${s.synced?'<span class="badge bg">✓</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="generateStatementPDF('${s.id}')">📄 PDF</button></td>
+      <td><button class="btn btn-sm" onclick="generateStatementPDF('${escapeJsAttr(s.id)}')">📄 PDF</button></td>
     </tr>`).join('');
 }
 
@@ -6934,6 +6966,43 @@ async function exportAllData(withPhotos,btn){
    mention; "Replace" makes the device match the file exactly. Replace is the
    one you want after a device is wiped, merge is the one you want after an
    accidental deletion — so the choice is explicit rather than guessed. */
+/* A backup file is the one place arbitrary shapes reach IndexedDB. Everything
+   else that writes a record built it from a form or from mapRemoteX(), so the
+   renderers were written assuming the fields they read exist. They don't have
+   to: this accepted any object carrying an id, and a record missing createdAt
+   made the list renderers' sort comparator throw, which left the whole page
+   blank rather than dropping one row.
+
+   The escaping fixes mean a hostile value can no longer execute, and these two
+   mean a malformed one can no longer take a page down. Both layers are wanted:
+   this normalises what a well-meaning hand-edited file gets wrong, and the
+   escaping covers what it deliberately gets wrong. */
+function isImportableRecord(r){
+  return !!r && typeof r==='object' && !Array.isArray(r)
+    && r.id!==undefined && r.id!==null && r.id!=='';
+}
+
+// Fields the renderers index into without checking. Kept deliberately narrow —
+// this fills in what would throw, it does not invent business data.
+const IMPORT_ARRAY_FIELDS={
+  inspections:['areas'],
+  invoices:['items'],
+  statements:['properties']
+};
+
+function normaliseImportedRecord(store,record){
+  const out={...record,id:String(record.id)};
+  // Sorting is the first thing every list renderer does, and it compares
+  // strings. An absent timestamp sorts last rather than throwing.
+  if(typeof out.createdAt!=='string') out.createdAt='';
+  if(store==='activityLog' && typeof out.timestamp!=='string') out.timestamp=out.createdAt;
+  if(store==='emailTriage' && typeof out.receivedAt!=='string') out.receivedAt=out.createdAt;
+  for(const field of (IMPORT_ARRAY_FIELDS[store]||[])){
+    if(!Array.isArray(out[field])) out[field]=[];
+  }
+  return out;
+}
+
 async function importAllData(file){
   if(!file) return;
   let payload;
@@ -6951,7 +7020,8 @@ async function importAllData(file){
 
   const incoming={};
   for(const store of LOCAL_STORES){
-    incoming[store]=Array.isArray(payload.data[store])?payload.data[store]:[];
+    const rows=Array.isArray(payload.data[store])?payload.data[store]:[];
+    incoming[store]=rows.filter(isImportableRecord).map(r=>normaliseImportedRecord(store,r));
   }
   const current={};
   for(const store of LOCAL_STORES) current[store]=await dbGetAll(store).catch(()=>[]);
@@ -7477,7 +7547,7 @@ async function renderDashboard(){
   let alertsHtml='';
   if(overdueProps.length){
     const names=overdueProps.map(p=>p.address).join(', ');
-    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${escapeHtml(names)}. <a href="#" onclick="nav('compliance',document.querySelectorAll('.nav-item')[8]);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
+    alertsHtml+=`<div class="alert alert-red">⚠️ <div><strong>${overdueProps.length} propert${overdueProps.length>1?'ies':'y'} with overdue compliance item${overdueProps.length>1?'s':''}</strong> — ${escapeHtml(names)}. <a href="#" onclick="nav('compliance',null);return false" style="color:inherit;text-decoration:underline">View →</a></div></div>`;
   }
   alertsHtml+=`<div class="alert alert-blue">ℹ️ <div><strong>NZ law update (2026):</strong> Granny flat consent exemption ≤70m² now in effect. Review portfolio for opportunities.<span style="display:block;font-size:11px;opacity:.7;margin-top:2px">Last verified ${LAW_UPDATES_LAST_VERIFIED}</span></div></div>`;
   alertsEl.innerHTML=alertsHtml;
@@ -7501,7 +7571,7 @@ async function renderDashboard(){
   document.getElementById('dm-inspections-sub').textContent=inspDueCount?'Due within 30 days':(properties.length?'None due soon':'No properties yet');
 
   document.getElementById('dash-inspections').innerHTML=inspRows.length
-    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',document.querySelectorAll('.nav-item')[4])" title="Double-click to open Inspections"><td>${escapeHtml(r.address)}</td><td>${escapeHtml(r.lastStr)}</td><td>${escapeHtml(r.nextStr)}</td><td>${r.statusBadge}</td></tr>`).join('')
+    ? inspRows.map(r=>`<tr style="cursor:pointer" ondblclick="nav('inspections',null)" title="Double-click to open Inspections"><td>${escapeHtml(r.address)}</td><td>${escapeHtml(r.lastStr)}</td><td>${escapeHtml(r.nextStr)}</td><td>${r.statusBadge}</td></tr>`).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No properties yet</td></tr>';
 
   // Properties not compliant
@@ -7509,7 +7579,7 @@ async function renderDashboard(){
     ? overdueProps.map(p=>{
         const items=getPropertyCompliance(p).filter(it=>isItemOverdue(it,today));
         const labels=items.map(it=>it.label).slice(0,2).join(', ')+(items.length>2?'…':'');
-        return `<tr style="cursor:pointer" ondblclick="nav('compliance',document.querySelectorAll('.nav-item')[8])" title="Double-click to open Compliance"><td>${escapeHtml(p.address)}</td><td style="font-size:12px;color:var(--text2)">${escapeHtml(labels)}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('compliance',null)" title="Double-click to open Compliance"><td>${escapeHtml(p.address)}</td><td style="font-size:12px;color:var(--text2)">${escapeHtml(labels)}</td><td><span class="badge br">${items.length} overdue</span></td></tr>`;
       }).join('')
     : `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">${properties.length?'All properties compliant':'No properties yet'}</td></tr>`;
 
@@ -7522,14 +7592,14 @@ async function renderDashboard(){
   // Lease renewals due
   const renewals=tenants.filter(t=>t.status==='Renewal due');
   document.getElementById('dash-renewals').innerHTML=renewals.length
-    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',document.querySelectorAll('.nav-item')[2])" title="Double-click to open Tenants"><td>${escapeHtml(addressOf(t))}</td><td>${escapeHtml(t.tenantName)}</td><td><span class="badge ba">${escapeHtml(t.leaseEnd||'—')}</span></td></tr>`).join('')
+    ? renewals.map(t=>`<tr style="cursor:pointer" ondblclick="nav('tenants',null)" title="Double-click to open Tenants"><td>${escapeHtml(addressOf(t))}</td><td>${escapeHtml(t.tenantName)}</td><td><span class="badge ba">${escapeHtml(t.leaseEnd||'—')}</span></td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">No renewals flagged</td></tr>';
 
   // Urgent maintenance
   document.getElementById('dash-maint').innerHTML=urgentMaint.length
     ? urgentMaint.map(m=>{
         const statusMap={Unassigned:'br',Scheduled:'bg',['In progress']:'ba',Completed:'bg'};
-        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',document.querySelectorAll('.nav-item')[3])" title="Double-click to open Maintenance"><td>${escapeHtml(addressOf(m))}</td><td>${escapeHtml(m.issue)}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${escapeHtml(m.status)}</span></td></tr>`;
+        return `<tr style="cursor:pointer" ondblclick="nav('maintenance',null)" title="Double-click to open Maintenance"><td>${escapeHtml(addressOf(m))}</td><td>${escapeHtml(m.issue)}</td><td><span class="dot dot-r"></span>Urgent</td><td><span class="badge ${statusMap[m.status]||'bgr'}">${escapeHtml(m.status)}</span></td></tr>`;
       }).join('')
     : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:12px">No urgent maintenance</td></tr>';
 }

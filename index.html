@@ -2011,17 +2011,19 @@ function nav(id,el,fromPopState){
   if(navEl) navEl.classList.add('active');
   document.getElementById('topbar-title').textContent=pages[id]||id;
   if(window.innerWidth<=768) toggleSidebar(false);
+  // Form dropdowns, not list state. Deliberately refreshed on entry only and
+  // left out of the module registry: both rebuild the <select> without
+  // preserving its current value, so running them on every sync would clear a
+  // half-filled form under the user.
   if(id==='inspections') populateInspectionPropertyDropdown();
   if(id==='maintenance') populateMaintenancePropertyDropdown();
-  if(id==='dashboard') renderDashboard();
-  if(id==='activity') renderActivityLog();
-  if(id==='compliance') renderComplianceLive();
-  if(id==='invoices') renderInvoicesList();
-  if(id==='statements') renderStatementsList();
-  if(id==='financials') renderFinancials();
-  if(id==='email-triage') renderEmailTriageList();
   if(!fromPopState && id!==currentPageId) history.pushState({page:id},'','#'+id);
   currentPageId=id;
+  // Set currentPageId first — renderCurrentPage() reads it. Not awaited: nav()
+  // is called straight from inline onclick handlers, and the page switch above
+  // has already happened, so the content fills in a frame later exactly as it
+  // did when these were nine separate unawaited calls.
+  renderCurrentPage();
 }
 window.addEventListener('popstate',e=>{
   const id=(e.state&&e.state.page)||'dashboard';
@@ -2285,25 +2287,97 @@ function describeAuthFailure(err){
    used to drift apart (see the registration checklist in CLAUDE.md). Each entry
    is run in isolation: one module throwing must not stop the rest from
    rendering, and must never abort the sync that follows. */
-const APP_RENDERERS=[
-  ['inspections',async()=>{await renderInspectionList();updateSyncBanner();}],
-  ['properties', async()=>{await renderPropertiesList();updatePropSyncBanner();}],
-  ['tenants',    async()=>{await renderTenantsList();updateTenantSyncBanner();}],
-  ['maintenance',async()=>{await renderMaintenanceList();updateMaintSyncBanner();}],
-  ['invoices',   async()=>{await renderInvoicesList();updateInvoiceSyncBanner();}],
-  ['statements', async()=>{await renderStatementsList();updateStatementSyncBanner();}],
-  ['dashboard',  async()=>{await renderDashboard();}],
-  ['activity',   async()=>{await renderActivityLog();}],
-  ['compliance', async()=>{await renderComplianceLive();}],
-  ['backup',     async()=>{await renderBackupCard();}],
-  ['archive',    async()=>{await renderArchiveCard();}]
-];
+/* ============================================================
+   MODULE REGISTRY — one entry per thing that draws itself from
+   IndexedDB, and the pages each one appears on.
 
-async function renderAllModules(){
-  for(const [name,run] of APP_RENDERERS){
+   A sync used to end by re-rendering every module, whichever
+   page was on screen: ten renders and twenty-three separate
+   full-store reads to update the one page the user could
+   actually see. Now it draws the current page and marks the
+   rest stale, and nav() catches a page up on entry.
+
+   The trap this has to avoid — and the reason PAGE_MODULES is a
+   table rather than a handful of `if (id === ...)` lines in
+   nav() — is that nav() did NOT re-render properties, tenants,
+   maintenance or inspections. Those four only ever refreshed
+   BECAUSE the sync re-rendered everything unconditionally.
+   Dropping the blanket re-render without giving them a path
+   back would have left them showing whatever was on screen when
+   the page was last drawn, indefinitely, and only on a device
+   syncing changes made elsewhere — which is exactly the kind of
+   staleness nobody reports as a bug because it looks like the
+   data simply hasn't changed.
+
+   So both directions are table-driven and have to stay that
+   way: a module missing from every PAGE_MODULES entry never
+   redraws after a sync, and a page missing from PAGE_MODULES
+   draws nothing on entry.
+   ============================================================ */
+const MODULE_RENDERERS={
+  inspections:    async()=>{await renderInspectionList();  await updateSyncBanner();},
+  properties:     async()=>{await renderPropertiesList();  await updatePropSyncBanner();},
+  tenants:        async()=>{await renderTenantsList();     await updateTenantSyncBanner();},
+  maintenance:    async()=>{await renderMaintenanceList(); await updateMaintSyncBanner();},
+  invoices:       async()=>{await renderInvoicesList();    await updateInvoiceSyncBanner();},
+  statements:     async()=>{await renderStatementsList();  await updateStatementSyncBanner();},
+  financials:     async()=>{await renderFinancials();},
+  dashboard:      async()=>{await renderDashboard();},
+  activity:       async()=>{await renderActivityLog();},
+  compliance:     async()=>{await renderComplianceLive();},
+  'email-triage': async()=>{await renderEmailTriageList();},
+  // Both cards live on the dashboard — they render into dash-* elements.
+  backup:         async()=>{await renderBackupCard();},
+  archive:        async()=>{await renderArchiveCard();}
+};
+
+const PAGE_MODULES={
+  dashboard:      ['dashboard','backup','archive'],
+  properties:     ['properties'],
+  tenants:        ['tenants'],
+  maintenance:    ['maintenance'],
+  inspections:    ['inspections'],
+  financials:     ['financials'],
+  invoices:       ['invoices'],
+  statements:     ['statements'],
+  compliance:     ['compliance'],
+  activity:       ['activity'],
+  'email-triage': ['email-triage']
+};
+
+// Modules whose data has moved since they were last drawn.
+const staleModules=new Set();
+
+async function runModuleRenderers(names){
+  for(const name of names){
+    const run=MODULE_RENDERERS[name];
+    if(!run) continue;
+    // Clear the flag first: a renderer that throws has still consumed the
+    // current data, and leaving it stale would retry the same failure on every
+    // navigation back to the page.
+    staleModules.delete(name);
     try{ await run(); }
     catch(err){ console.error('Could not render '+name+':',err); }
   }
+}
+
+// Everything, whatever page is showing. Correct at first load, at sign-in and
+// after a restore, where nothing has been drawn yet and every page is empty.
+async function renderAllModules(){
+  await runModuleRenderers(Object.keys(MODULE_RENDERERS));
+}
+
+// Draws whatever the current page needs and has not drawn since it went stale.
+async function renderCurrentPage(){
+  const names=(PAGE_MODULES[currentPageId]||[]).filter(n=>staleModules.has(n));
+  if(names.length) await runModuleRenderers(names);
+}
+
+// Data moved underneath every page at once — what a completed sync means.
+// Draw the page in front of the user now; the others catch up when visited.
+async function renderVisibleAndDeferRest(){
+  for(const name of Object.keys(MODULE_RENDERERS)) staleModules.add(name);
+  await renderCurrentPage();
 }
 
 // Shared by both ways into the app: a fresh sign-in and an existing session.
@@ -3052,16 +3126,7 @@ async function pullAllAndMerge(options){
     pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
       {...options,minCreatedAt:activityLogCutoffISO()})
   ]);
-  await renderPropertiesList();  updatePropSyncBanner();
-  await renderTenantsList();     updateTenantSyncBanner();
-  await renderMaintenanceList(); updateMaintSyncBanner();
-  await renderInspectionList();  updateSyncBanner();
-  await renderInvoicesList();    updateInvoiceSyncBanner();
-  await renderStatementsList();  updateStatementSyncBanner();
-  await renderActivityLog();
-  await renderDashboard();
-  await renderComplianceLive();
-  await renderFinancials();
+  await renderVisibleAndDeferRest();
 }
 
 /* ============================================================
@@ -4194,8 +4259,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
   checkSession();
   resetInspectionForm();
-  renderAllModules();
-  renderEmailTriageList();
+  renderAllModules(); // includes email-triage and financials — see MODULE_RENDERERS
   updateEmailTriageModeBanner();
   // Only auto-runs in demo mode — otherwise MOCK_INBOX would auto-create fake
   // maintenance requests on top of real data on every load.

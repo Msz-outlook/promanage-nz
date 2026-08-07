@@ -231,6 +231,20 @@ per-inspection folders on an external drive holding the generated `report.pdf`,
 the source photos, and a `manifest.json` — and it is the only thing in the app
 that deletes from Supabase Storage on purpose.
 
+Neither substitutes for the other, and the two dashboard cards say so, because
+sitting side by side under similar-sounding headings they read as one feature.
+A backup covers every store but no purged photo; an archive covers inspections
+only. They meet in exactly one place: `exportAllData()` **skips** refs belonging
+to an inspection with `photosPurgedAt` rather than trying to sign them. Signing
+a deleted path fails, and counting that as a fetch failure reports the archive
+working as designed as though the backup were broken — so purged photos are
+counted separately and named in the summary instead. Pinned by two cases in
+`backup.test.mjs`.
+
+**Vocabulary:** the external drive is the **archive drive**, never the "backup
+drive", and nothing in the archive path says "backed up". The app used both
+names for it, which is what made the two features look like one job.
+
 | Function | What it does |
 | --- | --- |
 | `archiveSupported()` | `showDirectoryPicker` present — Chrome/Edge desktop only |

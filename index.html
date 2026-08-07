@@ -47,7 +47,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 
 /* Cards */
 .card{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-lg);margin-bottom:1rem;overflow:hidden}
-.card-head{padding:.75rem 1.25rem;border-bottom:0.5px solid var(--border);font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;display:flex;justify-content:space-between;align-items:center}
+.card-head{padding:.75rem 1.25rem;border-bottom:0.5px solid var(--border);font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+/* Plain-language qualifier after a card title, for two cards that would
+   otherwise read as the same job — see the Backup and Inspection archive
+   cards on the dashboard. */
+.card-head-sub{text-transform:none;font-weight:400;letter-spacing:0;color:var(--text3);margin-left:6px}
+.card-lead{font-size:12.5px;color:var(--text2);margin-bottom:8px}
 .card-body{padding:1rem 1.25rem}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 
@@ -141,7 +146,7 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .insp-area-name{font-weight:600;font-size:13.5px}
 .photo-strip{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .photo-thumb{width:56px;height:56px;border-radius:6px;object-fit:cover;border:0.5px solid var(--border2)}
-/* A thumb whose photo has been archived off to the backup drive: no src to
+/* A thumb whose photo has been archived off to the archive drive: no src to
    render, so give it a visible placeholder rather than a broken-image icon. */
 .photo-archived{background:var(--bg3);border-style:dashed;position:relative}
 .photo-archived::after{content:'🗄';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:20px;opacity:.55}
@@ -1318,7 +1323,7 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">
-      Backup
+      <span>Backup <span class="card-head-sub">to put the app back after a wipe</span></span>
       <span>
         <button class="btn btn-sm" onclick="exportAllData(false,this)">⬇ Export data</button>
         <button class="btn btn-sm" onclick="exportAllData(true,this)">⬇ Export data + photos</button>
@@ -1326,11 +1331,20 @@ textarea:focus{border-color:var(--text)}
       </span>
     </div>
     <div style="padding:0 14px 14px">
+      <div class="card-lead">
+        One JSON file holding every record — properties, tenants, maintenance, inspections,
+        invoices, statements — that can be re-imported to rebuild the app.
+        <strong>Nothing is ever deleted because you took a backup.</strong>
+      </div>
       <div id="dash-backup-status" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       <div style="color:var(--text3);font-size:12px;margin-top:8px">
         The Supabase project is on the Free plan, which keeps no automated backups.
         This device and the server hold the same data one sync apart — neither is a
         backup of the other. Keep the exported file somewhere else.
+        Photos are only in the file if you use <strong>Export data + photos</strong>, and only
+        while they are still in cloud storage — an inspection whose photos the archive has
+        already purged keeps its notes and findings here, but its photos live on the archive
+        drive alone and no later backup can pull them back.
       </div>
       <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none"
              onchange="importAllData(this.files&&this.files[0])">
@@ -1339,20 +1353,26 @@ textarea:focus{border-color:var(--text)}
 
   <div class="card">
     <div class="card-head">
-      Inspection archive
+      <span>Inspection archive <span class="card-head-sub">to free cloud storage without losing evidence</span></span>
       <span>
         <button class="btn btn-sm" onclick="pickArchiveDirectory()">📁 Choose folder…</button>
         <button class="btn btn-sm" onclick="archiveInspections(this)">🗄 Archive now</button>
       </span>
     </div>
     <div style="padding:0 14px 14px">
+      <div class="card-lead">
+        Per-inspection folders on an external drive, holding the PDF report and the original
+        photos as records you open in Finder or Explorer — not something the app reads back.
+        <strong>This is the only feature that deletes photos on purpose.</strong>
+      </div>
       <div id="dash-archive-status" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       <div style="color:var(--text3);font-size:12px;margin-top:8px">
-        Each inspection is written to the drive as its PDF report plus the original photos.
         Photos are removed from cloud storage once that archive is over
         <strong>180 days</strong> old — but only after every archived file is re-checked on the
         drive first, so a missing or disconnected drive never causes a deletion.
         After a purge the drive is the only copy: keep it somewhere safe.
+        It covers inspections only — properties, tenants, maintenance, invoices and statements
+        are never written here, so this does not stand in for a backup.
       </div>
     </div>
   </div>
@@ -3445,7 +3465,7 @@ function renderAreaPhotos(wrap,photos,opts){
     imgs.forEach(img=>{
       if(!img.dataset.photoRef) return;
       img.alt='Archived';
-      img.title='Archived to the backup drive on '+formatDateNZ(new Date(opts.photosPurgedAt))+where;
+      img.title='Archived to the archive drive on '+formatDateNZ(new Date(opts.photosPurgedAt))+where;
       img.classList.add('photo-archived');
     });
     return;
@@ -6866,17 +6886,26 @@ async function exportAllData(withPhotos,btn){
       rows+=data[store].length;
     }
 
-    let photoCount=0, photoFailures=0;
+    let photoCount=0, photoFailures=0, archivedPhotos=0;
     if(withPhotos){
       // Inline each photo as a data URL keyed by its storage ref, so a restore
       // can put the bytes back even if the bucket is gone. resolvePhotoRefs()
       // already knows how to sign a batch of refs; reuse it rather than
       // duplicating the signing logic.
+      //
+      // Photos the archive has already purged are skipped rather than attempted:
+      // signing a deleted path fails, and counting that as a failure would report
+      // the one part of the system working as designed as if the backup were
+      // broken. They are counted separately and named in the summary, because
+      // "not in this file" is the fact the user has to leave with — after a purge
+      // the archive drive is the only copy and no backup can change that.
       const refs=new Set();
       for(const insp of data.inspections||[]){
+        const purged=!!insp.photosPurgedAt;
         for(const area of insp.areas||[]){
           for(const p of area.photos||[]){
-            if(typeof p==='string' && p.startsWith(PHOTO_REF_PREFIX)) refs.add(p);
+            if(typeof p!=='string' || !p.startsWith(PHOTO_REF_PREFIX)) continue;
+            if(purged) archivedPhotos++; else refs.add(p);
           }
         }
       }
@@ -6921,6 +6950,10 @@ async function exportAllData(withPhotos,btn){
     alert('Backup downloaded — '+rows+' records'
       +(withPhotos?', '+photoCount+' photo'+(photoCount===1?'':'s'):'')
       +'.\n\nKeep it somewhere other than this device.'
+      +(archivedPhotos?'\n\nNote: '+archivedPhotos+' photo'+(archivedPhotos===1?' was':'s were')
+        +' archived to the drive and removed from cloud storage, so '+(archivedPhotos===1?'it is':'they are')
+        +' not in this file. Their inspections are — notes, findings and the PDF on the drive.'
+        +' The archive drive is the only copy of those photos.':'')
       +(photoFailures?'\n\nWARNING: '+photoFailures+' photo(s) could not be fetched and are NOT in this file.':''));
   }catch(err){
     console.error('Export failed:',err);
@@ -7116,7 +7149,7 @@ function archiveSupported(){
 }
 
 const ARCHIVED_REPORT_MESSAGE=(insp)=>
-  'The photos for this inspection were archived to the backup drive on '
+  'The photos for this inspection were archived to the archive drive on '
   +formatDateNZ(new Date(insp.photosPurgedAt))+' and removed from cloud storage.\n\n'
   +'The report generated at archive time is already on the drive'
   +(insp.archivePath?':\n\n    '+insp.archivePath+'/report.pdf':'.')
@@ -7390,7 +7423,7 @@ async function renderArchiveCard(){
   const bits=[];
   bits.push(dirHandle
     ? '<span class="badge bg">Archive folder connected</span>'
-    : '<span class="badge br">No archive folder — nothing is being backed up</span>');
+    : '<span class="badge br">No archive folder — no inspection is being archived</span>');
 
   if(lastArchive) bits.push('<span class="badge">Last archive '+escapeHtml(formatDateNZ(new Date(lastArchive)))+'</span>');
   bits.push('<span class="badge'+(pending.length?' ba':'')+'">'+pending.length+' waiting to archive</span>');

@@ -10,7 +10,7 @@
 // version), update SHELL_FILES below and bump CACHE_NAME so installed clients
 // discard the stale copy instead of serving it forever.
 
-const CACHE_NAME = 'promanage-shell-v8';
+const CACHE_NAME = 'promanage-shell-v9';
 
 const SHELL_FILES = [
   './index.html',

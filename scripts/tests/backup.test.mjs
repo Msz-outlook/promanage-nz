@@ -138,6 +138,65 @@ export default ({ test, app, eq, deepEq, ok }) => {
     ok(/not valid JSON/.test(refused), refused);
   });
 
+  /* ---- where backup and archive meet ---- */
+
+  // Backup and archive are different jobs, and the one place they touch is a
+  // photo the archive has already purged: it is gone from Storage on purpose,
+  // so no backup can ever contain it again. Attempting it would fail to sign
+  // and land in the "could not be fetched" warning, which reads as a broken
+  // backup rather than as the archive working. Skip, count, and say so.
+  const exportWithStubs = async ({ seed }) => {
+    const real = {
+      download: window.downloadJSON, alert: window.alert,
+      resolve: window.resolvePhotoRefs, log: window.logActivity
+    };
+    const lastExport = localStorage.getItem('promanage_last_export_at');
+    let payload = null, message = null;
+    const signed = [];
+    window.downloadJSON = (n, obj) => { payload = obj; };
+    window.alert = (m) => { message = m; };
+    window.resolvePhotoRefs = async (refs) => { signed.push(...refs); return refs.map(() => null); };
+    window.logActivity = async () => {};
+    try {
+      await dbClear('inspections');
+      for (const r of seed) await dbPut('inspections', r);
+      await exportAllData(true, null);
+      return { message, signed, exported: !!payload };
+    } finally {
+      window.downloadJSON = real.download; window.alert = real.alert;
+      window.resolvePhotoRefs = real.resolve; window.logActivity = real.log;
+      if (lastExport === null) localStorage.removeItem('promanage_last_export_at');
+      else localStorage.setItem('promanage_last_export_at', lastExport);
+      await dbClear('inspections');
+    }
+  };
+
+  test('a purged photo is never fetched for a backup, and is not called a failure', async () => {
+    const r = await app(exportWithStubs, {
+      seed: [{
+        id: 'test_bk_purged', synced: true, archivePath: '2026-01-01_x',
+        photosPurgedAt: '2026-01-01T00:00:00.000Z',
+        areas: [{ photos: ['storage:a.jpg', 'storage:b.jpg'] }]
+      }]
+    });
+    eq(r.exported, true);
+    deepEq(r.signed, [], 'a purged photo must not be signed or fetched');
+    ok(!/WARNING/.test(r.message || ''), r.message);
+    ok(/archive drive is the only copy/.test(r.message || ''), r.message);
+    ok(/2 photos were archived/.test(r.message || ''), r.message);
+  });
+
+  test('photos still in Storage are fetched as normal alongside purged ones', async () => {
+    const r = await app(exportWithStubs, {
+      seed: [
+        { id: 'test_bk_purged2', synced: true, photosPurgedAt: '2026-01-01T00:00:00.000Z',
+          areas: [{ photos: ['storage:gone.jpg'] }] },
+        { id: 'test_bk_live', synced: true, areas: [{ photos: ['storage:here.jpg'] }] }
+      ]
+    });
+    deepEq(r.signed, ['storage:here.jpg'], 'only the live photo is fetched');
+  });
+
   test('quota errors are recognised under both browser spellings', async () => {
     ok(await app(() => isQuotaError({ name: 'QuotaExceededError' })));
     ok(await app(() => isQuotaError({ name: 'NS_ERROR_DOM_QUOTA_REACHED' })), 'Firefox spelling');

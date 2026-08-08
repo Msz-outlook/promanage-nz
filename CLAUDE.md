@@ -6,7 +6,7 @@ Guidance for Claude Code working in this repository.
 
 A property-management app for a Christchurch, NZ property manager. It is an
 **offline-first PWA in essentially one file**: every feature module lives in
-`index.html` (~6.7k lines), with only the PDF generators split out into
+`index.html` (~7k lines), with only the PDF generators split out into
 `reports/pdf-reports.js` — and that split was made to stop them blocking the
 first paint, not to tidy anything up. Backed by Supabase (Postgres + Auth +
 private Storage) and IndexedDB for local state.
@@ -22,16 +22,16 @@ every page load.
 The duplication is what makes this codebase expensive to change, and scattering
 it across more files does not reduce it — see the file-splitting section of
 `docs/REVIEW-2026-08-quality.md` before moving anything else out, and note that
-ES modules would break all 151 tests.
+ES modules would break all 164 tests.
 
 ## Files
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `index.html` | 6675 | The app — markup, CSS, and every feature module. **supabase-js is the only library it blocks on**; see "Loading strategy" |
+| `index.html` | 6968 | The app — markup, CSS, and every feature module. **supabase-js is the only library it blocks on**; see "Loading strategy" |
 | `reports/pdf-reports.js` | 1111 | The three PDF generators (`FindingsReport`, `InvoiceReport`, `StatementReport`), lifted out of `index.html` and fetched by `loadPdfEngine()` when a report is asked for |
 | `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
-| `sw.js` | 190 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v10'`), navigation falls back to cached `index.html` on a 3s deadline |
+| `sw.js` | 190 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v11'`), navigation falls back to cached `index.html` on a 3s deadline |
 | `vendor/` | — | supabase-js 2.111.0 (blocking), jsPDF 2.5.2 + jspdf-autotable 3.8.2 + heic2any 0.0.4 (all on demand) |
 | `manifest.json` | — | PWA manifest |
 | `scripts/` | 2400 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
@@ -82,9 +82,37 @@ pre-caching a file and blocking the first paint on it are different things.
 `global.<Name>` — which is what the smoke test checks after calling
 `loadPdfEngine()`, proof the file ran to completion rather than merely parsing.
 
-**`index.html` is now a single inline script block.** It used to be two, and
-`check-app.mjs` still checks every block it finds, so adding another is fine —
-but the "block 0 / block 1" split referred to throughout this file is gone.
+**`index.html` has two inline script blocks: the theme block and the app
+block.** `check-app.mjs` parses every block it finds, so adding another is
+fine. Note that the smoke test's "block 1 ran to completion" assertion means
+the *app* block — the theme block is block 0.
+
+### The theme block — in `<head>`, above everything
+
+Twenty-odd lines resolving light/dark before the body paints. It is separate
+from the app block for two reasons, both load-bearing:
+
+- **It must run before the first paint.** Resolved from the app block, the
+  first frame would be light and every cold launch in dark mode would flash
+  white — for however long supabase-js takes to arrive.
+- **It must survive the app block dying.** A throw at the top level of the app
+  block abandons everything after it (see below); a user who cannot read the
+  screen is worse off than one looking at a half-wired app.
+
+`applyTheme()` always stamps an explicit `light`/`dark` on `<html>` — never
+`system`, which it resolves itself via `matchMedia`. That is what lets the
+stylesheet carry **one** dark block keyed on `[data-theme="dark"]` instead of
+also duplicating the palette inside a `prefers-color-scheme` media query.
+
+Everything it exports is `THEME_*`-prefixed or theme-named on purpose. A
+top-level `var` in a classic script creates a *non-configurable* window
+property, so a later top-level `const` of the same name in the app block fails
+to instantiate — a SyntaxError that takes the whole app down, not just the
+theme. Incidental locals (`mq`) are inside an IIFE for exactly this reason.
+
+Preference lives in `localStorage` (`promanage_theme`), not the IndexedDB
+`settings` store: it is needed synchronously, before a paint, and `openDB()` is
+async and has not run yet.
 
 ### The app block
 
@@ -291,6 +319,23 @@ When adding a new vendored library, add its guard at the same time as the
   The pushes in `fullSyncNowInner()` are ordered because tenants, maintenance,
   inspections and invoices carry a foreign key to `properties`. Do not
   "consistency-fix" the pushes to match the pulls.
+- **Colours living in the token blocks, never in a rule.** A hex inside a rule
+  is a colour that cannot follow the theme, and it looks perfect to whoever
+  added it — in whichever theme they happened to have open. Six were found this
+  way when dark mode went in (the alert borders, `.prog-fill`, the three status
+  dots). `theme.test.mjs` fails on any rule outside `:root` that names a colour,
+  and on any `:root` colour token with no `[data-theme="dark"]` counterpart.
+- **`color-scheme` on both token blocks.** One line each, and it is what makes
+  the browser's own widgets follow the theme: the select popup, the date picker,
+  scrollbars, autofilled fields. Drop it and the date picker is not merely
+  light, it is unreadable — Chrome draws dark text into it on the assumption
+  the field is light.
+- **`beforeprint` forcing light.** Browsers drop background colours when
+  printing but keep text colours, so printing in dark mode puts `#ececea` on
+  white paper — a page that reads as blank. The 🖨 button is a real feature
+  here, and this also covers Ctrl+P, which the button does not. It swaps the
+  attribute rather than duplicating the palette into `@media print`, so there
+  is no third copy to keep in step.
 - **The vendored libraries.** Do not swap them back to CDN `<script>` tags.
 - **`heic2any` and the PDF engine loaded on demand, not as `<script src>`.**
   Between them, 1.76 MB — 76% of the JavaScript that used to block the first
@@ -355,7 +400,7 @@ runs exactly these:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (151 cases)
+node scripts/test.mjs           # the test suite (164 cases)
 ```
 
 `check-app.mjs` replaces the old manual `node --check` ritual and adds the

@@ -10,7 +10,7 @@
 // version), update SHELL_FILES below and bump CACHE_NAME so installed clients
 // discard the stale copy instead of serving it forever.
 
-const CACHE_NAME = 'promanage-shell-v10';
+const CACHE_NAME = 'promanage-shell-v11';
 
 // How long a cold launch waits for the network before serving the cached shell.
 // Navigation is network-first so a deploy is picked up promptly, but "the

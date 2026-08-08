@@ -9,7 +9,26 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+/* THEME TOKENS.
+ *
+ * Light is the default and lives on :root; dark overrides the same names under
+ * [data-theme="dark"]. Nothing below this block should name a colour directly —
+ * a literal in a rule is a rule that only works in one theme, which is how the
+ * hardcoded borders and dots that used to be down there got missed.
+ *
+ * The dark palette is defined ONCE, keyed on the attribute, rather than also
+ * appearing inside a `@media (prefers-color-scheme:dark)` block. The head
+ * script resolves "follow the system" itself and always stamps an explicit
+ * light/dark value on <html> before the body paints, so a media query here
+ * would be a second copy of the same twenty values with nothing keeping them
+ * in step. See the theme script above <body>.
+ *
+ * Surface ordering is the same in both themes: bg3 is the page (most
+ * recessed), bg2 the sidebar and table headers, bg the cards and inputs (most
+ * raised). Dark inverts the lightness, not the hierarchy, so every rule that
+ * says "this sits on top of that" keeps meaning it. */
 :root{
+  color-scheme:light;
   --bg:#ffffff;--bg2:#f7f7f5;--bg3:#f0efe9;
   --text:#1a1a1a;--text2:#6b6b67;--text3:#9b9b96;
   --border:rgba(0,0,0,0.12);--border2:rgba(0,0,0,0.22);
@@ -17,7 +36,40 @@
   --amber-bg:#FAEEDA;--amber-text:#854F0B;
   --red-bg:#FCEBEB;--red-text:#A32D2D;
   --blue-bg:#E6F1FB;--blue-text:#185FA5;
+  --amber-border:#EF9F27;--blue-border:#378ADD;--red-border:#E24B4A;
+  --danger-border:#E9A6A6;--danger-hover:#F8D9D9;
+  --prog:#1D9E75;
+  --dot-r:#E24B4A;--dot-a:#EF9F27;--dot-g:#639922;
+  --scrim:rgba(0,0,0,.4);
+  --fade:rgba(0,0,0,.09);
+  --focus-ring:rgba(0,0,0,.08);
+  --drawer-shadow:rgba(0,0,0,.15);
   --radius:8px;--radius-lg:12px;
+}
+:root[data-theme="dark"]{
+  /* color-scheme is what makes the browser's OWN widgets follow the theme:
+     the select popup, the date picker and its calendar icon, scrollbars,
+     autofilled fields. Without it those stay light and punch white holes in
+     an otherwise dark page — and the date picker is unreadable, because
+     Chrome draws dark text into it on the assumption the field is light. */
+  color-scheme:dark;
+  --bg:#1f1f1d;--bg2:#191917;--bg3:#121211;
+  /* Not pure white on near-black: at 17:1 the text blooms against the
+     background on an OLED phone, which is what this app is mostly read on. */
+  --text:#ececea;--text2:#a8a7a1;--text3:#8d8c85;
+  --border:rgba(255,255,255,0.14);--border2:rgba(255,255,255,0.26);
+  --green-bg:#1E2E14;--green-text:#A8D97E;
+  --amber-bg:#332609;--amber-text:#EDBB6A;
+  --red-bg:#3A1A1A;--red-text:#F2A6A6;
+  --blue-bg:#14263A;--blue-text:#93C5F2;
+  --amber-border:#7A5A1E;--blue-border:#2C5C8A;--red-border:#8A3A3A;
+  --danger-border:#7A3A3A;--danger-hover:#4E2222;
+  --prog:#2FBF90;
+  --dot-r:#F07070;--dot-a:#F0B040;--dot-g:#8FC44A;
+  --scrim:rgba(0,0,0,.65);
+  --fade:rgba(0,0,0,.5);
+  --focus-ring:rgba(255,255,255,.14);
+  --drawer-shadow:rgba(0,0,0,.5);
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;color:var(--text);background:var(--bg3);min-height:100vh}
 .app{display:flex;height:100vh;overflow:hidden}
@@ -54,7 +106,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 /* Tables */
 .table-outer{position:relative}
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.scroll-fade{display:none;position:absolute;top:0;right:0;bottom:0;width:28px;background:linear-gradient(to right,rgba(0,0,0,0),rgba(0,0,0,.09));pointer-events:none}
+.scroll-fade{display:none;position:absolute;top:0;right:0;bottom:0;width:28px;background:linear-gradient(to right,rgba(0,0,0,0),var(--fade));pointer-events:none}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;font-size:11px;font-weight:600;color:var(--text2);padding:8px 12px;border-bottom:0.5px solid var(--border);text-transform:uppercase;letter-spacing:.04em;background:var(--bg2)}
 td{padding:10px 12px;border-bottom:0.5px solid var(--border);vertical-align:middle}
@@ -75,8 +127,8 @@ tbody tr:hover td{background:var(--bg2)}
 .btn:hover{background:var(--bg2)}
 .btn-primary{background:var(--text);color:var(--bg);border-color:var(--text)}
 .btn-primary:hover{opacity:.85}
-.btn-danger{background:var(--red-bg);color:var(--red-text);border-color:#E9A6A6}
-.btn-danger:hover{background:#F8D9D9}
+.btn-danger{background:var(--red-bg);color:var(--red-text);border-color:var(--danger-border)}
+.btn-danger:hover{background:var(--danger-hover)}
 .item-input{width:100%;padding:5px 6px;border:0.5px solid var(--border2);border-radius:4px;background:var(--bg);color:var(--text);font-size:12.5px;font-family:inherit;outline:none}
 .item-input:focus{border-color:var(--text)}
 .item-remove{background:transparent;border:none;color:var(--red-text);cursor:pointer;font-size:15px;padding:2px 6px}
@@ -91,13 +143,17 @@ tbody tr:hover td{background:var(--bg2)}
 
 /* Alerts */
 .alert{padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:10px;display:flex;gap:8px;align-items:flex-start;line-height:1.5}
-.alert-amber{background:var(--amber-bg);color:var(--amber-text);border:0.5px solid #EF9F27}
-.alert-blue{background:var(--blue-bg);color:var(--blue-text);border:0.5px solid #378ADD}
-.alert-red{background:var(--red-bg);color:var(--red-text);border:0.5px solid #E24B4A}
+.alert-amber{background:var(--amber-bg);color:var(--amber-text);border:0.5px solid var(--amber-border)}
+.alert-blue{background:var(--blue-bg);color:var(--blue-text);border:0.5px solid var(--blue-border)}
+.alert-red{background:var(--red-bg);color:var(--red-text);border:0.5px solid var(--red-border)}
 
 /* Forms */
-select,input[type=text],input[type=number],input[type=date]{padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none}
-select:focus,input:focus{border-color:var(--text);box-shadow:0 0 0 2px rgba(0,0,0,.08)}
+/* input[type=password] is in this list because the sign-in field is the very
+   first thing the app renders. Left out, it fell through to the browser default
+   — which in dark mode is a light box with dark text sitting directly beside
+   the themed email field above it. */
+select,input[type=text],input[type=password],input[type=number],input[type=date]{padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none}
+select:focus,input:focus{border-color:var(--text);box-shadow:0 0 0 2px var(--focus-ring)}
 .controls{display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;align-items:center}
 label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 
@@ -120,9 +176,9 @@ label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 .comp-name{font-size:13.5px;font-weight:500}
 .comp-desc{font-size:12px;color:var(--text2);margin-top:2px}
 .prog{height:5px;border-radius:3px;background:var(--bg2);margin-top:5px;overflow:hidden}
-.prog-fill{height:100%;border-radius:3px;background:#1D9E75}
+.prog-fill{height:100%;border-radius:3px;background:var(--prog)}
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}
-.dot-r{background:#E24B4A}.dot-a{background:#EF9F27}.dot-g{background:#639922}
+.dot-r{background:var(--dot-r)}.dot-a{background:var(--dot-a)}.dot-g{background:var(--dot-g)}
 
 /* Short/long term badges */
 .lt{background:var(--green-bg);color:var(--green-text);font-size:10px;padding:2px 7px;border-radius:10px;font-weight:500}
@@ -156,13 +212,13 @@ textarea:focus{border-color:var(--text)}
 
 /* Mobile layout — sidebar becomes a slide-out drawer instead of a fixed column */
 .hamburger{display:none;background:transparent;border:none;font-size:20px;cursor:pointer;padding:4px 8px;color:var(--text);line-height:1}
-.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:19}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:var(--scrim);z-index:19}
 @media (max-width:768px){
   .hamburger{display:inline-flex}
   .sidebar{
     position:fixed;top:0;left:0;height:100vh;z-index:20;
     transform:translateX(-100%);transition:transform .2s ease;
-    box-shadow:2px 0 12px rgba(0,0,0,.15);
+    box-shadow:2px 0 12px var(--drawer-shadow);
   }
   .sidebar.open{transform:translateX(0)}
   .sidebar-overlay.open{display:block}
@@ -176,6 +232,135 @@ textarea:focus{border-color:var(--text)}
   .scroll-fade{display:block}
 }
 </style>
+
+<!-- THEME. Deliberately its own block, in <head>, above everything.
+
+     It has to run before the body paints. Resolved from the app block instead,
+     the first frame would be light and the page would flash white on every
+     cold launch in dark mode — worst on the slow connections this app is built
+     for, because the gap is however long supabase-js takes to arrive. The part
+     that runs before the paint is the first thirty lines — synchronous, no
+     dependencies, no network: this block cannot itself be what delays it.
+
+     It is also independent of the app block ON PURPOSE. Per CLAUDE.md, a throw
+     at the top level of that block abandons every statement after it — and a
+     user who cannot read the screen is worse off than one looking at a
+     half-wired app. Theme switching survives that failure. The reverse holds
+     too: everything here is inside try/catch, so a browser that refuses
+     localStorage gets the default theme and a working app, not a dead <head>.
+
+     Storage is localStorage rather than the IndexedDB `settings` store because
+     the value is needed synchronously, before a paint. openDB() is async and
+     does not even run until the app block does. -->
+<script>
+var THEME_KEY='promanage_theme';
+var THEME_MODES=['system','light','dark'];
+// The address-bar colour on Android. Light keeps the value this app has always
+// shipped; only dark is new.
+var THEME_COLORS={light:'#1a1a1a',dark:'#121211'};
+
+// 'system' | 'light' | 'dark'. Anything else — absent, corrupt, or written by
+// an older build — reads as 'system'.
+function getThemeMode(){
+  try{
+    var v=localStorage.getItem(THEME_KEY);
+    return THEME_MODES.indexOf(v)!==-1?v:'system';
+  }catch(e){ return 'system'; }
+}
+
+function systemPrefersDark(){
+  try{ return !!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches); }
+  catch(e){ return false; }
+}
+
+// The mode the user picked resolved down to the two the stylesheet knows about.
+function resolveTheme(mode){
+  return (mode==='dark'||(mode==='system'&&systemPrefersDark()))?'dark':'light';
+}
+
+// Always stamps an explicit light/dark, never "system" — the CSS has one dark
+// block keyed on this attribute and no prefers-color-scheme media query, so
+// resolving here is what keeps the palette defined in a single place.
+function applyTheme(mode){
+  var theme=resolveTheme(mode);
+  try{
+    document.documentElement.setAttribute('data-theme',theme);
+    var meta=document.querySelector('meta[name="theme-color"]');
+    if(meta) meta.setAttribute('content',THEME_COLORS[theme]);
+  }catch(e){}
+  return theme;
+}
+
+applyTheme(getThemeMode());
+
+/* What the topbar button shows, and what it does next. Cycling
+   system → light → dark keeps "follow my device" reachable, which a plain
+   two-way toggle throws away permanently the first time it is pressed. */
+var THEME_UI={
+  system:{icon:'🌗',label:'Theme: auto (follows your device). Switch to light.'},
+  light:{icon:'☀️',label:'Theme: light. Switch to dark.'},
+  dark:{icon:'🌙',label:'Theme: dark. Switch to auto.'}
+};
+
+function updateThemeToggle(){
+  var btn=document.getElementById('theme-toggle');
+  if(!btn) return;
+  var ui=THEME_UI[getThemeMode()]||THEME_UI.system;
+  btn.textContent=ui.icon;
+  btn.title=ui.label;
+  btn.setAttribute('aria-label',ui.label);
+}
+
+function cycleTheme(){
+  var next=THEME_MODES[(THEME_MODES.indexOf(getThemeMode())+1)%THEME_MODES.length];
+  // Apply first, persist second: a browser with storage blocked (Safari private
+  // mode, or a locked-down work profile) should still switch for this session
+  // rather than have the click do nothing at all.
+  applyTheme(next);
+  try{ localStorage.setItem(THEME_KEY,next); }catch(e){/* not remembered next load */}
+  updateThemeToggle();
+}
+
+/* Following the system means following it while the app is open, not only at
+   boot: macOS and Android both flip automatically at dusk, and this app is
+   left open on a tablet all day.
+
+   Wrapped in an IIFE so `mq` does not become a global. A top-level `var` here
+   creates a NON-CONFIGURABLE property of window, and a later `const mq` at the
+   top level of the app block would then fail to instantiate — a SyntaxError
+   that takes the entire app down, not just this feature. The names this block
+   does export are all THEME_*-prefixed or theme-named for the same reason;
+   keep it that way. */
+(function(){
+  try{
+    var mq=window.matchMedia('(prefers-color-scheme: dark)');
+    var onSystemThemeChange=function(){
+      if(getThemeMode()==='system'){ applyTheme('system'); updateThemeToggle(); }
+    };
+    if(mq.addEventListener) mq.addEventListener('change',onSystemThemeChange);
+    else if(mq.addListener) mq.addListener(onSystemThemeChange); // Safari < 14
+  }catch(e){}
+})();
+
+/* PRINTING IS ALWAYS LIGHT.
+   Browsers drop background colours when printing but keep text colours, so a
+   dark theme prints #ececea onto white paper — a page that looks blank. The
+   swap happens here rather than in the print stylesheet because that would
+   mean a third copy of the light palette, kept in step by hand; this reuses
+   the one on :root. Hooking the 🖨 button's onclick instead would miss Ctrl+P,
+   which fires these events just the same. */
+try{
+  window.addEventListener('beforeprint',function(){
+    try{ document.documentElement.setAttribute('data-theme','light'); }catch(e){}
+  });
+  window.addEventListener('afterprint',function(){ applyTheme(getThemeMode()); });
+}catch(e){}
+
+// Self-registered rather than folded into the app block's handler: if that
+// block throws on the way up its DOMContentLoaded never registers, and the
+// button would sit there showing the wrong icon.
+document.addEventListener('DOMContentLoaded',updateThemeToggle);
+</script>
 </head>
 <!-- Third-party libraries are vendored into ./vendor/ rather than loaded from a
      CDN. Two reasons: (1) the service worker can pre-cache them, so the app
@@ -282,6 +467,9 @@ textarea:focus{border-color:var(--text)}
   </div>
   <div class="topbar-right">
     <span style="font-size:12px;color:var(--text2)">Christchurch · NZ · May 2026</span>
+    <!-- Icon, title and aria-label are all set by updateThemeToggle() on
+         DOMContentLoaded; the markup below is just the pre-script fallback. -->
+    <button class="btn btn-sm" id="theme-toggle" onclick="cycleTheme()" title="Theme" aria-label="Theme">🌗</button>
     <button class="btn btn-sm" onclick="window.print()">🖨 Print</button>
   </div>
 </div>
@@ -896,7 +1084,7 @@ textarea:focus{border-color:var(--text)}
 </div>
 
 <!-- COMPLIANCE MODAL (per-property checklist) — page-independent overlay -->
-<div id="compliance-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:50;display:none;align-items:center;justify-content:center;padding:1rem">
+<div id="compliance-modal" style="position:fixed;inset:0;background:var(--scrim);z-index:50;display:none;align-items:center;justify-content:center;padding:1rem">
   <div style="background:var(--bg);border-radius:var(--radius-lg);max-width:640px;width:100%;max-height:85vh;overflow-y:auto;padding:1.5rem">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;gap:10px">
       <div>

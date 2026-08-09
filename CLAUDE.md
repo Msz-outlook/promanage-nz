@@ -38,6 +38,7 @@ ES modules would break all 164 tests.
 | `.github/workflows/` | — | `ci.yml` runs all three check scripts on every push and PR; `keep-alive.yml` pings Supabase twice weekly so the Free project does not auto-pause |
 | `docs/REVIEW-2026-08.md` | — | Review ahead of scaling to ~6 properties: backup gap, photo sizing, quota projections |
 | `docs/REVIEW-2026-08-quality.md` | — | Quality/performance review: measured boot + sync latency, the escaping and import bugs, and the duplicated-scaffolding recommendation left unimplemented |
+| `docs/REVIEW-2026-08-diagnostics.md` | — | Failure-mode diagnosis: the offline-with-an-expired-session lockout, the still-open photo pipeline and batch-upload findings, and a maintenance cadence |
 
 **This repo is the deploy root.** GitHub Pages serves every committed file, and
 directories without an index are listable. Never commit real owner/tenant data,

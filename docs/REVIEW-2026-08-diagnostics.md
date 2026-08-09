@@ -377,13 +377,24 @@ grew; it is a set of deliberate constraints with the reasoning written down.
 
 **What they would push back on:**
 
-- **The duplication is now the dominant maintenance cost, and it has been
-  recommended twice without being done.** Still there today: **274 lines across
-  seven `pushXToBackend` functions, 152 across seven `syncPendingX`, and six
-  `updateXSyncBanner` wrappers.** The 7 August review called this out, proposed
-  the exact shape of the fix (`mapRemoteX()` already exists as the inverse), and
-  ordered it correctly — lift the property-delete 409 handling out first. The
-  argument for doing it now rather than later is finding 3: a change to the
+- **The duplication is now the dominant maintenance cost.** It was diagnosed
+  thoroughly on 7 August and **deliberately not fixed** — that review's
+  "Redundant code" section opens with "**Not changed.**" and its summary says
+  so too. Of its four rows, only `dateAddDaysStr` (5 lines) was deleted. Still
+  there today: **274 lines across seven `pushXToBackend` functions, 152 across
+  seven `syncPendingX`, and six `updateXSyncBanner` wrappers.**
+  `syncPendingTenants` and `syncPendingMaintenance` differ by nothing but a
+  store name, a function name and a loop variable.
+
+  The deferral was reasonable — it is a large diff through the most
+  safety-critical code in the app, and the review set two sensible conditions
+  (do it alone; lift the property-delete 409 handling out first). But the job
+  is not the mechanical one it looks like, and that is *why* it keeps sliding:
+  **three of the seven push functions already carry special-case logic** —
+  409 handling in `pushProperty`/`pushInvoice`/`pushStatement`, photo upload in
+  `pushInspection`. Only four are actually interchangeable.
+
+  The argument for doing it now rather than later is finding 3: a change to the
   upload path has to be made in one place and *reasoned about* in seven.
 - **"No build step" is being conflated with "no tooling".** There is no type
   checking and no linting, and the escaping bugs of the last review were
@@ -400,8 +411,9 @@ grew; it is a set of deliberate constraints with the reasoning written down.
   small number of Playwright scenario tests — offline cold start, expired
   token, upload failing mid-batch — would cover the failures that actually
   reach the user. The harness to write them already exists; this review used it.
-- **Email Triage is still 263 shipped, disabled, mock-data lines.** Third time
-  of asking: connect a mailbox or delete it.
+- **Email Triage is still ~263 shipped, disabled, mock-data lines**
+  (`DEMO_EMAIL_TRIAGE_DEFAULT = false`). Second time of asking: connect a
+  mailbox or delete it.
 
 **The overall verdict** would be that the architecture is right for the
 constraints, the engineering discipline is well above what a single-user

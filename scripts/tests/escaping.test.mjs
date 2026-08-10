@@ -3,7 +3,8 @@
 // input rendered straight into innerHTML, so these two functions are the only
 // thing between a tenant named `<img onerror=...>` and script execution.
 //
-// CLAUDE.md lists "escapeHtml on every interpolated value" as not to be
+// .claude/rules/app-invariants.md lists "escapeHtml on every interpolated
+// value" as not to be
 // simplified. These cases pin what it actually does — including what it
 // deliberately does NOT escape, since the two functions are not
 // interchangeable.

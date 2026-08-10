@@ -28,6 +28,77 @@
  * after loadPdfEngine(), so restoring a <script> tag fails loudly instead of
  * quietly costing every launch.
  */
+
+/* ============================================================================
+ * MODERNIST — the design tokens all three generators draw from.
+ *
+ * Ported from the Claude Design "Modernist" system (styles.css). This is the
+ * ONE place a colour or a type size is defined; the three IIFEs below read
+ * from it rather than carrying their own palettes, which is what stopped the
+ * statement/invoice/report trio drifting apart the first time.
+ *
+ * Two translations were needed to get CSS into a PDF:
+ *
+ * 1. px -> pt. The template is a 0.6in-margin A4 doc-page, so its CSS pixel
+ *    grid maps to PDF points at exactly the 96dpi ratio: 1px = 0.75pt. Every
+ *    size below is `px * PX`, kept in that form so it reads against the CSS.
+ *
+ * 2. color-mix() -> flat hex. A PDF has no compositing for text colour, so
+ *    mix() below pre-blends against the paper. Paper is WHITE, not the
+ *    system's --color-bg (#f3f2f2): this is a financial document that gets
+ *    printed, and a full-bleed tint either drops out at print time (giving
+ *    white anyway) or burns toner on every page. Every other token is the
+ *    system's own value.
+ *
+ * NOTE ON THE `var`: pdf-reports.js is a classic <script>, so this becomes a
+ * window property. It is deliberately named to not collide with anything in
+ * index.html — a top-level `const MODERNIST` there would make this throw and
+ * take all three generators down with it. See "Top-level code in the script
+ * block" in CLAUDE.md.
+ * ========================================================================== */
+var MODERNIST = (function () {
+  var PX = 0.75;                 // 1 CSS px at 96dpi, in PDF points
+  var PAPER = [255, 255, 255];   // what translucent tokens composite against
+
+  // color-mix(in srgb, <hex> <pct>%, transparent) resolved over the paper.
+  function mix(hex, pct) {
+    var h = hex.replace("#", "");
+    var out = "#";
+    for (var i = 0; i < 3; i++) {
+      var c = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+      var v = Math.round(c * pct + PAPER[i] * (1 - pct));
+      out += ("0" + v.toString(16)).slice(-2);
+    }
+    return out;
+  }
+
+  var text = "#201e1d";
+  return {
+    PX: PX,
+    px: function (n) { return n * PX; },
+    mix: mix,
+    color: {
+      text: text,
+      accent: "#ec3013",
+      accent700: "#ae1800",
+      surface: "#eae9e9",
+      white: "#ffffff",
+      // --color-divider is text at 40%; the muted greys are the template's
+      // own color-mix(text N%) values, resolved.
+      divider: mix(text, 0.40),
+      muted55: mix(text, 0.55),
+      muted60: mix(text, 0.60),
+      muted65: mix(text, 0.65),
+      muted70: mix(text, 0.70)
+    },
+    // Rule weights. The template uses exactly two: a 2px structural rule and
+    // a 1px internal divider. Keeping it to two is most of the look.
+    rule: { major: 2 * PX, minor: 1 * PX },
+    // Tracking, in em — applied with doc.setCharSpace(em * fontSize).
+    track: { kicker: 0.12, label: 0.10, display: -0.03, heading: -0.02, tight: -0.01, footer: 0.08 }
+  };
+})();
+
 /* ---- Findings Report generator (embedded, single-file) ---- */
 /*
  * findingsReport.js — client-side findings-report PDF generator.
@@ -86,20 +157,31 @@
   var MAX_IMAGE_DIM = 1600;
   var JPEG_QUALITY = 0.85;
 
+  /* Modernist tokens — see the block at the top of this file. The findings
+     table keeps its row rules rather than going fully unruled like the
+     statement's: its cells wrap to several lines each and carry the photo
+     cross-references, so the horizontal separation is doing real work here. */
+  var PX = MODERNIST.px, TRACK = MODERNIST.track, RULE = MODERNIST.rule;
   var COLORS = {
-    header: "#37474F",
-    grid: "#CCCCCC",
-    altRow: "#F7F7F7",
-    link: "#1155CC",
-    missingBg: "#F2F2F2",
-    missingBorder: "#CCCCCC",
-    footer: "#666666",
-    note: "#555555",
-    text: "#000000",
+    header: MODERNIST.color.text,
+    grid: MODERNIST.color.divider,
+    altRow: MODERNIST.color.surface,
+    link: MODERNIST.color.accent700,
+    missingBg: MODERNIST.color.surface,
+    missingBorder: MODERNIST.color.divider,
+    footer: MODERNIST.color.muted55,
+    note: MODERNIST.color.muted60,
+    text: MODERNIST.color.text,
+    accent: MODERNIST.color.accent,
+    accent700: MODERNIST.color.accent700,
+    label: MODERNIST.color.muted55,
   };
 
-  var FS = { body: 9.5, caption: 8.5, note: 8.5, footer: 8, title: 20, heading: 15 };
-  var CELL_PADDING = 5;              // autotable cell padding (pt)
+  var FS = {
+    body: PX(13.5), caption: PX(11.5), note: PX(11.5), footer: PX(10),
+    title: PX(44), heading: PX(22), kicker: PX(10)
+  };
+  var CELL_PADDING = PX(6);          // autotable cell padding (pt)
 
   // Findings table column widths (fractions match the Python version).
   var COL_W = [0.06, 0.20, 0.54, 0.20].map(function (f) { return USABLE_W * f; });
@@ -289,39 +371,67 @@
     var backLinks = [];        // { page, x, y, w, h, targetN }
 
     // --- Header block -------------------------------------------------------
-    var y = MARGIN + 6;
+    /* Masthead in the same shape as the owner statement: a tracked kicker,
+       the document name set large and tight in ink, then a 2px rule. */
+    var y = MARGIN;
+    var totalPhotos = records.length;
+    kicker(doc, "Inspection report", MARGIN, y + FS.kicker, COLORS.accent700);
+
+    var titleBase = y + FS.kicker + PX(10) + FS.title;
     doc.setFont("helvetica", "bold");
     doc.setFontSize(FS.title);
     setText(doc, COLORS.text);
-    doc.text(title, PAGE_W / 2, y + FS.title, { align: "center" });
-    y += FS.title + 14;
+    doc.setCharSpace(TRACK.heading * FS.title);
+    var titleLines = doc.splitTextToSize(String(title), USABLE_W);
+    titleLines.forEach(function (line, i) { doc.text(line, MARGIN, titleBase + i * FS.title); });
+    doc.setCharSpace(0);
+    y = titleBase + (titleLines.length - 1) * FS.title + PX(14);
+    rule(doc, MARGIN, PAGE_W - MARGIN, y, RULE.major);
 
-    var metaKeys = Object.keys(meta);
-    if (metaKeys.length) {
-      doc.setFontSize(FS.body);
-      var labelX = MARGIN, valueX = MARGIN + 95, lineH = 14;
-      metaKeys.forEach(function (k) {
-        doc.setFont("helvetica", "bold");
-        doc.text(String(k) + ":", labelX, y + FS.body);
-        doc.setFont("helvetica", "normal");
-        doc.text(String(meta[k]), valueX, y + FS.body);
-        y += lineH;
-      });
-      y += 8;
+    /* Meta strip: the caller's key/value pairs plus the two counts, laid out
+       as tracked-label-over-value cells like the statement's. */
+    var metaCells = Object.keys(meta).map(function (k) { return [k, String(meta[k])]; })
+      .concat([["Findings", String(findings.length)], ["Photos", String(totalPhotos)]]);
+    if (metaCells.length) {
+      var perRow = 4;
+      var cellW = USABLE_W / perRow;
+      var rows = Math.ceil(metaCells.length / perRow);
+      var stripTop = y;
+      for (var r = 0; r < rows; r++) {
+        var labelY = y + PX(10) + FS.kicker;
+        var tallest = 1;
+        metaCells.slice(r * perRow, (r + 1) * perRow).forEach(function (cell, i) {
+          var cx = MARGIN + i * cellW + (i === 0 ? 0 : PX(14));
+          kicker(doc, cell[0], cx, labelY, COLORS.label);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(FS.caption);
+          setText(doc, COLORS.text);
+          // Wrap rather than clip: a truncated site address or reference in an
+          // inspection report is lost evidence, not a cosmetic problem.
+          var lines = doc.splitTextToSize(cell[1], cellW - PX(18));
+          lines.forEach(function (line, li) {
+            doc.text(line, cx, labelY + PX(3) + FS.caption + li * FS.caption * 1.3);
+          });
+          if (lines.length > tallest) tallest = lines.length;
+        });
+        y = labelY + PX(3) + FS.caption + (tallest - 1) * FS.caption * 1.3 + PX(10);
+      }
+      for (var ci = 1; ci < perRow; ci++) {
+        setDraw(doc, COLORS.grid);
+        doc.setLineWidth(RULE.minor);
+        doc.line(MARGIN + ci * cellW, stripTop, MARGIN + ci * cellW, y);
+      }
+      rule(doc, MARGIN, PAGE_W - MARGIN, y, RULE.major);
     }
 
-    var totalPhotos = records.length;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(FS.note);
-    setText(doc, COLORS.note);
-    doc.text("Total findings: " + findings.length + "     |     Total photos: " + totalPhotos, MARGIN, y + FS.note);
-    y += FS.note + 12;
-
+    y += PX(24) + FS.heading;
     doc.setFont("helvetica", "bold");
     doc.setFontSize(FS.heading);
     setText(doc, COLORS.text);
-    doc.text("Findings", MARGIN, y + FS.heading);
-    y += FS.heading + 6;
+    doc.setCharSpace(TRACK.tight * FS.heading);
+    doc.text("Findings", MARGIN, y);
+    doc.setCharSpace(0);
+    y += PX(10);
 
     // --- Findings table -----------------------------------------------------
     var body = findings.map(function (f, i) {
@@ -334,23 +444,36 @@
       startY: y,
       head: [["#", "Item", "Description", "Photos"]],
       body: body,
-      theme: "grid",
+      theme: "plain",
       styles: {
-        font: "helvetica", fontSize: FS.body, cellPadding: CELL_PADDING, valign: "top",
-        lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5, textColor: hexToRgb(COLORS.text),
-        overflow: "linebreak",
+        font: "helvetica", fontSize: FS.body, valign: "top", lineWidth: 0,
+        cellPadding: { top: CELL_PADDING, bottom: CELL_PADDING, left: 0, right: PX(12) },
+        textColor: hexToRgb(COLORS.text), overflow: "linebreak",
       },
-      headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
-      alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
+      headStyles: {
+        fontStyle: "bold", fontSize: FS.kicker, textColor: hexToRgb(COLORS.label),
+        cellPadding: { top: 0, bottom: PX(6), left: 0, right: PX(12) }
+      },
       columnStyles: {
-        0: { cellWidth: COL_W[0], halign: "center", fontStyle: "bold" },
+        0: { cellWidth: COL_W[0], fontStyle: "bold", textColor: hexToRgb(COLORS.accent) },
         1: { cellWidth: COL_W[1], fontStyle: "bold" },
         2: { cellWidth: COL_W[2] },
         3: { cellWidth: COL_W[3], textColor: hexToRgb(COLORS.link) },
       },
       margin: { left: MARGIN, right: MARGIN },
+      willDrawCell: function (d) {
+        doc.setCharSpace(d.section === "head" ? TRACK.label * FS.kicker : 0);
+        if (d.section === "head") d.cell.text = d.cell.text.map(function (t) { return String(t).toUpperCase(); });
+      },
       didDrawCell: function (d) {
+        if (d.section === "head") {
+          rule(doc, d.cell.x, d.cell.x + d.cell.width, d.cell.y + d.cell.height, RULE.major);
+          return;
+        }
         if (d.section !== "body") return;
+        // Hairline between findings — these cells wrap to several lines, so
+        // the row boundary is load-bearing here in a way it isn't elsewhere.
+        rule(doc, d.cell.x, d.cell.x + d.cell.width, d.cell.y + d.cell.height, RULE.minor, COLORS.grid);
         var n = d.row.index + 1;
         var page = doc.internal.getCurrentPageInfo().pageNumber;
         if (d.column.index === 0) {
@@ -360,16 +483,23 @@
         }
       },
     });
+    doc.setCharSpace(0);
 
     // --- Attachments (portrait photo grid) ----------------------------------
     if (records.length) {
       doc.addPage();
-      var ay = MARGIN + 6;
+      var ay = MARGIN;
+      kicker(doc, "Evidence", MARGIN, ay + FS.kicker, COLORS.accent700);
+      ay += FS.kicker + PX(6);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(FS.heading);
       setText(doc, COLORS.text);
+      doc.setCharSpace(TRACK.tight * FS.heading);
       doc.text("Attachments", MARGIN, ay + FS.heading);
-      ay += FS.heading + 6;
+      doc.setCharSpace(0);
+      ay += FS.heading + PX(10);
+      rule(doc, MARGIN, PAGE_W - MARGIN, ay, RULE.major);
+      ay += PX(10);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(FS.note);
@@ -494,14 +624,9 @@
     var totalPages = doc.internal.getNumberOfPages();
     for (var p = 1; p <= totalPages; p++) {
       doc.setPage(p);
-      setDraw(doc, COLORS.missingBorder);
-      doc.setLineWidth(0.5);
-      doc.line(MARGIN, PAGE_H - 37, PAGE_W - MARGIN, PAGE_H - 37);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.footer);
-      setText(doc, COLORS.footer);
-      doc.text(title, MARGIN, PAGE_H - 26);
-      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, { align: "right" });
+      rule(doc, MARGIN, PAGE_W - MARGIN, PAGE_H - 37, RULE.major);
+      kicker(doc, title, MARGIN, PAGE_H - 26, COLORS.text);
+      kicker(doc, "Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, COLORS.footer, "right");
     }
 
     var blob = doc.output("blob");
@@ -513,6 +638,26 @@
   function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
   function setFill(doc, hex) { var c = hexToRgb(hex); doc.setFillColor(c[0], c[1], c[2]); }
   function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
+
+  /* The system's micro-label and its two rule weights — same helpers as the
+     other two generators. Char spacing is reset every time: it is document
+     state, and a leftover value widens whatever autoTable draws next. */
+  function kicker(doc, str, x, y, hex, align) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.kicker);
+    setText(doc, hex || COLORS.accent700);
+    doc.setCharSpace(TRACK.kicker * FS.kicker);
+    var s = String(str).toUpperCase();
+    if (align === "right") doc.text(s, x - (doc.getTextWidth(s) + TRACK.kicker * FS.kicker * Math.max(s.length - 1, 0)), y);
+    else doc.text(s, x, y);
+    doc.setCharSpace(0);
+  }
+
+  function rule(doc, x1, x2, y, weight, hex) {
+    setDraw(doc, hex || COLORS.text);
+    doc.setLineWidth(weight);
+    doc.line(x1, y, x2, y);
+  }
 
   global.FindingsReport = { generate: generate, normalizeToDataUrl: normalizeToDataUrl };
 })(typeof window !== "undefined" ? window : this);
@@ -553,8 +698,23 @@
   var USABLE_W = PAGE_W - 2 * MARGIN;
   var MM = 2.834645669; // 1mm in pt — used for the logo max-size box
 
-  var COLORS = { accent: "#1f4e5f", grey: "#666666", rule: "#dddddd", text: "#000000", white: "#ffffff" };
-  var FS = { title: 26, titleWithLogo: 20, label: 10, body: 9.5, small: 9, footer: 8 };
+  /* Modernist tokens. The invoice keeps its own layout — only the statement
+     was designed in the system — but it draws from the same palette, the same
+     two rule weights and the same tracked-uppercase label treatment, so the
+     three documents read as one set. */
+  var PX = MODERNIST.px, TRACK = MODERNIST.track, RULE = MODERNIST.rule;
+  var COLORS = {
+    accent: MODERNIST.color.accent,
+    accent700: MODERNIST.color.accent700,
+    grey: MODERNIST.color.muted55,
+    rule: MODERNIST.color.divider,
+    text: MODERNIST.color.text,
+    white: MODERNIST.color.white
+  };
+  var FS = {
+    title: PX(40), titleWithLogo: PX(30), label: PX(10),
+    body: PX(13.5), small: PX(12), footer: PX(10)
+  };
 
   function hexToRgb(hex) {
     var h = hex.replace("#", "");
@@ -571,6 +731,26 @@
       return function (opts) { return global.jspdf.autoTable(doc, opts); };
     }
     throw new Error("jspdf-autotable is not loaded");
+  }
+
+  /* The system's micro-label: uppercase, tracked, accent-coloured. Char
+     spacing is document state in jsPDF, so it is always reset — a leftover
+     value silently widens the next thing drawn, autoTable cells included. */
+  function kicker(doc, str, x, y, hex, align) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS.label);
+    setText(doc, hex || COLORS.accent700);
+    doc.setCharSpace(TRACK.kicker * FS.label);
+    var s = String(str).toUpperCase();
+    if (align === "right") doc.text(s, x - (doc.getTextWidth(s) + TRACK.kicker * FS.label * Math.max(s.length - 1, 0)), y);
+    else doc.text(s, x, y);
+    doc.setCharSpace(0);
+  }
+
+  function rule(doc, x1, x2, y, weight, hex) {
+    setDraw(doc, hex || COLORS.text);
+    doc.setLineWidth(weight);
+    doc.line(x1, y, x2, y);
   }
 
   // Best-effort logo fetch — mirrors the Python script's try/except: a
@@ -622,21 +802,25 @@
 
     // --- Logo + "TAX INVOICE" title (top-left) ---
     var titleBottom;
+    // Set like the statement's masthead: the document name large and tight in
+    // ink, the number carrying the accent (below, in the meta column).
+    function drawTitle(size, baseline) {
+      setText(doc, COLORS.text);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(size);
+      doc.setCharSpace(TRACK.heading * size);
+      doc.text("Tax Invoice", left, baseline);
+      doc.setCharSpace(0);
+    }
     if (logo) {
       var maxW = 50 * MM, maxH = 22 * MM;
       var scale = Math.min(maxW / logo.w, maxH / logo.h, 1);
       var dw = logo.w * scale, dh = logo.h * scale;
       doc.addImage(logo.dataUrl, "PNG", left, y, dw, dh);
-      setText(doc, COLORS.accent);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.titleWithLogo);
-      doc.text("TAX INVOICE", left, y + dh + 18);
-      titleBottom = y + dh + 24;
+      drawTitle(FS.titleWithLogo, y + dh + 18 + FS.titleWithLogo * 0.3);
+      titleBottom = y + dh + 24 + FS.titleWithLogo * 0.3;
     } else {
-      setText(doc, COLORS.accent);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.title);
-      doc.text("TAX INVOICE", left, y + FS.title);
+      drawTitle(FS.title, y + FS.title);
       titleBottom = y + FS.title + 6;
     }
 
@@ -658,10 +842,8 @@
 
     // --- Bill To (left) / meta table (right) ---
     var colW = USABLE_W / 2 - 10;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.label);
-    setText(doc, COLORS.accent);
-    doc.text("BILL TO", left, y);
+    rule(doc, left, right, y - PX(14), RULE.major);
+    kicker(doc, "Bill to", left, y);
     var by = y + 14;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(FS.body);
@@ -682,14 +864,12 @@
 
     var my = y;
     meta.forEach(function (row) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.small);
-      setText(doc, COLORS.grey);
-      doc.text(row[0], right - colW, my);
+      kicker(doc, row[0], right - colW, my, COLORS.grey);
       doc.setFont("helvetica", "bold");
+      doc.setFontSize(FS.small);
       setText(doc, COLORS.text);
       doc.text(String(row[1]), right, my, { align: "right" });
-      my += 14;
+      my += 15;
     });
 
     y = Math.max(by, my) + 22;
@@ -705,8 +885,10 @@
       head: [["Description", "Qty", "Unit price", "Amount (excl. GST)"]],
       body: body,
       theme: "plain",
-      styles: { font: "helvetica", fontSize: FS.body, cellPadding: { top: 6, bottom: 6, left: 4, right: 4 }, textColor: hexToRgb(COLORS.text) },
-      headStyles: { fillColor: hexToRgb(COLORS.accent), textColor: [255, 255, 255], fontStyle: "bold", fontSize: FS.small },
+      styles: { font: "helvetica", fontSize: FS.body, cellPadding: { top: 6, bottom: 6, left: 0, right: 0 }, textColor: hexToRgb(COLORS.text) },
+      // Same head as the statement: no filled bar, just a tracked uppercase
+      // row sitting on a 2px rule.
+      headStyles: { fontStyle: "bold", fontSize: FS.label, textColor: hexToRgb(COLORS.grey), cellPadding: { top: 0, bottom: PX(6), left: 0, right: 0 } },
       columnStyles: {
         0: { cellWidth: USABLE_W * 0.5 },
         1: { cellWidth: USABLE_W * 0.12, halign: "right" },
@@ -714,13 +896,19 @@
         3: { cellWidth: USABLE_W * 0.19, halign: "right" }
       },
       margin: { left: MARGIN, right: MARGIN },
+      willDrawCell: function (d) {
+        doc.setCharSpace(d.section === "head" ? TRACK.label * FS.label : 0);
+        if (d.section === "head") d.cell.text = d.cell.text.map(function (t) { return String(t).toUpperCase(); });
+      },
       didDrawCell: function (d) {
-        if (d.section !== "body") return;
-        setDraw(doc, COLORS.rule);
-        doc.setLineWidth(0.5);
-        doc.line(d.cell.x, d.cell.y + d.cell.height, d.cell.x + d.cell.width, d.cell.y + d.cell.height);
+        if (d.section === "head") {
+          rule(doc, d.cell.x, d.cell.x + d.cell.width, d.cell.y + d.cell.height, RULE.major);
+        } else if (d.section === "body") {
+          rule(doc, d.cell.x, d.cell.x + d.cell.width, d.cell.y + d.cell.height, RULE.minor, COLORS.rule);
+        }
       }
     });
+    doc.setCharSpace(0);
 
     var afterTableY = doc.lastAutoTable.finalY + 16;
 
@@ -756,10 +944,8 @@
     var hasBank = bank.accountName || bank.bankName || bank.accountNumber || bank.referenceNote;
     var py = ty + 24;
     if (hasBank) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.label);
-      setText(doc, COLORS.accent);
-      doc.text("PAYMENT DETAILS", left, py);
+      rule(doc, left, right, py - PX(14), RULE.major);
+      kicker(doc, "Payment details", left, py);
       py += 14;
       doc.setFont("helvetica", "normal");
       doc.setFontSize(FS.body);
@@ -785,14 +971,10 @@
     var generatedOn = new Date().toLocaleDateString("en-NZ", { day: "2-digit", month: "short", year: "numeric" });
     for (var p = 1; p <= totalPages; p++) {
       doc.setPage(p);
-      setDraw(doc, COLORS.rule);
-      doc.setLineWidth(0.5);
-      doc.line(MARGIN, PAGE_H - 34, PAGE_W - MARGIN, PAGE_H - 34);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.footer);
-      setText(doc, COLORS.grey);
-      doc.text(footerBits.join("  |  ") + "  |  Generated " + generatedOn, PAGE_W / 2, PAGE_H - 22, { align: "center" });
-      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 22, { align: "right" });
+      rule(doc, MARGIN, PAGE_W - MARGIN, PAGE_H - 37, RULE.major);
+      kicker(doc, footerBits.join(" · "), MARGIN, PAGE_H - 26, COLORS.text);
+      kicker(doc, "Generated " + generatedOn + " · Page " + p + " of " + totalPages,
+             PAGE_W - MARGIN, PAGE_H - 26, COLORS.grey, "right");
     }
 
     var blob = doc.output("blob");
@@ -843,12 +1025,28 @@
   var MARGIN = 43.2;
   var USABLE_W = PAGE_W - 2 * MARGIN;
 
-  var COLORS = {
-    header: "#37474F", grid: "#CCCCCC", altRow: "#F7F7F7",
-    text: "#000000", muted: "#666666", accent: "#185FA5",
-    income: "#3B6D11", expense: "#A32D2D"
+  var COLORS = MODERNIST.color;
+  var PX = MODERNIST.px, TRACK = MODERNIST.track, RULE = MODERNIST.rule;
+
+  /* Type scale, straight off the template's inline styles (px -> pt).
+     Named for the element rather than the size so the mapping back to the
+     HTML stays obvious. */
+  var FS = {
+    kicker: PX(10),        // uppercase tracked labels
+    display: PX(64),       // the statement numeral
+    title: PX(44),         // "Owner / Statement"
+    total: PX(52),         // the combined-total figure
+    property: PX(22),      // property address heading
+    section: PX(12),       // INCOME / EXPENSES
+    partyName: PX(17),
+    metaValue: PX(15),
+    balance: PX(16),
+    totalValue: PX(17),
+    body: PX(13.5),        // table rows
+    note: PX(11.5),
+    notesBlock: PX(12),
+    footer: PX(10)
   };
-  var FS = { title: 20, heading: 12, body: 9.5, small: 8.5, footer: 8 };
 
   function hexToRgb(hex) {
     var h = hex.replace("#", "");
@@ -856,7 +1054,61 @@
   }
   function setText(doc, hex) { var c = hexToRgb(hex); doc.setTextColor(c[0], c[1], c[2]); }
   function setDraw(doc, hex) { var c = hexToRgb(hex); doc.setDrawColor(c[0], c[1], c[2]); }
+  function setFill(doc, hex) { var c = hexToRgb(hex); doc.setFillColor(c[0], c[1], c[2]); }
   function money(n) { return "$" + (Number(n) || 0).toLocaleString("en-NZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+  /* --- Drawing helpers -----------------------------------------------------
+     The template's whole visual system is: tracked uppercase micro-labels,
+     two rule weights, and one accent block. These three helpers are what
+     draw all of it, so the layout code below stays readable as layout. */
+
+  // A horizontal rule. weight is RULE.major (2px) or RULE.minor (1px).
+  function rule(doc, x1, x2, y, weight, hex) {
+    setDraw(doc, hex || COLORS.text);
+    doc.setLineWidth(weight);
+    doc.line(x1, y, x2, y);
+  }
+
+  /* Text with the template's tracking applied. jsPDF's letter-spacing is
+     absolute points, and CSS letter-spacing is em, so it has to be resolved
+     against the font size at every call. Always reset to 0 — char spacing is
+     document state, and leaving it set silently widens the next thing drawn,
+     including autoTable's cells. */
+  function tx(doc, str, x, y, o) {
+    o = o || {};
+    var size = o.size || FS.body;
+    doc.setFont("helvetica", o.bold ? "bold" : "normal");
+    doc.setFontSize(size);
+    setText(doc, o.color || COLORS.text);
+    if (o.track) doc.setCharSpace(o.track * size);
+    doc.text(o.upper ? String(str).toUpperCase() : String(str), x, y, o.align ? { align: o.align } : undefined);
+    if (o.track) doc.setCharSpace(0);
+  }
+
+  /* Largest size at or below `size` that fits `str` into `maxW`. The meta
+     strip gives every cell a flat quarter of the page, and the period string
+     is the one that can outgrow that — a value silently overlapping its
+     neighbour is a worse outcome than one set a point smaller. */
+  function fitSize(doc, str, maxW, size, bold) {
+    if (!maxW) return size;
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    for (var s = size; s > size * 0.6; s -= 0.25) {
+      doc.setFontSize(s);
+      if (doc.getTextWidth(String(str)) <= maxW) return s;
+    }
+    return size * 0.6;
+  }
+
+  // The recurring "tiny tracked label above a bold value" pair, used by the
+  // meta strip, the balance strips and the totals block.
+  function stat(doc, label, value, x, y, o) {
+    o = o || {};
+    var size = o.size || FS.balance;
+    tx(doc, label, x, y, { size: FS.kicker, track: TRACK.label, upper: true, color: o.labelColor || COLORS.muted55, align: o.align });
+    tx(doc, value, x, y + PX(3) + size,
+       { size: fitSize(doc, value, o.maxW, size, true), bold: true, color: o.valueColor || COLORS.text, align: o.align });
+    return y + PX(3) + size;
+  }
 
   function getAutoTable(doc) {
     if (typeof doc.autoTable === "function") return doc.autoTable.bind(doc);
@@ -882,224 +1134,314 @@
     doc.setProperties({ title: "Owner Statement " + (data.statementNumber || "") });
     var autoTable = getAutoTable(doc);
 
+    var left = MARGIN, right = PAGE_W - MARGIN;
+    var FOOTER_RESERVE = 52;          // rule at PAGE_H-37, text at PAGE_H-26
     var y = MARGIN;
 
-    // --- Title + statement meta (top-right) ---
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.title);
-    setText(doc, COLORS.text);
-    doc.text("OWNER STATEMENT", MARGIN, y + FS.title);
+    /* The template carried two component props, showNotes and showPropertyNet.
+       They become options here so the caller keeps the same two switches. */
+    var showNotes = options.showNotes !== false;
+    var showPropertyNet = options.showPropertyNet !== false;
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(FS.body);
-    var metaLines = [
-      ["Statement #", data.statementNumber || "—"],
-      ["Period", (data.periodStart || "—") + " – " + (data.periodEnd || "—")],
-      ["Status", data.status || "—"]
+    var statementNo = data.statementNumber || "—";
+
+    /* "01 Jul 2026 – 31 Jul 2026" is too wide for a quarter-page meta cell, and
+       the template writes it the short way anyway: when both ends share a
+       month and year, print it once. Falls back to the full range whenever
+       they differ (or the dates aren't in the expected shape). */
+    function periodText(a, b) {
+      a = a || ""; b = b || "";
+      if (!a || !b) return a || b || "—";
+      var pa = a.split(/\s+/), pb = b.split(/\s+/);
+      if (pa.length === 3 && pb.length === 3 && pa[1] === pb[1] && pa[2] === pb[2]) {
+        return pa[0] + " – " + pb[0] + " " + pb[1] + " " + pb[2];
+      }
+      return a + " – " + b;
+    }
+    var periodLabel = periodText(data.periodStart, data.periodEnd);
+
+    function ensure(space) {
+      if (y + space > PAGE_H - FOOTER_RESERVE) { doc.addPage(); y = MARGIN; return true; }
+      return false;
+    }
+
+    /* ---- Masthead ---------------------------------------------------------
+       Business kicker, a two-line title, and the statement number set huge in
+       accent and bottom-aligned against it (align-items:flex-end). That
+       numeral is the design's anchor; everything else is quieter than it. */
+    var kickerBase = y + FS.kicker;
+    tx(doc, from.name || "Owner Statement", left, kickerBase,
+       { size: FS.kicker, bold: true, upper: true, track: TRACK.kicker, color: COLORS.accent700 });
+
+    var line1 = kickerBase + PX(10) + FS.title;
+    var line2 = line1 + FS.title;                     // line-height: 1
+    tx(doc, "Owner", left, line1, { size: FS.title, bold: true, track: TRACK.heading });
+    tx(doc, "Statement", left, line2, { size: FS.title, bold: true, track: TRACK.heading });
+    tx(doc, statementNo, right, line2,
+       { size: FS.display, bold: true, track: TRACK.display, color: COLORS.accent, align: "right" });
+
+    y = line2 + PX(14);
+    rule(doc, left, right, y, RULE.major);
+
+    /* ---- Meta strip: four cells divided by hairlines ---------------------- */
+    /* "Statement No.", not the template's "Statement №": jsPDF's built-in
+       Helvetica is WinAnsi-encoded and has no U+2116, which silently renders
+       as "!" rather than failing. Same reason to keep to en/em dashes and
+       the middle dot below — those ARE in WinAnsi. */
+    var metaCells = [
+      ["Statement No.", statementNo, COLORS.text],
+      ["Period", periodLabel, COLORS.text],
+      ["Status", data.status || "—", COLORS.accent700],
+      ["Properties", String(properties.length), COLORS.text]
     ];
-    var metaY = y;
-    metaLines.forEach(function (row) {
-      setText(doc, COLORS.muted);
-      doc.text(row[0] + ":", PAGE_W - MARGIN - 200, metaY, { align: "left" });
-      setText(doc, COLORS.text);
-      doc.setFont("helvetica", "bold");
-      doc.text(String(row[1]), PAGE_W - MARGIN, metaY, { align: "right" });
-      doc.setFont("helvetica", "normal");
-      metaY += 14;
+    var metaTop = y;
+    var cellW = USABLE_W / 4;
+    var metaLabelY = metaTop + PX(10) + FS.kicker;
+    metaCells.forEach(function (cell, i) {
+      var cx = left + i * cellW + (i === 0 ? 0 : PX(14));
+      stat(doc, cell[0], cell[1], cx, metaLabelY,
+           { size: FS.metaValue, valueColor: cell[2], maxW: cellW - PX(18) });
     });
-    y += FS.title + 24;
+    y = metaLabelY + PX(3) + FS.metaValue + PX(12);
+    for (var mi = 1; mi < 4; mi++) {
+      setDraw(doc, COLORS.divider);
+      doc.setLineWidth(RULE.minor);
+      doc.line(left + mi * cellW, metaTop, left + mi * cellW, y);
+    }
+    rule(doc, left, right, y, RULE.major);
 
-    // --- From (manager) / Owner / Property ---
-    var colW = USABLE_W / 2 - 10;
-    function addressBlock(label, name, addressLines, extra, x) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.small);
-      setText(doc, COLORS.muted);
-      doc.text(label.toUpperCase(), x, y);
-      var by = y + 14;
-      doc.setFontSize(FS.body);
-      setText(doc, COLORS.text);
-      doc.text(name || "—", x, by);
-      by += 13;
-      doc.setFont("helvetica", "normal");
-      (addressLines || []).forEach(function (line) {
+    /* ---- Parties: property manager | statement recipient ------------------ */
+    var partyTop = y;
+    var halfW = USABLE_W / 2;
+    var propertyNames = properties.map(function (p) { return p.propertyAddress; }).filter(Boolean);
+
+    function party(label, name, lines, x, maxW) {
+      var ly = partyTop + PX(16) + FS.kicker;
+      tx(doc, label, x, ly, { size: FS.kicker, bold: true, upper: true, track: TRACK.kicker, color: COLORS.accent700 });
+      var ny = ly + PX(8) + FS.partyName;
+      tx(doc, name || "—", x, ny, { size: FS.partyName, bold: true });
+      var sy = ny;
+      (lines || []).forEach(function (line) {
         if (!line) return;
-        doc.splitTextToSize(line, colW).forEach(function (l) {
-          doc.text(l, x, by);
-          by += 12;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(FS.body);
+        doc.splitTextToSize(String(line), maxW).forEach(function (l) {
+          sy += PX(13.5) * 1.55;
+          tx(doc, l, x, sy, { size: FS.body, color: COLORS.muted65 });
         });
       });
-      (extra || []).forEach(function (line) {
-        setText(doc, COLORS.muted);
-        doc.text(line, x, by);
-        by += 12;
-      });
-      return by;
+      return sy;
     }
-    var fromExtra = [];
-    if (from.gstNumber) fromExtra.push("GST #: " + from.gstNumber);
-    if (from.email) fromExtra.push(from.email);
-    if (from.phone) fromExtra.push(from.phone);
-    var y1 = addressBlock("Property manager", from.name, [from.address], fromExtra, MARGIN);
 
-    var ownerExtra = [];
-    if (owner.email) ownerExtra.push(owner.email);
-    var propertyNames = properties.map(function (p) { return p.propertyAddress; }).filter(Boolean);
-    var ownerAddressLines = propertyNames.length
-      ? [propertyNames.length + " propert" + (propertyNames.length > 1 ? "ies" : "y") + ":"].concat(propertyNames)
-      : [];
-    var y2 = addressBlock("Statement for", owner.name, ownerAddressLines, ownerExtra, MARGIN + colW + 20);
+    var fromLines = [from.address].concat(from.gstNumber ? ["GST No: " + from.gstNumber] : [], from.email ? [from.email] : []);
+    var p1 = party("Property manager", from.name, fromLines, left, halfW - PX(24));
+    var p2 = party("Statement for", owner.name, propertyNames.concat(owner.email ? [owner.email] : []),
+                   left + halfW + PX(24), halfW - PX(24));
 
-    y = Math.max(y1, y2) + 18;
+    y = Math.max(p1, p2) + PX(20);
+    setDraw(doc, COLORS.divider);
+    doc.setLineWidth(RULE.minor);
+    doc.line(left + halfW, partyTop, left + halfW, y);
+    rule(doc, left, right, y, RULE.major);
 
-    function itemTable(title, items, color) {
-      if (y > PAGE_H - 200) { doc.addPage(); y = MARGIN; }
-      setText(doc, color);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.heading);
-      doc.text(title, MARGIN, y);
-      y += 10;
+    /* ---- Income / expense tables -----------------------------------------
+       theme "plain" because the template's tables have no grid and no zebra:
+       a tracked uppercase head over a 2px rule, then unruled rows. The whole
+       table reads as a list, which is why the numbers carry so well. */
+    function sectionLabel(text) {
+      y += PX(20) + FS.section;
+      tx(doc, text, left, y, { size: FS.section, bold: true, upper: true, track: TRACK.kicker });
+      var labelW = doc.getTextWidth(String(text).toUpperCase()) + TRACK.kicker * FS.section * text.length;
+      setDraw(doc, COLORS.divider);
+      doc.setLineWidth(RULE.minor);
+      doc.line(left + labelW + PX(10), y - FS.section * 0.32, right, y - FS.section * 0.32);
+      y += PX(10);
+    }
+
+    function lineTable(items, emptyLabel) {
       var body = (items || []).map(function (it) {
         return [it.date || "", it.description || "", money(it.amount)];
       });
-      if (!body.length) body = [["—", "No " + title.toLowerCase() + " recorded this period", money(0)]];
+      if (!body.length) body = [["—", emptyLabel, money(0)]];
       autoTable({
         startY: y,
         head: [["Date", "Description", "Amount"]],
         body: body,
-        theme: "grid",
-        styles: { font: "helvetica", fontSize: FS.body, cellPadding: 6, textColor: hexToRgb(COLORS.text), lineColor: hexToRgb(COLORS.grid), lineWidth: 0.5 },
-        headStyles: { fillColor: hexToRgb(COLORS.header), textColor: [255, 255, 255], fontStyle: "bold" },
-        alternateRowStyles: { fillColor: hexToRgb(COLORS.altRow) },
-        columnStyles: {
-          0: { cellWidth: USABLE_W * 0.18 },
-          1: { cellWidth: USABLE_W * 0.57 },
-          2: { cellWidth: USABLE_W * 0.25, halign: "right" }
+        theme: "plain",
+        styles: {
+          font: "helvetica", fontSize: FS.body, valign: "top", lineWidth: 0,
+          cellPadding: { top: PX(3), bottom: PX(3), left: 0, right: 0 },
+          textColor: hexToRgb(COLORS.text)
         },
-        margin: { left: MARGIN, right: MARGIN }
+        headStyles: {
+          fontSize: FS.kicker, fontStyle: "bold", textColor: hexToRgb(COLORS.muted55),
+          cellPadding: { top: 0, bottom: PX(6), left: 0, right: 0 }
+        },
+        // Widths come straight from the CSS: a 92px date column, a right-set
+        // amount column, description takes the rest.
+        columnStyles: {
+          0: { cellWidth: PX(92) },
+          1: { cellWidth: "auto" },
+          2: { cellWidth: PX(100), halign: "right" }
+        },
+        margin: { left: left, right: MARGIN, bottom: FOOTER_RESERVE },
+        willDrawCell: function (d) {
+          // Tracking belongs to the head row only. autoTable draws cell text
+          // itself, so this has to be set per cell and cleared for the body —
+          // a stray char space would widen every currency figure.
+          doc.setCharSpace(d.section === "head" ? TRACK.label * FS.kicker : 0);
+          if (d.section === "head") d.cell.text = d.cell.text.map(function (t) { return String(t).toUpperCase(); });
+        },
+        didDrawCell: function (d) {
+          if (d.section === "head") {
+            rule(doc, d.cell.x, d.cell.x + d.cell.width, d.cell.y + d.cell.height, RULE.major);
+          }
+        }
       });
-      y = doc.lastAutoTable.finalY + 16;
+      doc.setCharSpace(0);
+      y = doc.lastAutoTable.finalY;
     }
 
-    function propertyTotalsBox(prop) {
-      if (y > PAGE_H - 110) { doc.addPage(); y = MARGIN; }
-      var boxW = 230, rowH = 14;
-      var rows = [
-        ["Opening balance", money(prop.openingBalance)],
-        ["Net amount", money(prop.netAmount)],
-        ["Closing balance", money(prop.closingBalance)]
-      ];
-      var boxX = PAGE_W - MARGIN - boxW;
-      var by = y;
-      rows.forEach(function (row, i) {
-        var isLast = i === rows.length - 1;
-        doc.setFont("helvetica", isLast ? "bold" : "normal");
-        doc.setFontSize(FS.small);
-        setText(doc, isLast ? COLORS.text : COLORS.muted);
-        doc.text(row[0], boxX, by + 10);
-        doc.text(row[1], boxX + boxW, by + 10, { align: "right" });
-        by += rowH;
-      });
-      y = by + 6;
-    }
-
-    // --- Per-property sections: each property gets its own income/expenses/subtotal ---
+    /* ---- Per-property sections -------------------------------------------
+       The template puts break-before:page on every property after the first,
+       so each address opens its own page. */
     properties.forEach(function (prop, idx) {
-      if (y > PAGE_H - 220) { doc.addPage(); y = MARGIN; }
-      setText(doc, COLORS.text);
+      if (idx > 0) { doc.addPage(); y = MARGIN; } else { y += PX(28); }
+      ensure(160);
+
+      var headTop = y;
+      tx(doc, "Property " + ("0" + (idx + 1)).slice(-2), left, headTop + FS.kicker,
+         { size: FS.kicker, bold: true, upper: true, track: TRACK.kicker, color: COLORS.accent });
+      var addrY = headTop + FS.kicker + PX(6) + FS.property;
+      var addr = prop.propertyAddress || ("Property " + (idx + 1));
+      var addrMaxW = showPropertyNet ? USABLE_W - PX(120) : USABLE_W;
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.heading + 1);
-      doc.text(prop.propertyAddress || ("Property " + (idx + 1)), MARGIN, y);
-      y += 6;
-      setDraw(doc, COLORS.grid);
-      doc.setLineWidth(0.75);
-      doc.line(MARGIN, y, PAGE_W - MARGIN, y);
-      y += 16;
+      doc.setFontSize(FS.property);
+      var addrLines = doc.splitTextToSize(addr, addrMaxW);
+      addrLines.forEach(function (l, i) {
+        tx(doc, l, left, addrY + i * FS.property * 1.12, { size: FS.property, bold: true, track: TRACK.tight });
+      });
+      var addrBottom = addrY + (addrLines.length - 1) * FS.property * 1.12;
 
-      itemTable("Income", prop.income, COLORS.income);
-      itemTable("Expenses", prop.expenses, COLORS.expense);
-      propertyTotalsBox(prop);
+      if (showPropertyNet) {
+        // Label sits a full value-line above the figure, both bottom-aligned
+        // with the address (align-items:flex-end in the template).
+        tx(doc, "Net", right, addrBottom - PX(19),
+           { size: FS.kicker, track: TRACK.label, upper: true, color: COLORS.muted55, align: "right" });
+        tx(doc, money(prop.netAmount), right, addrBottom, { size: FS.property, bold: true, align: "right" });
+      }
 
-      if (prop.notes) {
-        setText(doc, COLORS.muted);
+      y = addrBottom + PX(10);
+      rule(doc, left, right, y, RULE.major);
+
+      sectionLabel("Income");
+      lineTable(prop.income, "No income recorded this period");
+
+      sectionLabel("Expenses");
+      lineTable(prop.expenses, "No expenses recorded this period");
+
+      /* Balance strip: opening / net / closing, hairline-divided. */
+      ensure(70);
+      y += PX(18);
+      rule(doc, left, right, y, RULE.major);
+      var balTop = y;
+      var balW = USABLE_W / 3;
+      var balLabelY = balTop + PX(10) + FS.kicker;
+      [["Opening balance", money(prop.openingBalance), COLORS.text],
+       ["Net amount", money(prop.netAmount), COLORS.text],
+       ["Closing balance", money(prop.closingBalance), COLORS.accent700]
+      ].forEach(function (cell, i) {
+        stat(doc, cell[0], cell[1], left + i * balW + (i === 0 ? 0 : PX(14)), balLabelY,
+             { size: FS.balance, valueColor: cell[2] });
+      });
+      y = balLabelY + PX(3) + FS.balance;
+      for (var bi = 1; bi < 3; bi++) {
+        setDraw(doc, COLORS.divider);
+        doc.setLineWidth(RULE.minor);
+        doc.line(left + bi * balW, balTop, left + bi * balW, y);
+      }
+
+      if (showNotes && prop.notes) {
+        y += PX(14);
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(FS.small);
-        doc.splitTextToSize(prop.notes, USABLE_W).forEach(function (line) {
-          doc.text(line, MARGIN, y);
-          y += 11;
+        doc.setFontSize(FS.note);
+        doc.splitTextToSize(String(prop.notes), USABLE_W * 0.88).forEach(function (line) {
+          ensure(FS.note * 1.5);
+          y += FS.note * 1.5;
+          tx(doc, line, left, y, { size: FS.note, color: COLORS.muted60 });
         });
       }
-      y += 18;
     });
 
-    // --- Combined totals box (bottom-right) ---
-    if (y > PAGE_H - 160) { doc.addPage(); y = MARGIN; }
-    setText(doc, COLORS.text);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FS.heading);
-    doc.text("Combined totals — all properties", MARGIN, y);
-    var afterTableY = y + 6;
-    var boxW = 230, rowH = 16;
-    var totalRows = [
-      ["Opening balance", money(data.openingBalance)],
-      ["Total income", money(data.totalIncome)],
-      ["Total expenses", money(data.totalExpenses)],
-      ["Net amount", money(data.netAmount)],
-      ["Closing balance", money(data.closingBalance)]
-    ];
+    /* ---- Combined totals: the one filled block in the document ------------
+       break-inside:avoid in the template, so it is measured up front and
+       moved to a fresh page whole rather than split across two. */
+    var totalsH = PX(26) * 2 + FS.kicker + PX(14) + FS.total + PX(18) + PX(16) + FS.kicker + PX(3) + FS.totalValue;
+    y += PX(34);
+    if (y + totalsH > PAGE_H - FOOTER_RESERVE) { doc.addPage(); y = MARGIN; }
 
-    var boxX = PAGE_W - MARGIN - boxW;
-    var by = afterTableY;
-    totalRows.forEach(function (row, i) {
-      var isLast = i === totalRows.length - 1;
-      if (isLast) {
-        setDraw(doc, COLORS.grid);
-        doc.setLineWidth(0.5);
-        doc.line(boxX, by, boxX + boxW, by);
-        by += 6;
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(FS.heading);
-      } else {
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(FS.body);
-      }
-      setText(doc, COLORS.text);
-      doc.text(row[0], boxX, by + 10);
-      doc.text(row[1], boxX + boxW, by + 10, { align: "right" });
-      by += rowH;
+    setFill(doc, COLORS.accent);
+    doc.rect(left, y, USABLE_W, totalsH, "F");
+
+    var tPad = PX(24), tx0 = left + tPad, tx1 = right - tPad;
+    var ty = y + PX(26) + FS.kicker;
+    tx(doc, "Combined totals — all properties", tx0, ty,
+       { size: FS.kicker, bold: true, upper: true, track: TRACK.kicker, color: COLORS.white });
+
+    ty += PX(14) + FS.total;
+    tx(doc, money(data.netAmount), tx0, ty, { size: FS.total, bold: true, track: TRACK.display, color: COLORS.white });
+    tx(doc, "Net amount paid", tx1, ty - PX(6), { size: FS.section, upper: true, track: TRACK.label, color: COLORS.white, align: "right" });
+
+    ty += PX(18);
+    setDraw(doc, COLORS.white);
+    doc.setLineWidth(RULE.major);
+    doc.line(tx0, ty, tx1, ty);
+
+    var tCellW = (USABLE_W - tPad * 2) / 4;
+    var tLabelY = ty + PX(16) + FS.kicker;
+    [["Opening balance", money(data.openingBalance)],
+     ["Total income", money(data.totalIncome)],
+     ["Total expenses", money(data.totalExpenses)],
+     ["Closing balance", money(data.closingBalance)]
+    ].forEach(function (cell, i) {
+      stat(doc, cell[0], cell[1], tx0 + i * tCellW + (i === 0 ? 0 : PX(14)), tLabelY,
+           { size: FS.totalValue, labelColor: COLORS.white, valueColor: COLORS.white });
     });
+    y += totalsH;
 
-    // --- Notes / payment details ---
-    var noteY = Math.max(by, afterTableY) + 20;
-    if (data.notes || from.bankAccount) {
-      if (noteY > PAGE_H - 80) { doc.addPage(); noteY = MARGIN; }
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(FS.small);
-      setText(doc, COLORS.muted);
-      doc.text("NOTES", MARGIN, noteY);
-      noteY += 14;
+    /* ---- Notes ------------------------------------------------------------ */
+    var noteText = (showNotes && data.notes ? String(data.notes) : "") +
+                   (from.bankAccount ? ((showNotes && data.notes) ? "\n" : "") + "Bank account: " + from.bankAccount : "");
+    if (noteText) {
+      y += PX(28);
+      ensure(60);
+      rule(doc, left, right, y, RULE.major);
+      y += PX(12) + FS.kicker;
+      tx(doc, "Notes", left, y, { size: FS.kicker, bold: true, upper: true, track: TRACK.kicker, color: COLORS.accent700 });
+      y += PX(8);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.body);
-      setText(doc, COLORS.text);
-      var noteText = (data.notes || "") + (from.bankAccount ? (data.notes ? "\n" : "") + "Bank account: " + from.bankAccount : "");
-      doc.splitTextToSize(noteText, USABLE_W).forEach(function (line) {
-        doc.text(line, MARGIN, noteY);
-        noteY += 12;
+      doc.setFontSize(FS.notesBlock);
+      doc.splitTextToSize(noteText, USABLE_W * 0.82).forEach(function (line) {
+        ensure(FS.notesBlock * 1.6);
+        y += FS.notesBlock * 1.6;
+        tx(doc, line, left, y, { size: FS.notesBlock, color: COLORS.muted70 });
       });
     }
 
-    // --- Footer on every page ---
+    /* ---- Footer on every page --------------------------------------------
+       The template's footer is business name | statement descriptor. Page
+       numbering is added to the right slot: the design was drawn for a
+       two-property statement, but this is a document people print and file,
+       and a multi-page statement with no page numbers is a filing hazard. */
     var totalPages = doc.internal.getNumberOfPages();
     for (var p = 1; p <= totalPages; p++) {
       doc.setPage(p);
-      setDraw(doc, COLORS.grid);
-      doc.setLineWidth(0.5);
-      doc.line(MARGIN, PAGE_H - 37, PAGE_W - MARGIN, PAGE_H - 37);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FS.footer);
-      setText(doc, COLORS.muted);
-      doc.text((from.name || "Owner Statement") + " — " + (data.statementNumber || ""), MARGIN, PAGE_H - 26);
-      doc.text("Page " + p + " of " + totalPages, PAGE_W - MARGIN, PAGE_H - 26, { align: "right" });
+      rule(doc, left, right, PAGE_H - 37, RULE.major);
+      tx(doc, from.name || "Owner Statement", left, PAGE_H - 26,
+         { size: FS.footer, bold: true, upper: true, track: TRACK.footer });
+      tx(doc, "Statement " + statementNo + " · " + periodLabel + " · Page " + p + " of " + totalPages,
+         right, PAGE_H - 26,
+         { size: FS.footer, upper: true, track: TRACK.footer, color: COLORS.muted55, align: "right" });
     }
 
     var blob = doc.output("blob");

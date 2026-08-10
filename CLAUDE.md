@@ -22,16 +22,16 @@ every page load.
 The duplication is what makes this codebase expensive to change, and scattering
 it across more files does not reduce it — see the file-splitting section of
 `docs/REVIEW-2026-08-quality.md` before moving anything else out, and note that
-ES modules would break all 164 tests.
+ES modules would break all 172 tests.
 
 ## Files
 
 | Path | Lines | What it is |
 | --- | --- | --- |
 | `index.html` | 6968 | The app — markup, CSS, and every feature module. **supabase-js is the only library it blocks on**; see "Loading strategy" |
-| `reports/pdf-reports.js` | 1111 | The three PDF generators (`FindingsReport`, `InvoiceReport`, `StatementReport`), lifted out of `index.html` and fetched by `loadPdfEngine()` when a report is asked for |
+| `reports/pdf-reports.js` | 1453 | The three PDF generators (`FindingsReport`, `InvoiceReport`, `StatementReport`), lifted out of `index.html` and fetched by `loadPdfEngine()` when a report is asked for. Opens with the shared `MODERNIST` token block — see "The PDF design system" |
 | `supabase/schema.sql` | 596 | Idempotent schema: `updated_at` triggers, ownership columns, RLS, FKs, indexes, activity-log retention, invoice/statement number uniqueness. Safe to re-run |
-| `sw.js` | 190 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v11'`), navigation falls back to cached `index.html` on a 3s deadline |
+| `sw.js` | 190 | Service worker. App-shell cache (`CACHE_NAME = 'promanage-shell-v12'`), navigation falls back to cached `index.html` on a 3s deadline |
 | `vendor/` | — | supabase-js 2.111.0 (blocking), jsPDF 2.5.2 + jspdf-autotable 3.8.2 + heic2any 0.0.4 (all on demand) |
 | `manifest.json` | — | PWA manifest |
 | `scripts/` | 2400 | `check-app.mjs` (static checks, no deps), `smoke-test.mjs` (boots the app in Chromium), `test.mjs` + `tests/` (the suite), `lib/harness.mjs` (shared server + browser). See "Verifying a change" |
@@ -157,6 +157,40 @@ that deletes from Supabase Storage on purpose.
 | `verifyArchivedInspection(dir, insp)` | re-opens every recorded file and checks its size |
 | `purgeArchivedPhotos(dir)` | deletes Storage copies older than `ARCHIVE_PURGE_AFTER_DAYS` (180), gated on verification |
 | `storageUsageEstimate()` | headroom against the Free 1 GB cap, from `photoSizes` recorded at upload |
+
+## The PDF design system
+
+All three generators are styled from **one token block, `MODERNIST`**, at the
+top of `reports/pdf-reports.js`. It is a port of the Claude Design "Modernist"
+system the owner statement was designed in; the statement follows that design
+closely, and the invoice and inspection report keep their own layouts but draw
+from the same palette, rule weights and label treatment so the three documents
+read as one set.
+
+Getting CSS into a PDF needed two translations, and both are load-bearing:
+
+- **px → pt at exactly 0.75.** The template is a 0.6in-margin A4 page, so its
+  CSS pixel grid maps to PDF points at the 96dpi ratio. Every size is written
+  as `PX(n)` with the template's own pixel value, so the mapping back to the
+  CSS stays legible. Change the ratio and every size in all three generators
+  is wrong together.
+- **`color-mix()` → flat hex.** A PDF has no alpha compositing for text, so
+  `MODERNIST.mix()` pre-blends the translucent tokens. **Paper is white**, not
+  the system's `--color-bg` (`#f3f2f2`): these are documents that get printed
+  and filed, and a full-bleed tint either drops out at print time or burns
+  toner on every page. Every other value is the system's own.
+
+Two things the PDF stack cannot do, both of which fail *silently*:
+
+- **Only Helvetica, Times and Courier exist.** `setFont("arial")` does not
+  error — it falls back to **Times**, quietly turning a statement serif. Arial
+  is metrically identical to Helvetica and viewers substitute it, so
+  `helvetica` is how you get Arial; embedding real Arial is a licensing
+  problem in a public repo, and any custom face means vendoring ~290 KB of
+  base64 TTF plus a `SHELL_FILES` entry.
+- **The built-in fonts are WinAnsi-encoded.** `№` (U+2116) is not in WinAnsi
+  and renders as `!` — hence "Statement No.". En dashes, em dashes and `·`
+  *are* in WinAnsi and are fine.
 
 ## Conventions
 
@@ -325,6 +359,19 @@ When adding a new vendored library, add its guard at the same time as the
   way when dark mode went in (the alert borders, `.prog-fill`, the three status
   dots). `theme.test.mjs` fails on any rule outside `:root` that names a colour,
   and on any `:root` colour token with no `[data-theme="dark"]` counterpart.
+  **The same rule applies to the PDFs** — `MODERNIST` is their token block and
+  `pdf-theme.test.mjs` fails on a hex written into a draw call. Same failure
+  mode, and it is how the generators ended up blue, teal and slate the first
+  time: nobody sees two of the three documents side by side.
+- **`doc.setCharSpace(0)` after every tracked string.** Char spacing is
+  *document* state in jsPDF, not an argument to `text()`. A tracked uppercase
+  label that does not reset it widens everything drawn afterwards, autoTable
+  cells included — which is how a column of right-aligned money silently stops
+  aligning. `pdf-theme.test.mjs` pins this by instrumenting jsPDF and asserting
+  on the char spacing every `$…` string was actually drawn with. Note it wraps
+  the **constructor**, not the prototype: jsPDF assigns `text` and
+  `setCharSpace` as own properties on each instance, so patching
+  `jsPDF.prototype` intercepts nothing and passes having measured nothing.
 - **`color-scheme` on both token blocks.** One line each, and it is what makes
   the browser's own widgets follow the theme: the select popup, the date picker,
   scrollbars, autofilled fields. Drop it and the date picker is not merely
@@ -400,7 +447,7 @@ runs exactly these:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (164 cases)
+node scripts/test.mjs           # the test suite (172 cases)
 ```
 
 `check-app.mjs` replaces the old manual `node --check` ritual and adds the

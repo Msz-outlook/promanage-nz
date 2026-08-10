@@ -1,4 +1,5 @@
-// CLAUDE.md flags pagination and the delete guard as looking redundant and
+// .claude/rules/app-invariants.md flags pagination and the delete guard as
+// looking redundant and
 // not being. getListPage also clamps the stored page, which is what stops a
 // list going blank after deletions shrink it below the page you were on.
 //

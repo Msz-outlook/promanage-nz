@@ -1,5 +1,6 @@
 // Inspection photos live in a PRIVATE Storage bucket and are held in records
-// as "storage:<path>" references, signed at display time. CLAUDE.md is explicit
+// as "storage:<path>" references, signed at display time.
+// .claude/rules/app-invariants.md is explicit
 // that this must not be relaxed: the paths are guessable from the address and
 // inspection id, and "storage:" is deliberately not loadable by <img src> so a
 // missed resolver step fails loudly instead of leaking a link.

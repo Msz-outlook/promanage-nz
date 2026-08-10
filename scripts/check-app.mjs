@@ -49,7 +49,8 @@ const INDEX_CODE = indexHtml.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]
  *
  * The whole app is two inline blocks. A syntax error in either one is a
  * blank app for every user, and there is no build step that would have
- * caught it. This is the manual ritual from CLAUDE.md, made non-optional.
+ * caught it. This is the manual ritual from CLAUDE.md, made non-optional
+ * — see scripts/CLAUDE.md.
  *
  * Uses INDEX_CODE (comments blanked) — see its definition above for why.
  * ------------------------------------------------------------------ */
@@ -91,7 +92,8 @@ const INDEX_CODE = indexHtml.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]
  *
  * The vendored libraries are plain <script src> tags that fail
  * independently and silently. A missing one took the whole app down once
- * already — see CLAUDE.md, "Top-level code in the script block".
+ * already — see "Top-level code in the script block" in
+ * .claude/rules/app-conventions.md.
  * ------------------------------------------------------------------ */
 const scriptSrcs = [...INDEX_CODE.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)].map((m) => m[1]);
 

@@ -11,7 +11,8 @@
 // WHY A BROWSER RUNNER RATHER THAN NODE.
 //
 // The app is deliberately a single file with no build step and no module
-// system — CLAUDE.md is explicit that this is not to be "simplified". That
+// system — CLAUDE.md is explicit that this is not to be "simplified" (see
+// .claude/rules/app-conventions.md and scripts/CLAUDE.md). That
 // leaves three ways to test its logic: extract the functions into a module
 // (a refactor the project does not want), re-implement them in the test
 // (which tests the copy, not the app), or load the real page and call the

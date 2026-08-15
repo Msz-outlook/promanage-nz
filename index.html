@@ -158,6 +158,14 @@ tbody tr:hover td{background:var(--bg2)}
 
 /* Alerts */
 .alert{padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:10px;display:flex;gap:8px;align-items:flex-start;line-height:1.5}
+/* The email-triage banner spells out calls like
+   localStorage.setItem('promanage_demo_email_triage','1') — one unbreakable
+   55-character token, ~430px of monospace, which on a phone hangs a long way
+   off the right of the screen. A flex item will not shrink below its
+   min-content width without min-width:0, and min-content here is that token
+   unless it is allowed to break mid-word. Both halves are needed. */
+.alert>*{min-width:0}
+code{overflow-wrap:anywhere}
 .alert-amber{background:var(--amber-bg);color:var(--amber-text);border:0.5px solid var(--amber-border)}
 .alert-blue{background:var(--blue-bg);color:var(--blue-text);border:0.5px solid var(--blue-border)}
 .alert-red{background:var(--red-bg);color:var(--red-text);border:0.5px solid var(--red-border)}
@@ -169,7 +177,18 @@ tbody tr:hover td{background:var(--bg2)}
    the themed email field above it. */
 select,input[type=text],input[type=password],input[type=number],input[type=date]{padding:6px 10px;border:0.5px solid var(--border2);border-radius:var(--radius);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none}
 select:focus,input:focus{border-color:var(--text);box-shadow:0 0 0 2px var(--focus-ring)}
+/* A <select> sizes itself to its LONGEST option, so the property pickers are as
+   wide as the longest address in the portfolio — which on a narrow phone is
+   wider than the card holding them, and pushes the whole row off the right of
+   the screen. The cap costs nothing on a desktop and is the only thing keeping
+   a long address from deciding the layout. */
+select{max-width:100%}
 .controls{display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;align-items:center}
+.controls>div{max-width:100%;min-width:0}
+/* The JSON paste boxes. Their font-size is here rather than inline because an
+   inline one cannot be overridden by the mobile block below — and left at 12px
+   they are the last two fields in the app that still zoom iOS in on focus. */
+.json-input{min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
 
 /* Financial summary styles (used on the Financials page) */
@@ -259,7 +278,7 @@ textarea:focus{border-color:var(--text)}
      app is then stuck at ~1.3x with the right of every card off-screen, which
      is what "it looks zoomed" means in practice. Every focusable field needs
      to clear the threshold, including the invoice/statement line-item inputs. */
-  select,input[type=text],input[type=password],input[type=number],input[type=date],textarea,.item-input{font-size:16px}
+  select,input[type=text],input[type=password],input[type=number],input[type=date],textarea,.item-input,.json-input{font-size:16px}
   .btn{min-height:38px;padding:8px 12px}
   .btn-sm{min-height:34px;padding:6px 10px}
   /* The old flat `min-width:560px` made EVERY table scroll sideways, including
@@ -277,9 +296,11 @@ textarea:focus{border-color:var(--text)}
   th,.tr,td .badge,td .lt,td .st{white-space:nowrap}
   /* Left to the auto layout, the identity column loses every argument: the
      columns beside it are nowrap and take their width first, so an address
-     collapses to its longest single word and stacks six lines deep. A floor of
-     ~9.5rem is two or three words a line, which is what makes the row readable
-     rather than merely present. */
+     collapses to its longest single word and stacks six lines deep. 7rem is
+     two or three words a line, which is what makes the row readable rather
+     than merely present — and it is the largest floor that still leaves the
+     narrow tables (dashboard, compliance, activity) fitting a 390px screen
+     exactly rather than tipping them into a sideways scroll. */
   th:first-child,td:first-child{min-width:7rem}
   .scroll-fade{display:block}
 }
@@ -917,7 +938,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
       <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:.6rem">
         Paste the same JSON you'd edit for <code>invoice_generator.py</code> (the <code>invoice_data.json</code> shape — <code>sender</code>/<code>bank</code>/<code>client</code>/<code>invoice</code>/<code>line_items</code>), then <strong>Load into form</strong> to review before saving — nothing is saved until you click Save. <code>sender</code>/<code>bank</code>/<code>logo</code> in the JSON also update your letterhead for this session. This can be called directly as <code>window.importInvoiceJSON(data)</code> too.
       </div>
-      <textarea id="invoice-json-input" placeholder='{"sender":{"name":"Your Business Name Ltd","address":["123 Example Road","Suburb, Town 0000"],"email":"accounts@yourbusiness.co.nz","phone":"+64 0 000 0000","gst_number":"123-456-789"},"bank":{"account_name":"Your Business Name Ltd","bank":"Bank Name","account_number":"00-0000-0000000-00","reference_note":"Please use the invoice number as the payment reference."},"client":{"name":"Client Name Ltd","attention":"Accounts Payable","address":["456 Client Street","Suburb, City 0000"]},"invoice":{"invoice_number":"INV-0001","reference":"PO-PLACEHOLDER-123","invoice_date":"2026-07-24","payment_terms_days":30,"auto_due_date":true,"notes":"Thank you for your business."},"line_items":[{"description":"Placeholder line","quantity":2,"unit_price":150.00}]}' style="min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <textarea id="invoice-json-input" class="json-input" placeholder='{"sender":{"name":"Your Business Name Ltd","address":["123 Example Road","Suburb, Town 0000"],"email":"accounts@yourbusiness.co.nz","phone":"+64 0 000 0000","gst_number":"123-456-789"},"bank":{"account_name":"Your Business Name Ltd","bank":"Bank Name","account_number":"00-0000-0000000-00","reference_note":"Please use the invoice number as the payment reference."},"client":{"name":"Client Name Ltd","attention":"Accounts Payable","address":["456 Client Street","Suburb, City 0000"]},"invoice":{"invoice_number":"INV-0001","reference":"PO-PLACEHOLDER-123","invoice_date":"2026-07-24","payment_terms_days":30,"auto_due_date":true,"notes":"Thank you for your business."},"line_items":[{"description":"Placeholder line","quantity":2,"unit_price":150.00}]}'></textarea>
       <div style="display:flex;gap:8px;margin-top:.6rem;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="loadInvoiceJSON()">⬇ Load into form</button>
         <button class="btn btn-sm" onclick="toggleInvoiceForm(true)">+ New invoice (manual)</button>
@@ -1011,7 +1032,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
       <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:.6rem">
         Paste the JSON your monthly statement generator produces, then <strong>Load into form</strong> to review before saving — nothing is saved until you click Save. Once the generator is wired up it can call <code>window.importStatementJSON(data)</code> directly with the same shape, no paste step needed.
       </div>
-      <textarea id="statement-json-input" placeholder='{"statementNumber":"STMT-2026-07-0001","ownerName":"Nguyen family","periodStart":"01 Jul 2026","periodEnd":"31 Jul 2026","properties":[{"propertyId":"","propertyAddress":"12 Example St","openingBalance":0,"income":[{"date":"05 Jul 2026","description":"Rent received","amount":2500}],"expenses":[{"date":"10 Jul 2026","description":"Property management fee","amount":200}],"notes":""}],"notes":""}' style="min-height:90px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <textarea id="statement-json-input" class="json-input" placeholder='{"statementNumber":"STMT-2026-07-0001","ownerName":"Nguyen family","periodStart":"01 Jul 2026","periodEnd":"31 Jul 2026","properties":[{"propertyId":"","propertyAddress":"12 Example St","openingBalance":0,"income":[{"date":"05 Jul 2026","description":"Rent received","amount":2500}],"expenses":[{"date":"10 Jul 2026","description":"Property management fee","amount":200}],"notes":""}],"notes":""}'></textarea>
       <div style="display:flex;gap:8px;margin-top:.6rem;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="loadStatementJSON()">⬇ Load into form</button>
         <button class="btn btn-sm" onclick="toggleStatementForm(true)">+ New statement (manual)</button>

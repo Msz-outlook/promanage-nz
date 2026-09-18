@@ -5,10 +5,42 @@
 # a paused project fails every sync with no indication of why. It is restorable
 # within 90 days, but the downtime arrives unannounced.
 #
-# This sends a trivial REST request twice a week. No secrets are involved: the
-# URL and publishable key are read out of index.html, where they are already
-# public by design (see CONFIG in index.html — the publishable key is meant to
-# be in the served file; RLS is what protects the data).
+# THIS JOB PAUSED THE PROJECT ONCE BY NOT PREVENTING IT. Read this before
+# "simplifying" the sign-in below.
+#
+# The original version pinged `properties?select=id&limit=1` with nothing but
+# the publishable key. That authenticates as `anon`, owner-scoped RLS matches
+# no rows, and PostgREST answers `200 []`. The job went green twice a week for
+# a month and the project paused anyway, on 2026-09-11-ish: the last green ping
+# was Thu 2026-09-10 22:36 UTC and DNS was already withdrawn by Mon 2026-09-14
+# 23:09 UTC — under four days, far short of the seven-day window. The pings
+# proved the project was *reachable*; they never counted as *activity*, so the
+# pause clock ran uninterrupted from the last real sign-in in the app.
+#
+# What resets that clock is a password sign-in, and it is the sign-in itself
+# that does it, not the read that follows. GoTrue's password grant updates
+# auth.users.last_sign_in_at and inserts into auth.refresh_tokens and
+# auth.audit_log_entries — genuine INSERT/UPDATE traffic against Postgres,
+# which is the thing that auto-pauses.
+#
+# The read afterwards is a health probe, not the keep-alive. It returns
+# `200 []` forever and that is CORRECT: the keep-alive account owns no rows and
+# owner-scoped RLS is doing its job. Do not "fix" the empty body, and do not
+# give this account rows to read — it is deliberately an account that can see
+# nothing (see supabase/CLAUDE.md, and §4 of supabase/schema.sql).
+#
+# Setup: one dedicated Supabase account, and two repository secrets holding its
+# credentials. It needs no rows and no special grants — a plain signed-up user
+# is enough, and owner-scoped RLS guarantees it can read nobody else's data.
+#
+#   Settings -> Secrets and variables -> Actions
+#     KEEPALIVE_EMAIL
+#     KEEPALIVE_PASSWORD
+#
+# The project URL and publishable key are still read out of index.html, where
+# they are public by design (see CONFIG in index.html — RLS is what protects
+# the data). A service-role key must never land in this repo; check-app.mjs
+# fails the build if one does, and nothing here needs one.
 #
 # Note: GitHub disables scheduled workflows in a repository with no activity
 # for 60 days, and will email before doing so. If this repo goes quiet for that
@@ -46,70 +78,126 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, "key=" + pick("SUPABASE_KEY") + "\n");
           '
 
-      - name: Ping REST and auth
+      - name: Sign in and touch the database
+        env:
+          URL: ${{ steps.config.outputs.url }}
+          KEY: ${{ steps.config.outputs.key }}
+          KEEPALIVE_EMAIL: ${{ secrets.KEEPALIVE_EMAIL }}
+          KEEPALIVE_PASSWORD: ${{ secrets.KEEPALIVE_PASSWORD }}
         run: |
-          set -euo pipefail
-          URL='${{ steps.config.outputs.url }}'
-          KEY='${{ steps.config.outputs.key }}'
+          # No `set -e`. curl's exit status is the most informative signal this
+          # job has and errexit throws it away: the previous version died on
+          # the bare assignment with "Process completed with exit code 6" and
+          # never reached its own error messages, so two consecutive failure
+          # emails said nothing about a paused project. Every call below is
+          # checked explicitly instead.
+          set -uo pipefail
 
-          # Two rules here, both learned the hard way by this job failing.
-          #
-          # 1. Do NOT ping /rest/v1/. That is PostgREST's OpenAPI root, and
-          #    Supabase restricts it: it answers
-          #      401 {"message":"Secret API key required",
-          #           "hint":"Only secret API keys can be used for this endpoint."}
-          #    No publishable key will ever satisfy it, with or without an
-          #    Authorization header — and a secret key must never land in this
-          #    repo (check-app.mjs fails the build if one does). Ping a real
-          #    table instead. That is also a strictly better liveness probe:
-          #    it reaches Postgres, which is the thing that auto-pauses,
-          #    whereas the OpenAPI root is served from PostgREST's schema
-          #    cache and would answer even with the database asleep.
-          #
-          #    RLS means the anon role sees no rows, so this returns 200 []
-          #    forever. That is correct and expected: only the status code is
-          #    being checked. Do not "fix" the empty body.
-          #
-          # 2. `apikey` ONLY — no Authorization header. CONFIG.SUPABASE_KEY is
-          #    a modern publishable key (sb_publishable_…) and those are not
-          #    JWTs; sending one as `Authorization: Bearer` is forwarded and
-          #    then rejected for not being a JWT. /auth/v1/health also needs
-          #    the apikey header — it was previously called with no headers at
-          #    all, which is why it returned 401 every time.
-          #
-          # The app itself was never affected: authHeader() sends a real
-          # session JWT in Authorization and this key in apikey.
-          rest=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -H "apikey: $KEY" "$URL/rest/v1/properties?select=id&limit=1")
-          auth=$(curl -sS -o /dev/null -w '%{http_code}' -H "apikey: $KEY" "$URL/auth/v1/health")
+          HOST=${URL#https://}
 
-          echo "rest/v1/       -> $rest"
-          echo "auth/v1/health -> $auth"
+          fail() { echo "::error::$*"; exit 1; }
 
-          # Require an explicit 2xx/3xx rather than testing for "not >= 400":
-          # a connection that never completes reports 000, and `[ 000 -ge 400 ]`
-          # is false, so the negative test would have passed the very outage
-          # this job exists to detect. (set -e already catches a non-zero curl
-          # exit; this covers the case where curl exits 0 with no response.)
-          # Say which failure this is. "The project may be paused" was the only
-          # message this job could produce, and it sent the first real failure
-          # straight to the wrong question — the project was ACTIVE_HEALTHY and
-          # the request was malformed. A 401 is never a pause: a paused project
-          # stops answering, it does not start rejecting credentials.
-          for code in "$rest" "$auth"; do
-            case "$code" in
-              2[0-9][0-9]|3[0-9][0-9]) ;;
-              401|403)
-                echo "::error::Supabase answered $code — this is a credentials problem, NOT a paused project. Check the apikey header and that CONFIG.SUPABASE_KEY in index.html is still valid and enabled."
-                exit 1
+          # Sets CURL_RC / CURL_CODE / CURL_BODY. Never trips the shell.
+          probe() {
+            local err body
+            err=$(mktemp); body=$(mktemp)
+            CURL_CODE=$(curl -sS -o "$body" -w '%{http_code}' \
+              --connect-timeout 10 --max-time 30 "$@" 2>"$err")
+            CURL_RC=$?
+            CURL_ERR=$(cat "$err"); CURL_BODY=$(cat "$body")
+            rm -f "$err" "$body"
+          }
+
+          # Transport first: a paused project is a DNS failure, not a status
+          # code. Supabase withdraws the hostname when it pauses, so curl never
+          # gets far enough to return one.
+          check_transport() {
+            [ "$CURL_RC" -eq 0 ] && return 0
+            case "$CURL_RC" in
+              6)
+                fail "$1: could not resolve $HOST. For a Supabase project this almost always means it is PAUSED — Supabase withdraws DNS when it pauses. Restore it at https://supabase.com/dashboard/project/${HOST%%.*} (curl: $CURL_ERR)"
                 ;;
-              000)
-                echo "::error::No response at all — DNS, TLS or a network failure reaching $URL."
-                exit 1
+              7)
+                fail "$1: could not connect to $HOST — the host resolves but is refusing connections. (curl: $CURL_ERR)"
+                ;;
+              28)
+                fail "$1: timed out. Supabase may be degraded — check https://status.supabase.com. (curl: $CURL_ERR)"
+                ;;
+              35|51|60)
+                fail "$1: TLS failure talking to $HOST. (curl: $CURL_ERR)"
                 ;;
               *)
-                echo "::error::Supabase answered $code — the project may be paused. Check the dashboard."
-                exit 1
+                fail "$1: curl exited $CURL_RC. (curl: $CURL_ERR)"
                 ;;
             esac
-          done
+          }
+
+          # A 401 is never a pause: a paused project stops answering, it does
+          # not start rejecting credentials. Saying so here stopped the first
+          # real failure being taken to the wrong question once already.
+          check_status() {
+            local hint
+            case "$CURL_CODE" in
+              2[0-9][0-9]|3[0-9][0-9]) return 0 ;;
+              401|403)
+                # Name only the credentials the failing call actually used.
+                # Sending someone to the wrong question is the failure mode
+                # this whole rewrite exists to stop.
+                case "$1" in
+                  auth/v1/token)
+                    hint="The KEEPALIVE_EMAIL / KEEPALIVE_PASSWORD secrets are wrong, or that account was deleted or never confirmed its email." ;;
+                  *)
+                    hint="CONFIG.SUPABASE_KEY in index.html is no longer valid or has been disabled." ;;
+                esac
+                fail "$1: Supabase answered $CURL_CODE — a credentials problem, NOT a paused project. $hint"
+                ;;
+              *)
+                fail "$1: Supabase answered $CURL_CODE. $CURL_BODY"
+                ;;
+            esac
+          }
+
+          if [ -z "$KEEPALIVE_EMAIL" ] || [ -z "$KEEPALIVE_PASSWORD" ]; then
+            fail "KEEPALIVE_EMAIL / KEEPALIVE_PASSWORD are not set. Create a dedicated Supabase account and add its credentials under Settings -> Secrets and variables -> Actions. Without them this job can only prove the project is reachable, which is what let it pause in the first place — see the comment at the top of this file."
+          fi
+
+          # 1. Liveness, before any credentials are involved. This is where a
+          #    paused project is caught, with the clearest possible message.
+          probe -H "apikey: $KEY" "$URL/auth/v1/health"
+          check_transport "auth/v1/health"
+          check_status    "auth/v1/health"
+          echo "auth/v1/health    -> $CURL_CODE"
+
+          # 2. The keep-alive proper. jq builds the body so a password
+          #    containing quotes or backslashes cannot produce malformed JSON.
+          body=$(jq -nc --arg email "$KEEPALIVE_EMAIL" --arg password "$KEEPALIVE_PASSWORD" \
+                   '{email: $email, password: $password}')
+          probe -X POST "$URL/auth/v1/token?grant_type=password" \
+            -H "apikey: $KEY" -H 'Content-Type: application/json' \
+            --data-binary "$body"
+          check_transport "auth/v1/token"
+          check_status    "auth/v1/token"
+
+          # GitHub masks the secrets themselves, but not a token derived from
+          # them. Mask it before it can reach a log line.
+          token=$(printf '%s' "$CURL_BODY" | jq -r '.access_token // empty' 2>/dev/null)
+          [ -n "$token" ] || fail "auth/v1/token: signed in with $CURL_CODE but the response carried no access_token."
+          echo "::add-mask::$token"
+          echo "auth/v1/token     -> $CURL_CODE (signed in; last_sign_in_at updated)"
+
+          # 3. End-to-end check of the PostgREST -> Postgres path with a real
+          #    session JWT, exactly as the app sends it. `200 []` is the
+          #    expected answer: this account owns no rows. Only the status code
+          #    is being checked.
+          probe -H "apikey: $KEY" -H "Authorization: Bearer $token" \
+            "$URL/rest/v1/properties?select=id&limit=1"
+          check_transport "rest/v1/properties"
+          check_status    "rest/v1/properties"
+          echo "rest/v1/properties -> $CURL_CODE (empty body expected — RLS)"
+
+          # 4. Hand the refresh token back rather than leaving a row behind on
+          #    every run. Best-effort: the keep-alive has already happened by
+          #    this point, so a failure here is not worth failing the job over.
+          probe -X POST "$URL/auth/v1/logout" \
+            -H "apikey: $KEY" -H "Authorization: Bearer $token"
+          echo "auth/v1/logout    -> ${CURL_CODE:-skipped}"

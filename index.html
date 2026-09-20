@@ -97,6 +97,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-siz
 .nav-item{display:flex;align-items:center;gap:9px;padding:8px 1rem;font-size:13px;cursor:pointer;color:var(--text2);transition:all .12s;border-left:2px solid transparent}
 .nav-item:hover{background:var(--bg);color:var(--text)}
 .nav-item.active{background:var(--bg);color:var(--text);font-weight:500;border-left:2px solid var(--text)}
+/* Access profiles — see ACCESS_PROFILES in the app block. A restricted login
+   gets the same markup with what it may not use hidden. !important is
+   load-bearing on .owner-only: toggleXForm() sets style.display on those
+   delete buttons itself, and an inline style beats an ordinary rule. */
+body[data-access="staff"] .owner-only{display:none!important}
+.session-who{font-size:11px;color:var(--text2);line-height:1.45;margin-bottom:8px;word-break:break-all}
+.session-who .session-role{color:var(--text);font-weight:500}
 .nav-icon{font-size:15px;width:18px;text-align:center}
 .main{flex:1;overflow-y:auto;background:var(--bg3)}
 .topbar{background:var(--bg);border-bottom:0.5px solid var(--border);padding:12px 1.5rem;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}
@@ -525,6 +532,10 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
     <div class="nav-item" data-page="email-triage" onclick="nav('email-triage',this)"><span class="nav-icon">📧</span> Email Triage</div>
   </div>
   <div style="margin-top:auto;padding:1rem;border-top:0.5px solid var(--border)">
+    <!-- Filled by applyAccessRole(). Two logins share this app now, and a
+         casual staff member seeing a shorter menu should be able to tell at a
+         glance that it is their account and not a half-loaded one. -->
+    <div class="session-who" id="session-identity"></div>
     <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">Sign out</button>
   </div>
 </div>
@@ -669,7 +680,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
           <button class="btn btn-primary" onclick="saveProperty()">💾 Save property</button>
           <button class="btn" onclick="togglePropForm(false)">Cancel</button>
         </div>
-        <button class="btn btn-danger" id="prop-delete-btn" style="display:none" onclick="deletePropertyFromForm()">🗑 Delete property</button>
+        <button class="btn btn-danger owner-only" id="prop-delete-btn" style="display:none" onclick="deletePropertyFromForm()">🗑 Delete property</button>
       </div>
     </div>
   </div>
@@ -719,7 +730,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
           <button class="btn btn-primary" onclick="saveTenant()">💾 Save tenant</button>
           <button class="btn" onclick="toggleTenantForm(false)">Cancel</button>
         </div>
-        <button class="btn btn-danger" id="tenant-delete-btn" style="display:none" onclick="deleteTenantFromForm()">🗑 Delete tenant</button>
+        <button class="btn btn-danger owner-only" id="tenant-delete-btn" style="display:none" onclick="deleteTenantFromForm()">🗑 Delete tenant</button>
       </div>
     </div>
   </div>
@@ -769,7 +780,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
           <button class="btn btn-primary" onclick="saveMaintenance()">💾 Save request</button>
           <button class="btn" onclick="toggleMaintForm(false)">Cancel</button>
         </div>
-        <button class="btn btn-danger" id="maint-delete-btn" style="display:none" onclick="deleteMaintenanceFromForm()">🗑 Delete request</button>
+        <button class="btn btn-danger owner-only" id="maint-delete-btn" style="display:none" onclick="deleteMaintenanceFromForm()">🗑 Delete request</button>
       </div>
     </div>
   </div>
@@ -1002,7 +1013,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
           <button class="btn btn-primary" onclick="saveInvoice()">💾 Save invoice</button>
           <button class="btn" onclick="toggleInvoiceForm(false)">Cancel</button>
         </div>
-        <button class="btn btn-danger" id="invoice-delete-btn" style="display:none" onclick="deleteInvoiceFromForm()">🗑 Delete invoice</button>
+        <button class="btn btn-danger owner-only" id="invoice-delete-btn" style="display:none" onclick="deleteInvoiceFromForm()">🗑 Delete invoice</button>
       </div>
     </div>
   </div>
@@ -1079,7 +1090,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
           <button class="btn btn-primary" onclick="saveStatement()">💾 Save statement</button>
           <button class="btn" onclick="toggleStatementForm(false)">Cancel</button>
         </div>
-        <button class="btn btn-danger" id="statement-delete-btn" style="display:none" onclick="deleteStatementFromForm()">🗑 Delete statement</button>
+        <button class="btn btn-danger owner-only" id="statement-delete-btn" style="display:none" onclick="deleteStatementFromForm()">🗑 Delete statement</button>
       </div>
     </div>
   </div>
@@ -1194,6 +1205,11 @@ const pages={dashboard:'Dashboard',properties:'Properties',tenants:'Tenants',mai
 let currentPageId='dashboard';
 function nav(id,el,fromPopState){
   if(!pages[id]) id='dashboard';
+  /* A login restricted to some of the pages gets the first one it can open
+     rather than an empty page with a title on it. Everything routes through
+     here: the sidebar, the dashboard's own "View →" links, a #hash typed in,
+     and the history entries a different account left on this device. */
+  if(!canAccessPage(id)) id=defaultPage();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -1554,6 +1570,213 @@ function describeAuthFailure(err){
   return raw;
 }
 
+/* ============================================================
+   ACCESS CONTROL — one account, more than one login.
+
+   The manager's login owns the account. A casual staff login is
+   a MEMBER of it: the same properties, tenants, maintenance and
+   inspections, none of the finance, and no deletes. Which one is
+   signed in comes from public.account_members, resolved on every
+   entry into the app and cached per user id so a launch with no
+   signal still knows.
+
+   THIS FILE IS THE COSMETIC HALF, AND ONLY THAT. Hiding a page
+   hides a page; it does not stop a request. Every line below is
+   also written as an RLS policy in supabase/schema.sql §3 and
+   §5, and that is the half that holds — a member's token cannot
+   read an invoice or delete a property whatever this file says.
+   What the profiles buy is a staff member not being shown eight
+   pages that would render empty and four buttons that would
+   fail. Never move an enforcement decision in here and delete
+   its policy; do add the client half, because a button that
+   cannot work should not be on screen.
+
+   The one client-side rule that is NOT merely cosmetic is the
+   delete guard, and it is the reason canDelete exists as well as
+   the policy: deleteInspection() removes an inspection's photos
+   from Storage BEFORE deleting the row, and PostgREST answers a
+   DELETE that matched no rows with 204. A refused delete would
+   therefore read as success. Storage refuses a member's object
+   deletes too (schema.sql §5), so the worst case is now a record
+   that reappears on the next pull rather than photos that do not.
+
+   Adding a role means adding it here AND to the role check on
+   public.account_members. A role the server knows and this build
+   does not is treated as the most restricted profile, never as
+   the owner — see fetchAccessRole().
+   ============================================================ */
+const ROLE_OWNER='owner';
+const ROLE_STAFF='staff';
+
+const ACCESS_PROFILES={
+  owner:{
+    label:'Manager',
+    scope:'Full access',
+    // null, not a copy of Object.keys(pages): a page added to the app is the
+    // owner's by default, and a list here would be a second place to remember.
+    pages:null,
+    canDelete:true,
+    pulls:['properties','tenants','maintenance','inspections','invoices','statements','activityLog'],
+    pushes:['properties','tenants','maintenance','inspections','invoices','statements','activityLog']
+  },
+  staff:{
+    label:'Casual staff',
+    scope:'Properties, tenants, maintenance and inspections',
+    pages:['properties','tenants','maintenance','inspections'],
+    canDelete:false,
+    pulls:['properties','tenants','maintenance','inspections'],
+    /* activityLog is pushed but never pulled. A member holds an insert policy
+       on activity_log and no read policy, so their edits land in the manager's
+       audit trail and a pull would come back `200 []` on every sync — the one
+       response shape this app refuses to take at face value (see
+       pullAndMerge). Skipping it is cheaper and says what is meant. */
+    pushes:['properties','tenants','maintenance','inspections','activityLog']
+  }
+};
+
+let accessRole=ROLE_OWNER;
+let signedInEmail='';
+const ROLE_CACHE_PREFIX='promanage_role_';
+
+function accessProfile(){
+  return ACCESS_PROFILES[accessRole]||ACCESS_PROFILES[ROLE_OWNER];
+}
+function accessiblePages(){
+  return accessProfile().pages||Object.keys(pages);
+}
+function canAccessPage(id){
+  return accessiblePages().indexOf(id)!==-1;
+}
+// Where a login lands, and where nav() sends anything it may not open.
+function defaultPage(){
+  return canAccessPage('dashboard')?'dashboard':(accessiblePages()[0]||'dashboard');
+}
+function canDeleteRecords(){
+  return accessProfile().canDelete!==false;
+}
+function canSyncStore(store,direction){
+  const list=accessProfile()[direction==='pull'?'pulls':'pushes'];
+  return list.indexOf(store)!==-1;
+}
+
+/* The modules this login can actually reach, derived from PAGE_MODULES rather
+   than listed again — the registry already knows which page draws what, and a
+   second list would be the thing that goes stale when a module moves page. */
+function accessibleModules(){
+  const names=new Set();
+  for(const page of accessiblePages()){
+    for(const name of (PAGE_MODULES[page]||[])) names.add(name);
+  }
+  return names;
+}
+
+/* Guard at the top of every deleteX(). Returns true when the caller must stop.
+   Says what the login CAN do as well as what it cannot: "permission denied" on
+   a button that should not have been there reads as a bug. */
+function deleteBlockedByRole(noun){
+  if(canDeleteRecords()) return false;
+  alert('This login can add and edit '+noun+', but deleting is the account manager’s.\n\n'+
+        'Ask them to remove it, or sign in as the manager.');
+  return true;
+}
+
+function roleCacheKey(userId){ return ROLE_CACHE_PREFIX+userId; }
+
+function readCachedRole(userId){
+  if(!userId) return null;
+  try{
+    const stored=localStorage.getItem(roleCacheKey(userId));
+    // A profile this build does not have is not a role it can honour.
+    return (stored && ACCESS_PROFILES[stored])?stored:null;
+  }catch(e){ return null; } // storage blocked — resolved from the network every time
+}
+
+function cacheRole(userId,role){
+  if(!userId) return;
+  try{ localStorage.setItem(roleCacheKey(userId),role); }catch(e){/* nothing to fall back to, and nothing broken */}
+}
+
+/* One row, or none at all. No row means "not a member of anyone else's
+   account", which is the owner of their own — the shape every single-login
+   install has, and the reason this answers ROLE_OWNER rather than failing.
+   Returns null for "could not find out", which is a different thing from
+   "found out they are the owner" and is what makes the cache fallback correct. */
+async function fetchAccessRole(userId){
+  if(!userId || !CONFIG.SUPABASE_URL || !navigator.onLine) return null;
+  const token=await authHeader();
+  if(!token) return null;
+  try{
+    const res=await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/account_members?select=role&member_id=eq.${encodeURIComponent(userId)}&limit=1`,{
+      headers:{'apikey':CONFIG.SUPABASE_KEY,'Authorization':`Bearer ${token}`}
+    });
+    if(!res.ok){
+      console.log('Could not read the account role ('+res.status+') — keeping the cached one');
+      return null;
+    }
+    const rows=await res.json();
+    if(!Array.isArray(rows)) return null;
+    if(!rows.length) return ROLE_OWNER;
+    const role=rows[0] && rows[0].role;
+    if(role && ACCESS_PROFILES[role]) return role;
+    /* A role the server knows and this build does not is a NEWER role, and a
+       new role is added to take rights away, never to add them. Fall to the
+       most restricted profile rather than guessing upward. */
+    console.warn('Unrecognised account role '+JSON.stringify(role)+' — restricting to '+ROLE_STAFF+'. Update this app.');
+    return ROLE_STAFF;
+  }catch(err){
+    console.log('Could not read the account role — keeping the cached one:',err);
+    return null;
+  }
+}
+
+/* Network first, cache second. The network answer is authoritative and is how
+   a change of role reaches the device; the cache is what makes an offline
+   launch behave like the last online one.
+
+   With neither — a first run on a device with no signal, or localStorage
+   blocked — it stays on the owner profile, which shows every page. That is a
+   fallback for the SHELL, not a grant: the pages a member cannot use render
+   empty and their writes are refused by RLS. Failing the other way would lock
+   the manager out of their own app on a flaky connection, which is the worse
+   of the two mistakes and the more likely one. */
+async function establishAccessRole(userId){
+  const fetched=await fetchAccessRole(userId);
+  if(fetched){
+    cacheRole(userId,fetched);
+    accessRole=fetched;
+  }else{
+    accessRole=readCachedRole(userId)||ROLE_OWNER;
+  }
+  applyAccessRole();
+  return accessRole;
+}
+
+/* Paints the profile onto the shell. Called on entry into the app, and again
+   at DOMContentLoaded from the cached role so a staff device does not show a
+   frame of the manager's sidebar before the network answers. */
+function applyAccessRole(){
+  document.body.setAttribute('data-access',accessRole);
+  const allowed=accessiblePages();
+  document.querySelectorAll('.nav-item[data-page]').forEach(item=>{
+    item.style.display=allowed.indexOf(item.getAttribute('data-page'))===-1?'none':'';
+  });
+  // A section heading with nothing left under it ("Finance", and nothing) is
+  // worse than no heading, because it reads as a page that failed to load.
+  document.querySelectorAll('.nav-section').forEach(section=>{
+    const items=section.querySelectorAll('.nav-item[data-page]');
+    if(!items.length) return;
+    const anyVisible=Array.prototype.some.call(items,item=>item.style.display!=='none');
+    section.style.display=anyVisible?'':'none';
+  });
+  const identity=document.getElementById('session-identity');
+  if(identity){
+    const profile=accessProfile();
+    identity.innerHTML=`<div class="session-role">${escapeHtml(profile.label)}</div>`+
+      (signedInEmail?`<div>${escapeHtml(signedInEmail)}</div>`:'')+
+      `<div>${escapeHtml(profile.scope)}</div>`;
+  }
+}
+
 /* Every module that has to be repainted on entry into the app. Kept as one
    list because doLogin() and the DOMContentLoaded path both need it and they
    used to drift apart (see the registration checklist in CLAUDE.md). Each entry
@@ -1621,9 +1844,16 @@ const PAGE_MODULES={
 const staleModules=new Set();
 
 async function runModuleRenderers(names){
+  const allowed=accessibleModules();
   for(const name of names){
     const run=MODULE_RENDERERS[name];
     if(!run) continue;
+    /* No page in this profile draws it, so drawing it is work nobody will
+       see — and for the dashboard and financials it is a pass over stores
+       this login cannot even sync. The flag is cleared with it so the module
+       does not sit in staleModules forever waiting for a page that will
+       never be entered. */
+    if(!allowed.has(name)){ staleModules.delete(name); continue; }
     // Clear the flag first: a renderer that throws has still consumed the
     // current data, and leaving it stale would retry the same failure on every
     // navigation back to the page.
@@ -1648,27 +1878,43 @@ async function renderCurrentPage(){
 // Data moved underneath every page at once — what a completed sync means.
 // Draw the page in front of the user now; the others catch up when visited.
 async function renderVisibleAndDeferRest(){
-  for(const name of Object.keys(MODULE_RENDERERS)) staleModules.add(name);
+  for(const name of accessibleModules()) staleModules.add(name);
   await renderCurrentPage();
 }
 
 // Shared by both ways into the app: a fresh sign-in and an existing session.
-async function enterApp(userId){
+async function enterApp(userId,email){
+  signedInEmail=email||'';
+  /* First, because everything after it reads the answer: which modules render,
+     which tables sync, which pages nav() will open. It needs the session that
+     has just been established, so it cannot move any earlier than this, and
+     resolving it after the first render would draw the manager's sidebar for a
+     staff login and then take it away again. */
+  try{ await establishAccessRole(userId); }
+  catch(err){ console.error('Could not resolve the account role:',err); applyAccessRole(); }
   // Has to happen before the renders — they read straight out of IndexedDB,
   // so a stale account's records would be on screen otherwise.
   try{ await enforceLocalDataOwner(userId); }
   catch(err){ console.error('Could not enforce local data owner:',err); }
+  // The page this device was left on may not be one this login can open.
+  if(!canAccessPage(currentPageId)) nav(defaultPage());
   // Ask for the durable storage bucket once we know someone is actually using
   // this device for real work. Fire-and-forget: the answer only changes what
   // the Backup card reports, never whether the app runs.
-  requestPersistentStorage().then(()=>renderBackupCard()).catch(()=>{});
+  requestPersistentStorage().then(()=>runModuleRenderers(['backup'])).catch(()=>{});
   await renderAllModules();
   fullSyncNow(); // background — pushes anything pending, pulls anything changed elsewhere
   // Opportunistic purge: if the archive drive happens to be connected and its
   // permission still granted, clear out photos whose archive is old enough.
   // Silent by design — it does nothing at all when the drive is absent, which
   // is the common case, and each candidate is re-verified before any delete.
-  getArchiveDirectory()
+  // Owner only. Purge is the one thing in the app that deletes photos from
+  // Storage on purpose, and a member's object deletes are refused by policy
+  // while deletePhotosFromStorage() swallows the refusal — it would stamp
+  // photosPurgedAt on inspections whose photos are still in the bucket, and
+  // generateInspectionPDF() refuses on that flag. Their device has no archive
+  // handle anyway; this says so rather than relying on it.
+  (canDeleteRecords()?getArchiveDirectory():Promise.resolve(null))
     .then(async (dir)=>{
       if(!dir) return;
       const result=await purgeArchivedPhotos(dir);
@@ -1698,7 +1944,7 @@ async function checkSession(){
   }
   if(session){
     showApp();
-    await enterApp(session.user && session.user.id);
+    await enterApp(session.user && session.user.id, session.user && session.user.email);
   }else{
     showLoginGate();
   }
@@ -1751,7 +1997,7 @@ async function doLogin(){
   showApp();
   // Past this point the account IS signed in, so a failure here must not throw
   // them back to the login gate — enterApp() reports and carries on instead.
-  await enterApp(data.user && data.user.id);
+  await enterApp(data.user && data.user.id, data.user && data.user.email);
 }
 
 async function doLogout(){
@@ -1771,6 +2017,13 @@ async function doLogout(){
     try{ await sb.auth.signOut(); }
     catch(err){ console.error('Sign-out failed:',err); }
   }
+  /* Back to the widest profile behind the gate. Whoever signs in next resolves
+     their own role before anything renders (enterApp), so this is not the
+     thing keeping them honest — it is so a casual staff member's shorter
+     sidebar is not what the manager sees while typing their password. */
+  signedInEmail='';
+  accessRole=ROLE_OWNER;
+  applyAccessRole();
   showLoginGate();
 }
 
@@ -2383,21 +2636,30 @@ function mapRemoteStatement(row){
    anything referencing it. */
 async function pullAllAndMerge(options){
   options=options||{};
-  await Promise.all([
-    pullAndMerge('properties','properties',mapRemoteProperty,options),
-    pullAndMerge('tenants','tenants',mapRemoteTenant,options),
-    pullAndMerge('maintenance','maintenance',mapRemoteMaintenance,options),
-    pullAndMerge('inspections','inspections',mapRemoteInspection,options),
-    pullAndMerge('invoices','invoices',mapRemoteInvoice,options),
-    pullAndMerge('statements','statements',mapRemoteStatement,options),
-    // The activity log is the one table pulled through a retention window. The
-    // filter has to match pruneLocalActivityLog() exactly: if the pull reached
-    // further back than the local prune does, a full pull would re-download the
-    // rows the prune had just removed and the two would undo each other on
-    // every sync, forever.
-    pullAndMerge('activityLog','activity_log',mapRemoteActivityLog,
-      {...options,minCreatedAt:activityLogCutoffISO()})
-  ]);
+  /* Still one Promise.all and still one round trip's worth of waiting. The
+     list is assembled first only so a login can leave out the tables it holds
+     no read policy on. Asking anyway would not error — RLS filters rows rather
+     than raising, so the answer is a perfectly ordinary `200 []`, which is the
+     one shape pullAndMerge() has to treat as ambiguous every single time. Not
+     asking is both cheaper and unambiguous. */
+  const jobs=[];
+  const pull=(store,table,map,extra)=>{
+    if(!canSyncStore(store,'pull')) return;
+    jobs.push(pullAndMerge(store,table,map,extra?{...options,...extra}:options));
+  };
+  pull('properties','properties',mapRemoteProperty);
+  pull('tenants','tenants',mapRemoteTenant);
+  pull('maintenance','maintenance',mapRemoteMaintenance);
+  pull('inspections','inspections',mapRemoteInspection);
+  pull('invoices','invoices',mapRemoteInvoice);
+  pull('statements','statements',mapRemoteStatement);
+  // The activity log is the one table pulled through a retention window. The
+  // filter has to match pruneLocalActivityLog() exactly: if the pull reached
+  // further back than the local prune does, a full pull would re-download the
+  // rows the prune had just removed and the two would undo each other on
+  // every sync, forever.
+  pull('activityLog','activity_log',mapRemoteActivityLog,{minCreatedAt:activityLogCutoffISO()});
+  await Promise.all(jobs);
   await renderVisibleAndDeferRest();
 }
 
@@ -2527,13 +2789,23 @@ async function fullSyncNowInner(){
     console.log('Sync skipped — not signed in.');
     return;
   }
-  await syncPendingProperties();
-  await syncPendingTenants();
-  await syncPendingMaintenance();
-  await syncPendingInspections();
-  await syncPendingInvoices();
-  await syncPendingStatements();
-  await syncPendingActivityLog();
+  /* Sequential, and that is not a candidate for the concurrency the pulls
+     get — see the note above pullAllAndMerge(). Filtered by profile for the
+     mirror of the pulls' reason: a member holds no insert policy on invoices
+     or statements, so a push would fail on every sync and sit in the banner
+     as a pending record they have no way to clear. */
+  const pushes=[
+    ['properties',syncPendingProperties],
+    ['tenants',syncPendingTenants],
+    ['maintenance',syncPendingMaintenance],
+    ['inspections',syncPendingInspections],
+    ['invoices',syncPendingInvoices],
+    ['statements',syncPendingStatements],
+    ['activityLog',syncPendingActivityLog]
+  ];
+  for(const [store,push] of pushes){
+    if(canSyncStore(store,'push')) await push();
+  }
   // After the push (so nothing pending is dropped before it lands) and before
   // the pull (so the pull can't re-fetch what was just dropped).
   await pruneActivityLogIfDue();
@@ -2599,6 +2871,12 @@ async function pruneLocalActivityLog(){
    keeps the delete inside the caller's own rows. */
 async function pruneRemoteActivityLog(){
   if(!CONFIG.SUPABASE_URL || !navigator.onLine) return null;
+  /* prune_activity_log() is security invoker, so RLS scopes the delete to the
+     caller's own rows — and a member holds no delete policy on activity_log
+     (schema.sql §5). Calling it would remove nothing, report success, and
+     record the once-a-day throttle, deferring the owner's own prune by a day
+     on a shared device. Retention belongs to the account owner. */
+  if(accessRole!==ROLE_OWNER) return null;
   const token=await authHeader();
   if(!token) return null; // signed out — retention runs on the next signed-in sync
   try{
@@ -2649,12 +2927,18 @@ function formatLogTime(iso){
 }
 async function logActivity(entity,action,detail){
   const now=new Date().toISOString();
+  /* Whose entry this is. The trustworthy record is activity_log.author_id,
+     stamped server-side from the token (schema.sql §3); this is the copy the
+     manager can actually read on the Activity page, where a uuid would tell
+     them nothing. Only added for a non-owner login, so an account with one
+     login reads exactly as it did before there were two. */
+  const actor=accessRole===ROLE_OWNER?'':' \u2014 by '+accessProfile().label;
   const record={
     id:'log_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
     timestamp:now,
     entity,
     action,
-    detail:detail||'',
+    detail:(detail||'')+actor,
     synced:false,
     pendingDelete:false,
     createdAt:now,
@@ -3133,7 +3417,7 @@ async function renderInspectionList(){
       <td style="font-size:12px;color:var(--text2)">${escapeHtml(areaSummary)}</td>
       <td>${photoCount}</td>
       <td>${insp.synced?'<span class="badge bg">✓ Synced</span>':'<span class="badge ba">Pending</span>'}</td>
-      <td><button class="btn btn-sm" onclick="editInspection('${id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${id}',this)">📄 PDF</button> <button class="btn btn-sm" onclick="deleteInspection('${id}')">Delete</button></td>
+      <td><button class="btn btn-sm" onclick="editInspection('${id}')">Edit</button> <button class="btn btn-sm" onclick="generateInspectionPDF('${id}',this)">📄 PDF</button> <button class="btn btn-sm owner-only" onclick="deleteInspection('${id}')">Delete</button></td>
     </tr>`;
   }).join('');
 }
@@ -3313,6 +3597,11 @@ async function deletePhotosFromStorage(record){
 }
 
 async function deleteInspection(id){
+  /* Not cosmetic, unlike the hidden button on the row. PostgREST answers a
+     DELETE that matched no rows with 204, so a delete RLS refused reads here
+     as a successful one — and this function strips the photos out of Storage
+     BEFORE it sends the row delete. See ACCESS CONTROL. */
+  if(deleteBlockedByRole('inspections')) return;
   if(!confirm('Delete this inspection? This cannot be undone.'))return;
   const all=await dbGetAll('inspections');
   const record=all.find(i=>i.id===id);
@@ -3364,9 +3653,10 @@ function sanitizeForPath(str){
 /* The signed-in user's access token, or null when there is no session.
 
    This must NEVER fall back to CONFIG.SUPABASE_KEY. That key authenticates as
-   the `anon` role, so auth.uid() is NULL, and every owner-scoped RLS policy
-   (`user_id = auth.uid()`) then matches nothing. PostgREST does not treat that
-   as an error — it answers a SELECT with a perfectly ordinary `200 []`, which
+   the `anon` role, so auth.uid() is NULL, current_account_id() resolves to
+   NULL with it, and every account-scoped RLS policy then matches nothing.
+   PostgREST does not treat that as an error — it answers a SELECT with a
+   perfectly ordinary `200 []`, which
    is byte-for-byte what an empty table looks like. pullAndMerge() reasonably
    read that as "the server holds nothing", and its delete pass reconciled
    every synced local row away. That is how a signed-out sync silently wiped
@@ -3533,6 +3823,12 @@ setInterval(()=>{
 document.addEventListener('DOMContentLoaded',()=>{
   const lawVerifiedEl=document.getElementById('law-last-verified');
   if(lawVerifiedEl) lawVerifiedEl.textContent='Last verified '+LAW_UPDATES_LAST_VERIFIED;
+  /* Ahead of checkSession() so a staff device does not paint a frame of the
+     manager's sidebar on every cold launch. This is the role cached for
+     whoever was last signed in here; enterApp() re-resolves it against the
+     server a moment later and corrects this if it has changed. */
+  accessRole=readCachedRole(readStoredLastUser())||ROLE_OWNER;
+  applyAccessRole();
   checkSession();
   resetInspectionForm();
   renderAllModules(); // includes email-triage and financials — see MODULE_RENDERERS
@@ -3889,6 +4185,9 @@ const PROPERTY_DELETE_BLOCKED_NOTE=
   'property that no longer exists.';
 
 async function deleteProperty(id){
+  // Refusing rather than firing a delete that will match no rows — the
+  // reason a hidden button is not enough is in ACCESS CONTROL.
+  if(deleteBlockedByRole('properties')) return;
   const all=await dbGetAll('properties');
   const record=all.find(p=>p.id===id);
   if(!record)return;
@@ -4150,6 +4449,9 @@ async function renderTenantsList(){
 }
 
 async function deleteTenant(id){
+  // Refusing rather than firing a delete that will match no rows — the
+  // reason a hidden button is not enough is in ACCESS CONTROL.
+  if(deleteBlockedByRole('tenant records')) return;
   if(!confirm('Delete this tenant record? This cannot be undone.'))return;
   const all=await dbGetAll('tenants');
   const record=all.find(t=>t.id===id);
@@ -4359,6 +4661,9 @@ async function renderMaintenanceList(){
 }
 
 async function deleteMaintenance(id){
+  // Refusing rather than firing a delete that will match no rows — the
+  // reason a hidden button is not enough is in ACCESS CONTROL.
+  if(deleteBlockedByRole('maintenance requests')) return;
   if(!confirm('Delete this maintenance request? This cannot be undone.'))return;
   const all=await dbGetAll('maintenance');
   const record=all.find(m=>m.id===id);
@@ -5045,6 +5350,9 @@ async function renderInvoicesList(){
 }
 
 async function deleteInvoice(id){
+  // Refusing rather than firing a delete that will match no rows — the
+  // reason a hidden button is not enough is in ACCESS CONTROL.
+  if(deleteBlockedByRole('invoices')) return;
   if(!confirm('Delete this invoice? This cannot be undone.'))return;
   const all=await dbGetAll('invoices');
   const record=all.find(i=>i.id===id);
@@ -5675,6 +5983,9 @@ async function renderStatementsList(){
 }
 
 async function deleteStatement(id){
+  // Refusing rather than firing a delete that will match no rows — the
+  // reason a hidden button is not enough is in ACCESS CONTROL.
+  if(deleteBlockedByRole('owner statements')) return;
   if(!confirm('Delete this statement? This cannot be undone.'))return;
   const all=await dbGetAll('statements');
   const record=all.find(s=>s.id===id);

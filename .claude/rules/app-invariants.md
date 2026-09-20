@@ -18,7 +18,8 @@ they prevent had already happened once.
 - **`authHeader()` returning `null` when there is no session.** Never restore
   the old `: CONFIG.SUPABASE_KEY` fallback, and never send a request without
   checking the token first. That key authenticates as `anon`, so `auth.uid()`
-  is NULL and every owner-scoped RLS policy matches nothing — and PostgREST
+  is NULL, `current_account_id()` resolves to NULL with it, and every
+  account-scoped RLS policy matches nothing — and PostgREST
   reports that as `200 []`, not as an error. It is indistinguishable from an
   empty table, so `pullAndMerge()` concluded the server was empty and its
   delete pass cleared every synced record off the device. **This is how the
@@ -56,6 +57,48 @@ they prevent had already happened once.
   returns null for a purged photo and the `.filter(Boolean)` downstream would
   quietly emit a report with no photos in it, under the same filename as the
   real one. Refusing and naming the archive folder is the point.
+
+## Access — two logins, one account
+
+- **`ACCESS_PROFILES` hides pages. RLS decides what anyone may touch.** The
+  profiles in `index.html` exist so a casual staff login is not shown eight
+  pages that would render empty and four buttons that would fail; they are not
+  a permission system and cannot be one, because everything they do is a few
+  keystrokes away in a console. Every restriction they express is *also* an
+  RLS policy in `supabase/schema.sql` §5. Adding a page to a profile without
+  widening the policy gives someone an empty page; widening the policy without
+  the profile gives them a page they cannot find. Do both, in one change.
+- **The `deleteBlockedByRole()` guard at the top of every `deleteX()`.** This
+  is the exception to the paragraph above — the one client-side rule doing
+  real work, and it must not be deleted on the grounds that the policy already
+  covers it. PostgREST answers a `DELETE` that matched **no rows** with `204`,
+  exactly as it answers one that deleted something, so a delete RLS refused
+  reads here as a success and the local copy is dropped. On inspections it is
+  worse: `deleteInspection()` removes the photos from Storage *before* it
+  sends the row delete, and `deletePhotosFromStorage()` swallows per-object
+  failures. Storage refuses a member's object deletes too (§5), so the worst
+  case today is a record that reappears on the next pull rather than photos
+  that do not — that is defence in depth working, not a reason to remove a
+  layer.
+- **`purgeArchivedPhotos()` is owner-only, gated in `enterApp()`.** Same
+  swallowed failure, opposite direction: a member's Storage deletes fail
+  silently, the purge stamps `photosPurgedAt` anyway, and
+  `generateInspectionPDF()` then refuses to produce a report for an inspection
+  whose photos are still sitting in the bucket.
+- **`account_members` has no write policy, deliberately, not even for the
+  account owner.** A membership row decides *whose data a login sees*, so the
+  obvious insert policy — "an owner may add members to their own account" —
+  also lets any account name **someone else** as its member. That victim's
+  `current_account_id()` flips to the attacker's account on their next
+  request: their own rows vanish behind RLS and everything they save lands in
+  the attacker's account, stamped as the attacker's data. Membership is
+  granted from the SQL editor. Do not add a settings screen for it without
+  solving that first.
+- **An unrecognised role restricts, it never promotes.** `fetchAccessRole()`
+  falls to the staff profile for a role name this build does not know, and
+  `readCachedRole()` rejects one outright. A role that exists on the server
+  and not in this file is a *newer* one, and new roles are added to take
+  rights away.
 
 ## Security
 

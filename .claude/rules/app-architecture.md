@@ -76,6 +76,7 @@ async and has not run yet.
 | Section | What is worth knowing |
 | --- | --- |
 | App shell, config, auth | `nav()` switches page **and draws it**. `CONFIG` holds the Supabase URL, publishable key and bucket. `BUSINESS_INFO` is printed on every invoice/statement PDF. `LAW_UPDATES_LAST_VERIFIED` dates the static NZ compliance copy |
+| Access control | `ACCESS_PROFILES` — which pages, which stores sync, whether deletes are allowed. `establishAccessRole()` resolves it from `account_members` at every entry and caches it per user id; `applyAccessRole()` paints it onto the sidebar. The whole section is presentation — the enforcement is RLS |
 | IndexedDB + account isolation | `openDB()` — `promanageDB`, `DB_VERSION = 9`, 9 stores (8 synced + `settings`). `enforceLocalDataOwner()` wipes local stores when a different account signs in |
 | Sync engine | `fetchRemoteTablePaged` → `pullAndMerge` → `pullAllAndMerge` (concurrent pulls, then draws the visible page). `fullSyncNow()` pushes then pulls, and is the **only** place that tells the user they are offline. `mapRemoteX()` row mappers live here |
 | Activity log | Pruned on a retention window at both ends — see `supabase/CLAUDE.md` |

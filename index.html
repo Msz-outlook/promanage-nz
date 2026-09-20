@@ -123,6 +123,17 @@ body[data-access="staff"] .owner-only{display:none!important}
 .card{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-lg);margin-bottom:1rem;overflow:hidden}
 .card-head{padding:.75rem 1.25rem;border-bottom:0.5px solid var(--border);font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;display:flex;justify-content:space-between;align-items:center}
 .card-body{padding:1rem 1.25rem}
+/* A card head that opens and closes its own body — the inspection form uses
+   it. It is a real <button> so the keyboard and a screen reader get the
+   control for free; everything here either undoes the UA button styling
+   .card-head does not already set, or drops the head's bottom border while
+   the card is collapsed, where it would otherwise draw a second line just
+   inside the card's own. */
+.card-head-toggle{width:100%;background:transparent;border:0;border-bottom:0 solid var(--border);font-family:inherit;text-align:left;cursor:pointer;transition:background .12s}
+.card-head-toggle:hover{background:var(--bg2)}
+.card-head-toggle[aria-expanded="true"]{border-bottom-width:0.5px}
+.card-head-caret{font-size:13px;line-height:1;transition:transform .15s}
+.card-head-toggle[aria-expanded="true"] .card-head-caret{transform:rotate(180deg)}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 
 /* Tables */
@@ -830,9 +841,16 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
     <button class="btn btn-sm" onclick="fullSyncNow()">🔄 Sync now</button>
   </div>
 
-  <div class="card">
-    <div class="card-head" id="insp-form-title">New inspection</div>
-    <div class="card-body">
+  <!-- Collapsed by default. Opened, this form is the tallest thing in the app
+       — a dozen default areas, each with its own photo strip — and it pushed
+       the saved-inspection list off the bottom of the page. The head is the
+       toggle; editInspection() opens it, saving and cancelling put it away. -->
+  <div class="card" id="insp-form-card">
+    <button type="button" class="card-head card-head-toggle" id="insp-form-toggle" aria-expanded="false" aria-controls="insp-form-body" onclick="toggleInspectionForm()">
+      <span id="insp-form-title">New inspection</span>
+      <span class="card-head-caret" aria-hidden="true">▾</span>
+    </button>
+    <div class="card-body" id="insp-form-body" style="display:none">
       <div class="controls">
         <div>
           <label>Property</label>
@@ -856,7 +874,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
   <div class="card">
     <div class="card-head" style="justify-content:flex-start">Saved inspections <span id="insp-count" style="font-weight:400;color:var(--text3)"></span></div>
     <div class="table-outer"><div class="table-wrap"><table><thead><tr><th>Property</th><th>Date</th><th>Areas</th><th>Photos</th><th>Sync status</th><th>Actions</th></tr></thead>
-      <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr></tbody>
+      <tbody id="insp-list"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet — open "New inspection" above to add one</td></tr></tbody>
     </table></div><div class="scroll-fade"></div></div>
     <div class="pagination" id="insp-pagination"></div>
   </div>
@@ -3283,6 +3301,21 @@ async function populateInspectionPropertyDropdown(){
 }
 
 let editingInspectionId=null;
+
+/* Open or close the new-inspection form. Called with no argument from the
+   card head, which flips it; the callers below pass an explicit true/false.
+   The open state lives on aria-expanded rather than in a variable — the
+   caret rotation is keyed on it and a screen reader reads it, so there is
+   one thing to keep in step instead of three. */
+function toggleInspectionForm(show){
+  const body=document.getElementById('insp-form-body');
+  const toggle=document.getElementById('insp-form-toggle');
+  if(!body||!toggle) return;
+  const open=show===undefined ? body.style.display==='none' : !!show;
+  body.style.display=open?'block':'none';
+  toggle.setAttribute('aria-expanded',open?'true':'false');
+}
+
 function resetInspectionForm(){
   document.getElementById('insp-areas').innerHTML='';
   document.getElementById('insp-date').value=todayStr();
@@ -3296,6 +3329,7 @@ function resetInspectionForm(){
   if(btnEl) btnEl.textContent='💾 Save inspection';
   const cancelBtn=document.getElementById('insp-cancel-btn');
   if(cancelBtn) cancelBtn.style.display='none';
+  toggleInspectionForm(false);
 }
 
 async function editInspection(id){
@@ -3333,7 +3367,8 @@ async function editInspection(id){
   if(btnEl) btnEl.textContent='💾 Update inspection';
   const cancelBtn=document.getElementById('insp-cancel-btn');
   if(cancelBtn) cancelBtn.style.display='inline-flex';
-  document.getElementById('page-inspections').scrollIntoView({behavior:'smooth'});
+  toggleInspectionForm(true);
+  document.getElementById('insp-form-card').scrollIntoView({behavior:'smooth'});
 }
 
 function cancelInspectionEdit(){
@@ -3401,7 +3436,7 @@ async function renderInspectionList(){
   const tbody=document.getElementById('insp-list');
   document.getElementById('insp-count').textContent=all.length?`(${all.length})`:'';
   if(!all.length){
-    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet</td></tr>';
+    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:14px">No inspections saved on this device yet — open "New inspection" above to add one</td></tr>';
     renderPaginationControls('inspections',0);
     return;
   }

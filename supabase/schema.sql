@@ -7,16 +7,17 @@
 --
 --   1. Server-side updated_at stamping
 --   2. properties.compliance_items — column the client already writes
---   3. Ownership — user_id on every table
---   4. Row Level Security — owner-scoped, one policy per command
---   5. Foreign keys — and the decision on what a property delete does
---   6. Indexes — RLS predicates, incremental pulls, FK checks
---   7. Activity log retention
---   8. Uniqueness — invoice and statement numbers, per owner
+--   3. Team access — account_members, and who a login is acting as
+--   4. Ownership — user_id on every table
+--   5. Row Level Security — account-scoped, one policy per command per role
+--   6. Foreign keys — and the decision on what a property delete does
+--   7. Indexes — RLS predicates, incremental pulls, FK checks
+--   8. Activity log retention
+--   9. Uniqueness — invoice and statement numbers, per owner
 --
 -- Applying this file to a project that already holds data will FAIL LOUDLY
 -- rather than half-apply if it cannot work out who owns the existing rows —
--- see section 3.
+-- see section 4.
 
 
 -- ============================================================
@@ -48,7 +49,7 @@
 -- The next pullAndMerge() reconciles them and the contents are identical
 -- either way, so this is cosmetic drift, not a lost edit.
 --
--- One clock is also what makes the incremental pull in section 6 possible at
+-- One clock is also what makes the incremental pull in section 7 possible at
 -- all: the client's `updated_at=gt.<cursor>` filter is only meaningful because
 -- every value in that column was written by this server.
 
@@ -110,7 +111,177 @@ alter table public.properties
 
 
 -- ============================================================
--- 3. OWNERSHIP — user_id on every table
+-- 3. TEAM ACCESS — a second login inside one account
+-- ============================================================
+-- Until now "account" and "login" were the same thing. Every row carried the
+-- user_id of the one person who signs in, and the policies in section 5 read
+-- that column straight against auth.uid(). Handing a casual staff member their
+-- own login under that model gives them an empty app — RLS matches none of the
+-- manager's rows — and every record they create is stamped as theirs and is
+-- invisible to the manager forever. Sharing the manager's password instead is
+-- worse: one credential on every device it ever touched, and an audit trail
+-- that cannot tell two people apart.
+--
+-- So the two ideas come apart. user_id stops meaning "who signed in" and starts
+-- meaning "which ACCOUNT this row belongs to". account_members maps a login to
+-- the account it works inside, and two resolvers answer the only questions the
+-- rest of this file asks:
+--
+--   current_account_id()   whose data am I working on?  (the account's owner)
+--   current_member_role()  what may I do with it?       ('owner' | 'staff')
+--
+-- They live in `private`, not `public`, and that is not tidiness. Anything in
+-- `public` is also a PostgREST endpoint, so a security definer function there
+-- is /rest/v1/rpc/current_account_id, callable by anon — which the Supabase
+-- security advisor flags, correctly. These leak nothing (anon gets NULL, a
+-- member gets the account id they can already read out of account_members),
+-- but an unauthenticated entry point that nothing calls is one to close rather
+-- than to explain. `private` is not in PostgREST's exposed schemas, and the
+-- policies reach it the same way either way.
+--
+-- A login with no membership row is its own account and its own owner, which
+-- is exactly what every policy did before this section existed. That is the
+-- property to preserve when editing anything below: with account_members
+-- empty, the whole section is a no-op and section 5 reduces to the
+-- owner-scoped rules it replaced.
+
+create table if not exists public.account_members (
+  account_id uuid not null references auth.users(id) on delete cascade,
+  member_id  uuid not null references auth.users(id) on delete cascade,
+  role       text not null default 'staff',
+  created_at timestamptz not null default now(),
+  primary key (account_id, member_id)
+);
+
+-- A member belongs to exactly ONE account. Without this, current_account_id()
+-- would be picking one row out of a set, so "whose data is this" would depend
+-- on physical row order — the kind of ambiguity that answers differently after
+-- a vacuum, on the one query where being wrong hands someone another account's
+-- portfolio.
+create unique index if not exists account_members_member_id_key
+  on public.account_members (member_id);
+
+-- Constraints are added in exception-guarded blocks rather than with a bare
+-- ALTER: there is no `add constraint if not exists`, and this file is promised
+-- to be re-runnable.
+do $$
+begin
+  -- Nobody is their own staff. Permitted, it would leave current_account_id()
+  -- correct and current_member_role() saying 'staff' for the person who owns
+  -- the data — locking the manager out of their own invoices.
+  alter table public.account_members
+    add constraint account_members_not_self check (account_id <> member_id);
+exception when duplicate_object then null;
+end;
+$$;
+
+do $$
+begin
+  -- Every role named here needs a matching profile in ACCESS_PROFILES
+  -- (index.html), which decides the pages and buttons that role is shown.
+  -- Adding one is two edits, and this constraint is the half that fails loudly.
+  alter table public.account_members
+    add constraint account_members_role_known check (role in ('staff'));
+exception when duplicate_object then null;
+end;
+$$;
+
+create schema if not exists private;
+revoke all on schema private from public;
+grant usage on schema private to authenticated, service_role;
+
+-- security definer, and it has to be. These are read from inside the policies
+-- ON the tables they protect and from a column default, so a security invoker
+-- function would have account_members' own RLS applied while evaluating them —
+-- a recursive policy check, which Postgres reports as a bare "infinite
+-- recursion detected in policy for relation" naming the wrong relation.
+--
+-- search_path is pinned empty for the reason every definer function pins it:
+-- each name inside is schema-qualified, so nothing can be shadowed by whatever
+-- search_path the caller brought with them.
+--
+-- stable, not volatile: one evaluation per statement is the whole point when
+-- this sits in a row filter.
+create or replace function private.current_account_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    (select m.account_id from public.account_members m where m.member_id = (select auth.uid())),
+    (select auth.uid())
+  );
+$$;
+
+create or replace function private.current_member_role()
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    (select m.role from public.account_members m where m.member_id = (select auth.uid())),
+    'owner'
+  );
+$$;
+
+revoke all on function private.current_account_id() from public;
+revoke all on function private.current_member_role() from public;
+grant execute on function private.current_account_id() to authenticated, service_role;
+grant execute on function private.current_member_role() to authenticated, service_role;
+
+-- The app reads one row of this table at sign-in to find out which profile to
+-- draw — see establishAccessRole() in index.html.
+grant select on public.account_members to authenticated;
+
+alter table public.account_members enable row level security;
+
+drop policy if exists "a login reads its own membership" on public.account_members;
+create policy "a login reads its own membership" on public.account_members
+  for select to authenticated
+  using (member_id = (select auth.uid()) or account_id = (select auth.uid()));
+
+-- And no write policy at all, deliberately — not even for the account owner.
+--
+-- A membership row decides WHOSE data a login sees, so the obvious insert
+-- policy ("an owner may add members to their own account") also lets any
+-- account name somebody ELSE as its member. That victim's current_account_id()
+-- flips to the attacker's account on their very next request: their own rows
+-- disappear behind RLS and everything they save afterwards lands in the
+-- attacker's account, stamped as the attacker's data. The victim never
+-- consented to anything and sees only an app that has gone empty.
+--
+-- Nothing in the app needs to write this table, so nothing may. Grant access
+-- from the SQL editor, where service_role bypasses RLS:
+--
+--   insert into public.account_members (account_id, member_id)
+--   values ('<manager uuid>', '<staff uuid>')
+--   on conflict do nothing;
+--
+-- and revoke it by deleting that row. The member's next sign-in — or their
+-- next sync, if they are already signed in — picks the change up.
+
+-- WHO did it, next to WHICH ACCOUNT it belongs to. With one login those were
+-- the same value and activity_log needed only user_id. With two they are not:
+-- "Maintenance · Created" in the manager's log is ambiguous without it.
+--
+-- It also makes the client's own push safe. Entries are pushed as an upsert
+-- (Prefer: resolution=merge-duplicates), so a retry of a push whose response
+-- was lost arrives as ON CONFLICT DO UPDATE — which needs policies that let
+-- the author see and update that row. A member holding INSERT alone would fail
+-- that retry on every sync forever, on a table they cannot even open.
+--
+-- on delete set null: removing a staff account must not take the record of
+-- what they did with it.
+alter table public.activity_log
+  add column if not exists author_id uuid default auth.uid() references auth.users(id) on delete set null;
+
+
+-- ============================================================
+-- 4. OWNERSHIP — user_id on every table
 -- ============================================================
 -- Until now every row was owned by "whoever is logged in", which is another
 -- way of saying nobody. That is the constraint that blocks a second login of
@@ -118,13 +289,16 @@ alter table public.properties
 -- statements, an owner who should see their own statements and nothing else.
 -- None of those can be expressed without a column naming who a row belongs to.
 --
--- This adds that column and nothing more. The policies in section 4 are
--- deliberately the simplest possible reading of it — owner sees own rows —
--- because that is the behaviour the app has today. Sharing gets built by
--- widening the predicate later (a memberships table joined in the USING
--- clause); it does not need this column to change again.
+-- This adds that column and nothing more. Sharing was always going to be built
+-- by widening the predicate that reads it rather than by changing the column,
+-- and section 3 is that having happened: user_id now names the ACCOUNT, and
+-- one account can have more than one login. Nothing here had to move.
 --
--- default auth.uid() means the client never has to send user_id. On an upsert
+-- The default is current_account_id(), not auth.uid(), and that one word is
+-- what makes a staff member's work land in the manager's portfolio instead of
+-- in a private copy of it. For a login with no membership row the two
+-- expressions return the same value, so nothing about a single-login install
+-- changes. The client never sends user_id either way: on an upsert
 -- (`Prefer: resolution=merge-duplicates`) the column is absent from the body,
 -- so a new row takes the default and an existing row keeps the value it
 -- already had — a device cannot silently re-home someone else's row by
@@ -210,7 +384,7 @@ begin
     'activity_log'
   ]
   loop
-    execute format('alter table public.%I alter column user_id set default auth.uid()', t);
+    execute format('alter table public.%I alter column user_id set default private.current_account_id()', t);
     execute format('alter table public.%I alter column user_id set not null', t);
     execute format('alter table public.%I drop constraint if exists %I', t, t || '_user_id_fkey');
     execute format(
@@ -223,7 +397,7 @@ $$;
 
 
 -- ============================================================
--- 4. ROW LEVEL SECURITY — owner-scoped
+-- 5. ROW LEVEL SECURITY — account-scoped, per command, per role
 -- ============================================================
 -- Every table previously carried one `for all` policy whose entire test was
 -- `auth.role() = 'authenticated'`. That is not a row filter — it is a login
@@ -231,15 +405,35 @@ $$;
 -- read, edit and delete every row in the database.
 --
 -- Replaced with four policies per table, one per command. Splitting them is
--- not ceremony: it is what makes the next role cheap. A read-only accountant
--- is a second SELECT policy on invoices and statements and no other change; a
--- `for all` policy would have to be torn down and rebuilt to say the same
--- thing.
+-- not ceremony: it is what makes a second role cheap, and section 3's casual
+-- staff login is that claim being cashed in. Each restriction below is one
+-- policy that differs, not a rewrite:
 --
--- `(select auth.uid())` rather than a bare `auth.uid()` — wrapping it makes
--- Postgres evaluate it once per statement as an InitPlan instead of once per
--- row, which is the difference the Supabase performance advisor flags on
--- exactly this pattern.
+--   properties, tenants,      everyone in the account reads, inserts and
+--   maintenance, inspections  updates; only the owner deletes.
+--
+--   invoices, statements      the owner alone, all four commands.
+--
+--   activity_log              the owner reads it; anyone in the account
+--                             appends to it; an author can re-push their own
+--                             entry (see author_id in section 3).
+--
+-- `user_id = current_account_id()` is the widened predicate the ownership
+-- section always said would arrive. For a login with no membership row it
+-- evaluates to `user_id = auth.uid()`, character for character the behaviour
+-- these policies had before.
+--
+-- The owner-only tables keep `user_id = auth.uid()` rather than gaining a role
+-- check, and that is exact rather than lazy: a member's rows are stamped with
+-- the ACCOUNT's id and never with their own, so `user_id = auth.uid()` already
+-- means "and you are the account owner". Writing it as a role test as well
+-- would be a second thing to keep true.
+--
+-- `(select ...)` around every function call rather than a bare one — wrapping
+-- it makes Postgres evaluate it once per statement as an InitPlan instead of
+-- once per row, which is the difference the Supabase performance advisor flags
+-- on exactly this pattern. It matters more now than it did: current_account_id()
+-- reads a table.
 --
 -- `to authenticated` keeps the anon role out by construction. anon holds table
 -- grants by default on Supabase, and with RLS enabled and no policy matching
@@ -250,6 +444,12 @@ declare
   t text;
   p record;
 begin
+  -- Drop whatever is there by name first, across every table — including the
+  -- old "authenticated full access" blanket policy and the owner-scoped set
+  -- this section used to create — so re-running this file cannot leave a
+  -- stale permissive policy sitting alongside the new ones. A leftover
+  -- `owner reads own rows` on properties would be harmless; a leftover one on
+  -- a table that later becomes shared would not be.
   foreach t in array array[
     'properties',
     'tenants',
@@ -262,16 +462,52 @@ begin
   loop
     execute format('alter table public.%I enable row level security', t);
 
-    -- Drop whatever is there by name, including the old
-    -- "authenticated full access" blanket policy, so re-running this file
-    -- cannot leave a stale permissive policy sitting alongside the new ones.
     for p in
       select policyname from pg_policies
        where schemaname = 'public' and tablename = t
     loop
       execute format('drop policy if exists %I on public.%I', p.policyname, t);
     end loop;
+  end loop;
 
+  -- ---- shared with everyone in the account ----------------------------
+  foreach t in array array['properties','tenants','maintenance','inspections']
+  loop
+    execute format(
+      'create policy "account reads its rows" on public.%I
+         for select to authenticated
+         using (user_id = (select private.current_account_id()))', t);
+
+    execute format(
+      'create policy "account inserts its rows" on public.%I
+         for insert to authenticated
+         with check (user_id = (select private.current_account_id()))', t);
+
+    -- USING decides which rows can be targeted, WITH CHECK decides what they
+    -- may look like afterwards. Both are needed: without WITH CHECK a login
+    -- could hand a row to another account by updating user_id.
+    execute format(
+      'create policy "account updates its rows" on public.%I
+         for update to authenticated
+         using (user_id = (select private.current_account_id()))
+         with check (user_id = (select private.current_account_id()))', t);
+
+    -- The one command a member does not get. A delete here is unrecoverable
+    -- from the app — there is no trash and no undo — and on inspections it
+    -- takes the photos out of Storage with it, which is why the client
+    -- refuses it too rather than firing a request it knows will match no
+    -- rows: PostgREST answers a DELETE that deleted nothing with 204, and the
+    -- client would read that as success and drop its local copy.
+    execute format(
+      'create policy "the account owner deletes its rows" on public.%I
+         for delete to authenticated
+         using (user_id = (select private.current_account_id())
+                and (select private.current_member_role()) = ''owner'')', t);
+  end loop;
+
+  -- ---- the account owner alone ----------------------------------------
+  foreach t in array array['invoices','statements']
+  loop
     execute format(
       'create policy "owner reads own rows" on public.%I
          for select to authenticated
@@ -282,9 +518,6 @@ begin
          for insert to authenticated
          with check (user_id = (select auth.uid()))', t);
 
-    -- USING decides which rows can be targeted, WITH CHECK decides what they
-    -- may look like afterwards. Both are needed: without WITH CHECK an owner
-    -- could hand a row to another account by updating user_id.
     execute format(
       'create policy "owner updates own rows" on public.%I
          for update to authenticated
@@ -299,9 +532,73 @@ begin
 end;
 $$;
 
+-- ---- activity_log: append-only for a member ---------------------------
+-- Written out rather than looped because no other table has this shape.
+--
+-- A member appends to the manager's audit trail and cannot read it back —
+-- their actions are recorded where the manager will see them, and the log
+-- itself carries invoice and statement activity that a member has no access
+-- to. The two author-scoped policies exist only so the client's upsert retry
+-- has a row it can see and update; they hand a member nothing but their own
+-- entries.
+
+create policy "owner reads the account log" on public.activity_log
+  for select to authenticated
+  using (user_id = (select auth.uid()));
+
+create policy "an author reads their own entries" on public.activity_log
+  for select to authenticated
+  using (author_id = (select auth.uid()));
+
+create policy "account appends to the log" on public.activity_log
+  for insert to authenticated
+  with check (user_id = (select private.current_account_id()));
+
+create policy "owner updates the account log" on public.activity_log
+  for update to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+create policy "an author re-pushes their own entries" on public.activity_log
+  for update to authenticated
+  using (author_id = (select auth.uid()))
+  with check (author_id = (select auth.uid()));
+
+create policy "owner deletes from the account log" on public.activity_log
+  for delete to authenticated
+  using (user_id = (select auth.uid()));
+
+
+-- ---- Storage: the inspection-photos bucket ----------------------------
+-- The bucket's policies are the other half of "a member does not delete".
+-- pushInspectionToBackend() removes an inspection's photos from Storage
+-- BEFORE it deletes the row, so a member whose row delete is refused (above)
+-- but whose object deletes succeed would strip the photos off an inspection
+-- that then stays in the database — the row survives and its evidence does
+-- not. Read and upload stay open to the whole account; delete does not.
+--
+-- storage.objects is owned by the storage extension, so altering its policies
+-- needs a privileged role. Re-running this file as anything less should say so
+-- and carry on rather than failing the whole script at the last section.
+do $$
+begin
+  drop policy if exists "Allow authenticated delete" on storage.objects;
+  drop policy if exists "the account owner deletes photos" on storage.objects;
+  create policy "the account owner deletes photos" on storage.objects
+    for delete to authenticated
+    using (
+      bucket_id = 'inspection-photos'
+      and (select private.current_member_role()) = 'owner'
+    );
+exception when insufficient_privilege then
+  raise warning
+    'Could not set the storage.objects delete policy — run this section as the postgres role, or apply it from Storage → Policies in the dashboard.';
+end;
+$$;
+
 
 -- ============================================================
--- 5. FOREIGN KEYS — and what a property delete does
+-- 6. FOREIGN KEYS — and what a property delete does
 -- ============================================================
 -- Decision: a property delete is BLOCKED while anything still points at it.
 --
@@ -445,11 +742,11 @@ create trigger block_property_delete_when_referenced
 
 
 -- ============================================================
--- 6. INDEXES
+-- 7. INDEXES
 -- ============================================================
 -- Three jobs, and one index per table covers the first two.
 --
--- (user_id, updated_at) serves the RLS predicate — every policy in section 4
+-- (user_id, updated_at) serves the RLS predicate — every policy in section 5
 -- filters on user_id, so it is the leading column of every query the app can
 -- now make — and the incremental pull, which asks for
 -- `user_id = me AND updated_at > <cursor>`. That was the whole reason to index
@@ -462,7 +759,7 @@ create trigger block_property_delete_when_referenced
 -- whether it is allowed; more to the point, an unindexed foreign key is a
 -- table scan taken while holding a lock.
 --
--- activity_log is also read by created_at (retention, section 7, and the
+-- activity_log is also read by created_at (retention, section 8, and the
 -- retention-window filter the client puts on its pull), hence the extra one.
 
 do $$
@@ -498,7 +795,7 @@ create index if not exists activity_log_user_id_created_at_idx
 
 
 -- ============================================================
--- 7. ACTIVITY LOG RETENTION
+-- 8. ACTIVITY LOG RETENTION
 -- ============================================================
 -- activity_log gains a row on every create, update and delete across every
 -- module, is synced in both directions, and is re-read and re-rendered on
@@ -565,7 +862,7 @@ grant execute on function public.prune_activity_log(integer) to authenticated;
 
 
 -- ============================================================
--- 8. UNIQUENESS — invoice and statement numbers, per owner
+-- 9. UNIQUENESS — invoice and statement numbers, per owner
 -- ============================================================
 -- nextInvoiceNumber() / nextStatementNumber() in index.html mint the next
 -- number by reading the highest one already in local IndexedDB. That is
@@ -577,7 +874,7 @@ grant execute on function public.prune_activity_log(integer) to authenticated;
 --
 -- A unique index is the same guarantee a unique constraint would give
 -- (Postgres implements one as the other) and is what the rest of this file
--- already uses for "add this if it is not already there" — see section 6.
+-- already uses for "add this if it is not already there" — see section 7.
 -- Scoped to (user_id, *_number), not the number alone: two different owners
 -- are free to both use INV-0001, and there is no reason to stop them.
 --

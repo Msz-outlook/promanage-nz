@@ -41,6 +41,14 @@ tenants, maintenance or inspections, and those four stayed correct only because
 the sync redrew everything. That is the failure mode to keep in mind here —
 stale data that merely looks unchanged is not reported as a bug.
 
+An eighth place exists but is **not** on that list, because the default is the
+one you want: a new page belongs to the account owner and to nobody else.
+`ACCESS_PROFILES.owner.pages` is `null`, meaning "every page in `pages`", so
+the owner picks a new page up with no edit at all, and a restricted login does
+not. Add the page to a restricted profile only when you mean to widen it — and
+when you do, widen the RLS policy in `supabase/schema.sql` in the same change,
+because that is the half that decides whether the page has anything on it.
+
 The two `populateXPropertyDropdown()` calls stay in `nav()` and out of the
 registry on purpose: both rebuild their `<select>` without preserving its
 value, so running them on a sync would clear a half-filled form.

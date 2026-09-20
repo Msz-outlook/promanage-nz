@@ -54,6 +54,10 @@ work in a 7k-line file — does not trigger the lazy-loaded rules.
 - **Touching a shell file means bumping `CACHE_NAME`** in `sw.js`. → `service-worker.md`
 - **Colours live in the token blocks, never in a rule** — `:root` for the app,
   `MODERNIST` for the PDFs. Tests fail on a stray hex. → `app-invariants.md`, `reports/CLAUDE.md`
+- **`ACCESS_PROFILES` hides pages; RLS is what stops requests.** The two halves
+  are written separately and both are required. The one client rule that is
+  *not* cosmetic is the delete guard: PostgREST answers a refused DELETE with
+  `204`. → `app-invariants.md`, `supabase/CLAUDE.md`
 
 ## Verify before you push
 
@@ -87,6 +91,7 @@ you are working from search results.
 | `index.html` — orientation, file order, loading, theme, backup vs archive | `.claude/rules/app-architecture.md` |
 | `index.html` — adding a module, the 7 registration points, top-level code | `.claude/rules/app-conventions.md` |
 | `index.html` — what not to change and why | `.claude/rules/app-invariants.md` |
+| Two logins, one account — profiles, roles, adding or removing staff | `supabase/CLAUDE.md` |
 | `sw.js` | `.claude/rules/service-worker.md` |
 | `reports/pdf-reports.js` — the `MODERNIST` tokens, jsPDF's silent failures | `reports/CLAUDE.md` |
 | `supabase/schema.sql`, RLS, the project itself | `supabase/CLAUDE.md` |

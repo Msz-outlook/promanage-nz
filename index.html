@@ -514,6 +514,12 @@ label{display:block;font-size:12.5px;font-weight:500;color:var(--text2);margin-b
 @media (max-width:1180px){
   .two-col{grid-template-columns:1fr}
 }
+/* The dashboard's paired lists are tables of three and four columns. Side by
+   side on a 1366px laptop each gets ~520px and addresses wrap onto three
+   lines, so they stack until a column gets ~560px (street, then suburb). */
+@media (max-width:1439px){
+  .two-col.two-col-lists{grid-template-columns:1fr}
+}
 /* Four tiles need ~680px of content; below that they go two by two rather
    than squeezing a label onto three lines. */
 @media (max-width:979px){
@@ -996,7 +1002,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
     <button type="button" class="btn" onclick="toggleTenantForm(true)"><svg class="icon" aria-hidden="true"><use href="#i-users"></use></svg>Add tenant</button>
   </div>
 
-  <div class="two-col">
+  <div class="two-col two-col-lists">
     <section class="card">
       <div class="card-head"><h2 class="card-title">Urgent maintenance</h2><button type="button" class="btn btn-ghost btn-sm" onclick="nav('maintenance',null)">View all<svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></button></div>
       <div class="table-outer"><div class="table-wrap"><table class="rtable"><thead><tr><th>Issue</th><th>Property</th><th>Status</th></tr></thead>
@@ -1011,7 +1017,7 @@ document.addEventListener('DOMContentLoaded',updateThemeToggle);
     </section>
   </div>
 
-  <div class="two-col">
+  <div class="two-col two-col-lists">
     <section class="card">
       <div class="card-head"><h2 class="card-title">Properties not compliant</h2><button type="button" class="btn btn-ghost btn-sm" onclick="nav('compliance',null)">View all<svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></button></div>
       <div class="table-outer"><div class="table-wrap"><table class="rtable"><thead><tr><th>Property</th><th>Overdue items</th><th></th></tr></thead>

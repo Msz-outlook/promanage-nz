@@ -12,7 +12,7 @@ Guidance for Claude Code working in this repository.
 
 A property-management app for a Christchurch, NZ property manager. An
 **offline-first PWA in essentially one file**: every feature module lives in
-`index.html` (~7k lines), with only the PDF generators split out into
+`index.html` (~8k lines), with only the PDF generators split out into
 `reports/pdf-reports.js` — and that split was made to stop them blocking the
 first paint, not to tidy anything up. Backed by Supabase (Postgres + Auth +
 private Storage) and IndexedDB for local state.
@@ -28,7 +28,7 @@ signal and does not hand a third party a request on every page load.
 The full reasoning for each lives in the rule file named beside it. These
 one-liners are here because they are the ones whose violation is **silent and
 expensive**, and because grepping `index.html` — which is how you will usually
-work in a 7k-line file — does not trigger the lazy-loaded rules.
+work in an 8k-line file — does not trigger the lazy-loaded rules.
 
 - **`authHeader()` returns `null` with no session.** Never fall back to
   `CONFIG.SUPABASE_KEY`. It authenticates as `anon`, RLS matches nothing, and
@@ -54,6 +54,10 @@ work in a 7k-line file — does not trigger the lazy-loaded rules.
 - **Touching a shell file means bumping `CACHE_NAME`** in `sw.js`. → `service-worker.md`
 - **Colours live in the token blocks, never in a rule** — `:root` for the app,
   `MODERNIST` for the PDFs. Tests fail on a stray hex. → `app-invariants.md`, `reports/CLAUDE.md`
+- **A sheet opens and closes only through `setSheetOpen()`.** Setting
+  `style.display` still shows it, and skips the `inert`, scroll lock, focus
+  and history entry that make it behave — the page behind stays clickable and
+  Back stops working. → `app-invariants.md`
 - **`ACCESS_PROFILES` hides pages; RLS is what stops requests.** The two halves
   are written separately and both are required. The one client rule that is
   *not* cosmetic is the delete guard: PostgREST answers a refused DELETE with
@@ -89,6 +93,7 @@ you are working from search results.
 | Working on | Read |
 | --- | --- |
 | `index.html` — orientation, file order, loading, theme, backup vs archive | `.claude/rules/app-architecture.md` |
+| `index.html` — the interface: sheets, phone tab bar, one-tap rows, sync pill | "The interface" in `.claude/rules/app-architecture.md` |
 | `index.html` — adding a module, the 7 registration points, top-level code | `.claude/rules/app-conventions.md` |
 | `index.html` — what not to change and why | `.claude/rules/app-invariants.md` |
 | Two logins, one account — profiles, roles, adding or removing staff | `supabase/CLAUDE.md` |

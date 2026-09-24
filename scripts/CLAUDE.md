@@ -6,7 +6,7 @@ runs exactly these three, in this order:
 ```sh
 node scripts/check-app.mjs      # static checks, no dependencies
 node scripts/smoke-test.mjs     # boots the app in a real browser
-node scripts/test.mjs           # the test suite (187 cases)
+node scripts/test.mjs           # the test suite (203 cases)
 ```
 
 ## `check-app.mjs`

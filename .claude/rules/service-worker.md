@@ -27,6 +27,6 @@ heic2any, jsPDF, jspdf-autotable and `reports/pdf-reports.js` are fetched on
 demand but stay pre-cached so they still work offline.
 
 **Touching a shell file means bumping `CACHE_NAME`** (currently
-`promanage-shell-v14`). Installed clients keep serving the old shell otherwise.
+`promanage-shell-v16`). Installed clients keep serving the old shell otherwise.
 `node scripts/check-app.mjs --base origin/main` asserts this on pull requests,
 and CI runs it that way.

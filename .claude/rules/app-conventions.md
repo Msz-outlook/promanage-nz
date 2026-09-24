@@ -16,11 +16,34 @@ When adding one, copy it:
 - `pushXToBackend(record)` / `syncPendingX()` / `updateXSyncBanner()`
 - `mapRemoteX(row)` + a `pullAndMerge(...)` line in `pullAllAndMerge()`
 
+## …and the same interface shape
+
+- The form is a `.sheet` in the sheets area after `</div>` of `#main-app`, not
+  a card on the page. `toggleXForm(show, record)` starts with
+  `setSheetOpen('x-form-card', !!show)` and never sets `style.display` itself.
+  The head holds the title and a `[data-sheet-close]` × button; the footer
+  holds Delete (`owner-only`), Cancel and the primary Save.
+- `saveX()` ends with `savedToast(...)`. `deleteX()` returns `true` only on a
+  delete that happened, so `deleteXFromForm()` closes the form only then.
+- The list is a `.rtable`; each row is
+  `<tr class="row-link" onclick="editX('${escapeJsAttr(id)}')">` with
+  `<td class="c-title"><button type="button" class="row-title">…</button></td>`
+  first, and `c-sub` / `c-meta` + `data-label` / `c-badge` / `c-actions` on
+  the rest. A button inside a row calls `event.stopPropagation()` before
+  anything else.
+- Property pickers use `sortedProperties()` and `propertyOptionsHtml()` — by
+  street, starting on "Select a property…".
+- An empty list renders `emptyStateRow()`: what the list is for, and the
+  button that fills it.
+- If the page creates records, it gets a `.page-cta` in the top bar and a
+  line in the `body[data-page=…] .page-cta[data-for=…]` rule.
+
 ## A new module has to be registered in all seven places
 
 Or it will look fine on its own page and be stale everywhere else:
 
-1. `pages` and the nav markup
+1. `pages` and the nav markup (the sidebar; plus a `.tab` and a place in
+   `TAB_PRIORITY` only if it deserves one of the four phone tabs)
 2. `MODULE_RENDERERS` — the module's render + banner
 3. `PAGE_MODULES` — which page(s) draw it
 4. `pullAllAndMerge()` — the `pullAndMerge(...)` line

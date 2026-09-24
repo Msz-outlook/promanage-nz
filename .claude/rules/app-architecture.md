@@ -75,8 +75,9 @@ async and has not run yet.
 
 | Section | What is worth knowing |
 | --- | --- |
-| App shell, config, auth | `nav()` switches page **and draws it**. `CONFIG` holds the Supabase URL, publishable key and bucket. `BUSINESS_INFO` is printed on every invoice/statement PDF. `LAW_UPDATES_LAST_VERIFIED` dates the static NZ compliance copy |
-| Access control | `ACCESS_PROFILES` — which pages, which stores sync, whether deletes are allowed. `establishAccessRole()` resolves it from `account_members` at every entry and caches it per user id; `applyAccessRole()` paints it onto the sidebar. The whole section is presentation — the enforcement is RLS |
+| App shell, config, auth | `nav()` switches page **and draws it**, keeps the tab bar in step (`syncTabBar`) and stamps the page id on `<body data-page>`. `CONFIG` holds the Supabase URL, publishable key and bucket. `BUSINESS_INFO` is printed on every invoice/statement PDF. `LAW_UPDATES_LAST_VERIFIED` dates the static NZ compliance copy |
+| Access control | `ACCESS_PROFILES` — which pages, which stores sync, whether deletes are allowed. `establishAccessRole()` resolves it from `account_members` at every entry and caches it per user id; `applyAccessRole()` paints it onto the sidebar and the phone tab bar (`TAB_PRIORITY`). The whole section is presentation — the enforcement is RLS |
+| Module registry, UI kit | `MODULE_RENDERERS` / `PAGE_MODULES`, then `noteLocalDataChange()`, `svgIcon()`, `showToast()`, the sheet system (`setSheetOpen()` and friends) and the sync pill — see "The interface" below |
 | IndexedDB + account isolation | `openDB()` — `promanageDB`, `DB_VERSION = 9`, 9 stores (8 synced + `settings`). `enforceLocalDataOwner()` wipes local stores when a different account signs in |
 | Sync engine | `fetchRemoteTablePaged` → `pullAndMerge` → `pullAllAndMerge` (concurrent pulls, then draws the visible page). `fullSyncNow()` pushes then pulls, and is the **only** place that tells the user they are offline. `mapRemoteX()` row mappers live here |
 | Activity log | Pruned on a retention window at both ends — see `supabase/CLAUDE.md` |
@@ -91,6 +92,54 @@ async and has not run yet.
 | Financials | The agency's own books, derived live from Owner Statements — revenue is the management fee, **not** the owner's rent |
 | Backup / Archive | Two different jobs — see below |
 | Dashboard | `INSPECTION_INTERVAL_DAYS = 180`. Service-worker registration is the **last top-level statement in the block**, which is why the smoke test asserting it proves the whole block ran |
+
+## The interface
+
+Redesigned in September 2026 around one rule: show what needs attention, and
+put the action for it one tap away. The parts that are not obvious from the
+markup:
+
+- **The document scrolls, not an inner box.** The sidebar is `position:sticky`
+  and the phone tab bar `position:fixed`. The old shell pinned `.app` to
+  `100vh` and scrolled `.main`, which hid the last rows of every list under a
+  phone's URL bar. `nav()` scrolls to the top on a page change for the same
+  reason.
+- **Two layouts, one breakpoint: 899px** (`MOBILE_NAV_QUERY`, and the matching
+  media query). Wider: sidebar. Narrower: a tab bar with the first four pages
+  the login can open (`TAB_PRIORITY`) plus "More", which opens the same
+  sidebar element as a bottom sheet. A page without a tab lights up "More".
+- **One primary action per page, always top right** — `.page-cta[data-for]`
+  in the top bar, shown by `body[data-page]`. On a phone the same button is
+  the floating action button above the tab bar.
+- **Every create/edit form is a sheet** (`.sheet`, outside `#main-app`): a
+  panel from the right on a wide screen, the whole screen on a phone.
+  `setSheetOpen()` is the only thing that shows or hides one, because it owns
+  everything that has to stay in step: `inert` on `#main-app`, the scroll
+  lock, focus in and back out, one history entry so the system Back button
+  closes the sheet, and the unsaved-changes question on Escape, Back or a
+  backdrop tap. Each sheet's `[data-sheet-close]` button is how those three
+  close it, so a module's own close logic always runs.
+- **Sheets open over any page.** The dashboard opens a maintenance job, a
+  tenancy or a checklist in place. `logActivity()` calls
+  `noteLocalDataChange()`, which marks every page but the visible one stale
+  and bumps `dataVersion`; a sheet that closes with a different `dataVersion`
+  redraws the page behind it.
+- **List rows open with one tap.** `tr.row-link` takes the click; a
+  `<button class="row-title">` in its first cell gives the keyboard and a
+  screen reader a real control. Anything else clickable in the row calls
+  `event.stopPropagation()` first. Below 900px, `.rtable` rows become cards —
+  the `c-title` / `c-sub` / `c-meta` (with `data-label`) / `c-badge` /
+  `c-actions` classes on each cell decide where it lands.
+- **Quiet when fine, visible when not.** The top-bar sync pill is the
+  app-wide state (Synced / N to sync / Offline / Sync issue). A page's own
+  sync banner is hidden (`.sync-idle`) until that page has something to say.
+- **Toasts for success, dialogs for everything else.** `showToast()` /
+  `savedToast()` confirm a save or delete; a failure, a refusal or anything
+  that needs a decision stays an `alert()` / `confirm()`, and several tests
+  rely on that.
+- **Icons are an inline SVG sprite** at the top of `<body>`, used as
+  `<svg class="icon"><use href="#i-…">` or `svgIcon('…')`. No emoji: they
+  render differently on every platform and cannot follow the theme.
 
 ## Backup and Archive are not the same thing
 

@@ -149,6 +149,8 @@ they prevent had already happened once.
   way when dark mode went in (the alert borders, `.prog-fill`, the three status
   dots). `theme.test.mjs` fails on any rule outside `:root` that names a colour,
   and on any `:root` colour token with no `[data-theme="dark"]` counterpart.
+  Shadows count: they are `rgba()`, so they are tokens too (`--shadow-1`,
+  `--shadow-2`, `--shadow-lg`, `--shadow-up`).
   The same rule applies to the PDFs, where the token block is `MODERNIST` —
   see `reports/CLAUDE.md`.
 - **`color-scheme` on both token blocks.** One line each, and it is what makes
@@ -158,10 +160,40 @@ they prevent had already happened once.
   the field is light.
 - **`beforeprint` forcing light.** Browsers drop background colours when
   printing but keep text colours, so printing in dark mode puts `#ececea` on
-  white paper — a page that reads as blank. The 🖨 button is a real feature
+  white paper — a page that reads as blank. The Print button is a real feature
   here, and this also covers Ctrl+P, which the button does not. It swaps the
   attribute rather than duplicating the palette into `@media print`, so there
   is no third copy to keep in step.
+
+## Interface
+
+- **`setSheetOpen()` is the only way a sheet opens or closes.** Setting a
+  sheet's `style.display` directly still shows it, which is why it is
+  tempting — and leaves `#main-app` interactive behind it, the scroll
+  unlocked, focus stranded, and a history entry that makes the next Back
+  press appear to do nothing. `ui-shell.test.mjs` covers the inert/lock and
+  Back behaviour.
+- **A new inspection's draft survives its sheet closing; an edit does not.**
+  Closing an edit discards it, as Cancel always did. Closing a *new* one keeps
+  its notes and photos (`data-keeps-draft`, `inspDraftTouched`) until it is
+  saved or discarded, because photos taken on site are the costliest thing in
+  the app to lose to a stray tap. `startInspectionFor()` and `editInspection()`
+  never overwrite a draft someone has started without asking.
+- **`.btn.page-cta{display:none}` and `.icon-btn.sidebar-close` carry two
+  classes on purpose.** `.btn` and `.icon-btn` set `display` too and come later
+  in the sheet; with one class the later rule wins, every page's primary
+  button shows at once and the desktop page overflows sideways. It happened
+  during the redesign.
+- **Buttons inside a clickable row call `event.stopPropagation()` first.**
+  Without it the row's own click runs too, and "PDF" also opens the editor.
+- **No `Intl` / `toLocale*()` on the startup path.** The first Intl date format
+  in a page loads the browser's locale data: 63ms at a mid-range phone's CPU
+  speed, measured, for the date beside the page title. `updateTodayLabel()`
+  and `formatClockTime()` build their strings by hand for this reason.
+- **A page's sync banner is hidden while it has nothing to say** (`.sync-idle`
+  — online, nothing waiting, nothing failing). The top-bar pill carries the
+  "Synced" state. A banner that is missing when everything is synced is
+  working, not broken.
 
 ## Loading
 

@@ -793,6 +793,14 @@ $$;
 create index if not exists activity_log_user_id_created_at_idx
   on public.activity_log (user_id, created_at);
 
+-- author_id (section 3) is a foreign key to auth.users with on delete set
+-- null, so deleting a staff login scans activity_log for their entries; and
+-- the staff policies in section 5 filter on it. Neither is slow at today's
+-- size — this clears the advisor's unindexed_foreign_keys notice and keeps
+-- both paths indexed as the log grows.
+create index if not exists activity_log_author_id_idx
+  on public.activity_log (author_id);
+
 
 -- ============================================================
 -- 8. ACTIVITY LOG RETENTION

@@ -1,13 +1,14 @@
 # Checks for ProManage NZ.
 #
 # This repository is the deploy root — GitHub Pages serves whatever lands on
-# main, immediately, with no build step in between. There is no test suite to
-# fall back on, so these two jobs are the only thing standing between a typo
-# and a blank app for every installed client.
+# main, immediately, with no build step in between, so these two jobs are the
+# only thing standing between a typo and a blank app for every installed
+# client.
 #
-# Both jobs are runnable locally, exactly as they run here:
+# Everything here is runnable locally, exactly as it runs here:
 #   node scripts/check-app.mjs
 #   node scripts/smoke-test.mjs
+#   node scripts/test.mjs
 
 name: checks
 
@@ -25,13 +26,13 @@ jobs:
     name: static checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # The cache-bump check diffs against the base branch, so it needs
           # more than the default shallow clone.
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -58,9 +59,9 @@ jobs:
     name: boot smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 

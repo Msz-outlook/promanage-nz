@@ -8,6 +8,15 @@ slight friction when using it".
 **Companion review:** [`REVIEW-2026-08.md`](REVIEW-2026-08.md) (5 Aug 2026)
 covered backups, photo sizing and quota. This one does not repeat it.
 
+> **Status at 12 October 2026.** Everything marked *fixed* below is still in
+> place. Of the "Suggested order of work" at the end, item 1 is done and items
+> 2–4 are **still open**: six sync-banner wrappers, Email Triage still shipped
+> disabled, and seven `pushXToBackend` / `syncPendingX` pairs. Test counts
+> below are as of August; the suite has since grown to about 200 cases across
+> 17 files. `index.html` has grown from 333 KB to 439 KB since the PDF split,
+> mostly from the September interface redesign. The pre-paint figures here
+> pre-date that.
+
 Every measurement below was taken in Chromium against the real page, and every
 bug was reproduced by executing it rather than by reading the code. The
 harnesses are described under [Verification](#verification).

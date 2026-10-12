@@ -29,7 +29,7 @@ jobs:
     name: ping Supabase
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Read project config from index.html
         id: config
@@ -79,9 +79,21 @@ jobs:
           #
           # The app itself was never affected: authHeader() sends a real
           # session JWT in Authorization and this key in apikey.
-          rest=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -H "apikey: $KEY" "$URL/rest/v1/properties?select=id&limit=1")
-          auth=$(curl -sS -o /dev/null -w '%{http_code}' -H "apikey: $KEY" "$URL/auth/v1/health")
+          #
+          # 3. Retry network failures before calling it red. Two of the first
+          #    runs after the redesign failed on a DNS miss (curl exit 6) and a
+          #    connection reset (exit 35) from the runner — transient, with the
+          #    project healthy both times. --retry-all-errors retries those;
+          #    without --fail an HTTP 4xx is not a curl error, so a 401 is still
+          #    answered once and reaches the credentials diagnosis below
+          #    rather than being retried into a timeout.
+          probe() {
+            curl -sS -o /dev/null -w '%{http_code}' \
+              --retry 3 --retry-all-errors --retry-delay 15 --max-time 30 \
+              -H "apikey: $KEY" "$1"
+          }
+          rest=$(probe "$URL/rest/v1/properties?select=id&limit=1")
+          auth=$(probe "$URL/auth/v1/health")
 
           echo "rest/v1/       -> $rest"
           echo "auth/v1/health -> $auth"
